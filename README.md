@@ -84,8 +84,19 @@ The test suite verifies:
   [bcrust-provider](https://github.com/baentsch/bcrustprovider) (via the
   `?provider=bcrust` component query) and verifies both self-consistency and
   interop with the default provider's native MLX hybrid. This proves a
-  bcrust-sourced ML-KEM is wire-compatible. The block is skipped (not failed)
-  when bcrust-provider is unavailable.
+  bcrust-sourced ML-KEM is wire-compatible.
+- **Cross-provider ML-DSA composition** — likewise, the ML-DSA component of each
+  hybrid signature is composed from `bcrust_provider` and/or `oqsprovider` (when
+  present) and verified for sign/verify round-trip. The default provider has no
+  hybrid signatures, so there is no native counterpart to interop against —
+  these are self-consistency checks. Note oqsprovider exposes its standalone
+  ML-DSA on OpenSSL 3.5+ (unlike its ML-KEM, which it disables there), so the
+  oqs ML-DSA composition runs on 3.5.6.
+
+Each cross-provider block is skipped (not failed) when its provider is not on
+the module path, so the baseline suite is 28/28; it grows to 42/42 with
+bcrust-provider and 48/48 with both bcrust-provider and oqsprovider. To enable a
+block, symlink the provider's `.so` into the module directory.
 
 ## Benchmark
 
@@ -146,6 +157,46 @@ keygen within noise. On 3.4.2, oqsprovider (liboqs, hand-tuned AVX2) and bcrust
 run side-by-side, with liboqs fastest. In all cases the hybrid provider
 transparently composes sub-algorithms sourced from *different* providers into a
 single key.
+
+### Hybrid signatures
+
+`hybrid_bench` also times all six hybrid signatures (keygen / sign / verify),
+with the ML-DSA component sourced from the default provider and, when present,
+from bcrust-provider and oqsprovider. The classical half always comes from the
+default provider, so each group of rows isolates the ML-DSA implementation.
+
+Sample results on OpenSSL 3.5.6 (2000 iterations, ms/op):
+
+| Hybrid | ML-DSA source | keygen | sign | verify |
+|---|---|---|---|---|
+| ed25519mldsa44 | default | 0.111 | 0.516 | 0.182 |
+| | bcrust | 0.093 | 0.145 | 0.134 |
+| | oqsprovider | 0.054 | 0.087 | 0.110 |
+| ed25519mldsa65 | default | 0.171 | 0.802 | 0.231 |
+| | bcrust | 0.133 | 0.218 | 0.173 |
+| | oqsprovider | 0.073 | 0.125 | 0.128 |
+| ed448mldsa87 | default | 0.380 | 1.083 | 0.404 |
+| | bcrust | 0.348 | 0.426 | 0.323 |
+| | oqsprovider | 0.240 | 0.300 | 0.243 |
+| p256mldsa44 | default | 0.101 | 0.507 | 0.151 |
+| | bcrust | 0.083 | 0.143 | 0.106 |
+| | oqsprovider | 0.043 | 0.083 | 0.080 |
+| p256mldsa65 | default | 0.163 | 0.831 | 0.207 |
+| | bcrust | 0.130 | 0.221 | 0.144 |
+| | oqsprovider | 0.061 | 0.122 | 0.096 |
+| p384mldsa87 | default | 0.879 | 1.624 | 0.801 |
+| | bcrust | 0.847 | 0.959 | 0.723 |
+| | oqsprovider | 0.737 | 0.809 | 0.638 |
+
+Unlike its ML-KEM, oqsprovider keeps its ML-DSA enabled on 3.5+, so all three
+sources run in the same 3.5.6 process. The ordering is consistent — oqsprovider
+(hand-tuned AVX2) fastest, bcrust (auto-vectorised pure Rust) next, default
+slowest — with the gap largest on **sign** (rejection sampling dominates) and
+smaller on keygen/verify. This inverts the ML-KEM picture, because OpenSSL 3.5.6
+has an optimised ML-KEM but a still-scalar ML-DSA signing path. The bcrust and
+oqsprovider figures are essentially OpenSSL-version-independent (the same on
+3.4.2 within noise, since each uses its own ML-DSA); only the default-provider
+rows are 3.5.6-specific, as 3.4.x has no ML-DSA at all.
 
 ## Usage
 

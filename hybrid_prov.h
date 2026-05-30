@@ -52,7 +52,7 @@ typedef struct {
     const char *hybrid_name;    /* e.g., "ed25519mldsa44" */
     const char *alg1_name;      /* e.g., "Ed25519" */
     const char *alg1_group;     /* e.g., NULL or "P-256" */
-    const char *alg2_name;      /* e.g., "ML-DSA-44" */
+    const char *alg2_name;      /* e.g., "MLDSA44" */
     size_t      alg1_pubkey_bytes;
     size_t      alg1_prvkey_bytes;
     size_t      alg1_sig_bytes;     /* max signature size for alg1 */
@@ -132,37 +132,37 @@ static const HYBRID_KEM_INFO hybrid_kem_table[] = {
 static const HYBRID_SIG_INFO hybrid_sig_table[] = {
     {
         "ed25519mldsa44",
-        "Ed25519", NULL, "ML-DSA-44",
+        "Ed25519", NULL, "MLDSA44",
         32, 32, 64,                  /* Ed25519: pub, prv, sig */
         1312, 2560, 2420             /* ML-DSA-44: pub, prv, sig */
     },
     {
         "ed25519mldsa65",
-        "Ed25519", NULL, "ML-DSA-65",
+        "Ed25519", NULL, "MLDSA65",
         32, 32, 64,
         1952, 4032, 3309
     },
     {
         "ed448mldsa87",
-        "Ed448", NULL, "ML-DSA-87",
+        "Ed448", NULL, "MLDSA87",
         57, 57, 114,                 /* Ed448: pub, prv, sig */
         2592, 4896, 4627
     },
     {
         "p256mldsa44",
-        "EC", "P-256", "ML-DSA-44",
+        "EC", "P-256", "MLDSA44",
         65, 32, 72,                  /* P-256: pub, prv, max DER sig */
         1312, 2560, 2420
     },
     {
         "p256mldsa65",
-        "EC", "P-256", "ML-DSA-65",
+        "EC", "P-256", "MLDSA65",
         65, 32, 72,
         1952, 4032, 3309
     },
     {
         "p384mldsa87",
-        "EC", "P-384", "ML-DSA-87",
+        "EC", "P-384", "MLDSA87",
         97, 48, 104,                 /* P-384: pub, prv, max DER sig */
         2592, 4896, 4627
     },

@@ -527,9 +527,10 @@ err:
 /*
  * Signature test: self-consistency — keygen, sign, verify.
  */
-static int test_sig_self_consistency(OSSL_LIB_CTX *libctx, const char *algname)
+static int test_sig_self_consistency(OSSL_LIB_CTX *libctx, const char *algname,
+                                     const char *comp_propq)
 {
-    char label[128];
+    char label[160];
     EVP_PKEY_CTX *gctx = NULL;
     EVP_PKEY *key = NULL;
     EVP_MD_CTX *sctx = NULL, *vctx = NULL;
@@ -539,13 +540,24 @@ static int test_sig_self_consistency(OSSL_LIB_CTX *libctx, const char *algname)
     size_t msglen = sizeof(msg) - 1;
     int ret = 0;
 
-    snprintf(label, sizeof(label), "sig self-consistency %s", algname);
+    if (comp_propq != NULL)
+        snprintf(label, sizeof(label), "sig self-consistency %s (components %s)",
+                 algname, comp_propq);
+    else
+        snprintf(label, sizeof(label), "sig self-consistency %s", algname);
     TEST_START(label);
 
     /* Generate keypair */
     gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
-    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
-        || EVP_PKEY_keygen(gctx, &key) <= 0) {
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0) {
+        TEST_FAIL("keygen init failed");
+        goto err;
+    }
+    if (!set_component_propq(gctx, comp_propq)) {
+        TEST_FAIL("set component properties failed");
+        goto err;
+    }
+    if (EVP_PKEY_keygen(gctx, &key) <= 0) {
         TEST_FAIL("keygen failed");
         goto err;
     }
@@ -792,9 +804,51 @@ int main(int argc, char **argv)
             const char *alg = sig_algorithms[i];
 
             printf("[%s]\n", alg);
-            test_sig_self_consistency(libctx, alg);
+            test_sig_self_consistency(libctx, alg, NULL);
             test_sig_wrong_message(libctx, alg);
             printf("\n");
+        }
+
+        /*
+         * Optional: compose the ML-DSA component from an alternative provider.
+         * The default provider has no hybrid signatures, so there is no
+         * cross-provider interop to test (as there is for KEMs); instead we
+         * verify that an ML-DSA sourced from bcrust-provider / oqsprovider
+         * composes and round-trips (sign/verify) correctly. Each block is
+         * skipped (not failed) when its provider or ML-DSA is unavailable.
+         */
+        {
+            static const struct { const char *module; const char *prop; } pq[] = {
+                { "bcrust_provider", "bcrust" },
+                { "oqsprovider",     "oqsprovider" },
+            };
+
+            for (size_t p = 0; p < sizeof(pq) / sizeof(pq[0]); p++) {
+                OSSL_PROVIDER *prov = OSSL_PROVIDER_load(libctx, pq[p].module);
+                char comp_propq[128];
+                EVP_SIGNATURE *probe;
+
+                snprintf(comp_propq, sizeof(comp_propq), "?provider=%s",
+                         pq[p].prop);
+                probe = (prov != NULL)
+                    ? EVP_SIGNATURE_fetch(libctx, "MLDSA65", comp_propq + 1)
+                    : NULL;
+
+                if (probe != NULL) {
+                    printf("[%s ML-DSA composition]\n", pq[p].prop);
+                    for (size_t i = 0; i < nsigs; i++)
+                        test_sig_self_consistency(libctx, sig_algorithms[i],
+                                                  comp_propq);
+                    printf("\n");
+                } else {
+                    printf("[%s ML-DSA composition] SKIPPED (unavailable)\n\n",
+                           pq[p].prop);
+                    ERR_clear_error();
+                }
+                EVP_SIGNATURE_free(probe);
+                if (prov != NULL)
+                    OSSL_PROVIDER_unload(prov);
+            }
         }
     }
 
