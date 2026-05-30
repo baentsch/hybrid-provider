@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 hybrid-provider contributors
+ * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -45,6 +45,7 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
 /* --- Algorithm tables --- */
 
 static const OSSL_ALGORITHM hybrid_keymgmts[] = {
+    /* KEM keymgmts */
     { "X25519MLKEM768", "provider=hybrid",
       hybrid_x25519mlkem768_kmgmt_functions,
       "X25519+ML-KEM-768 hybrid key management" },
@@ -57,6 +58,25 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
     { "SecP384r1MLKEM1024", "provider=hybrid",
       hybrid_secp384r1mlkem1024_kmgmt_functions,
       "P-384+ML-KEM-1024 hybrid key management" },
+    /* Signature keymgmts */
+    { "ed25519mldsa44", "provider=hybrid",
+      hybrid_ed25519mldsa44_kmgmt_functions,
+      "Ed25519+ML-DSA-44 hybrid key management" },
+    { "ed25519mldsa65", "provider=hybrid",
+      hybrid_ed25519mldsa65_kmgmt_functions,
+      "Ed25519+ML-DSA-65 hybrid key management" },
+    { "ed448mldsa87", "provider=hybrid",
+      hybrid_ed448mldsa87_kmgmt_functions,
+      "Ed448+ML-DSA-87 hybrid key management" },
+    { "p256mldsa44", "provider=hybrid",
+      hybrid_p256mldsa44_kmgmt_functions,
+      "P-256+ML-DSA-44 hybrid key management" },
+    { "p256mldsa65", "provider=hybrid",
+      hybrid_p256mldsa65_kmgmt_functions,
+      "P-256+ML-DSA-65 hybrid key management" },
+    { "p384mldsa87", "provider=hybrid",
+      hybrid_p384mldsa87_kmgmt_functions,
+      "P-384+ML-DSA-87 hybrid key management" },
     { NULL, NULL, NULL, NULL }
 };
 
@@ -76,6 +96,28 @@ static const OSSL_ALGORITHM hybrid_kems[] = {
     { NULL, NULL, NULL, NULL }
 };
 
+static const OSSL_ALGORITHM hybrid_signatures[] = {
+    { "ed25519mldsa44", "provider=hybrid",
+      hybrid_sig_functions,
+      "Ed25519+ML-DSA-44 hybrid signature" },
+    { "ed25519mldsa65", "provider=hybrid",
+      hybrid_sig_functions,
+      "Ed25519+ML-DSA-65 hybrid signature" },
+    { "ed448mldsa87", "provider=hybrid",
+      hybrid_sig_functions,
+      "Ed448+ML-DSA-87 hybrid signature" },
+    { "p256mldsa44", "provider=hybrid",
+      hybrid_sig_functions,
+      "P-256+ML-DSA-44 hybrid signature" },
+    { "p256mldsa65", "provider=hybrid",
+      hybrid_sig_functions,
+      "P-256+ML-DSA-65 hybrid signature" },
+    { "p384mldsa87", "provider=hybrid",
+      hybrid_sig_functions,
+      "P-384+ML-DSA-87 hybrid signature" },
+    { NULL, NULL, NULL, NULL }
+};
+
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)
 {
@@ -85,6 +127,8 @@ hybrid_query(void *provctx, int operation_id, int *no_cache)
         return hybrid_keymgmts;
     case OSSL_OP_KEM:
         return hybrid_kems;
+    case OSSL_OP_SIGNATURE:
+        return hybrid_signatures;
     default:
         return NULL;
     }

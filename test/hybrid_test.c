@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 hybrid-provider contributors
+ * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
  * Interoperability tests for the hybrid provider against
@@ -465,6 +465,170 @@ err:
     return ret;
 }
 
+/*
+ * Signature test: self-consistency — keygen, sign, verify.
+ */
+static int test_sig_self_consistency(OSSL_LIB_CTX *libctx, const char *algname)
+{
+    char label[128];
+    EVP_PKEY_CTX *gctx = NULL;
+    EVP_PKEY *key = NULL;
+    EVP_MD_CTX *sctx = NULL, *vctx = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    const unsigned char msg[] = "hybrid signature test message";
+    size_t msglen = sizeof(msg) - 1;
+    int ret = 0;
+
+    snprintf(label, sizeof(label), "sig self-consistency %s", algname);
+    TEST_START(label);
+
+    /* Generate keypair */
+    gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
+        || EVP_PKEY_keygen(gctx, &key) <= 0) {
+        TEST_FAIL("keygen failed");
+        goto err;
+    }
+
+    /* Sign */
+    sctx = EVP_MD_CTX_new();
+    if (sctx == NULL) {
+        TEST_FAIL("EVP_MD_CTX_new failed");
+        goto err;
+    }
+    if (EVP_DigestSignInit_ex(sctx, NULL, NULL, libctx,
+                               "provider=hybrid", key, NULL) <= 0) {
+        TEST_FAIL("DigestSignInit failed");
+        goto err;
+    }
+    /* Query size */
+    if (EVP_DigestSign(sctx, NULL, &siglen, msg, msglen) <= 0) {
+        TEST_FAIL("DigestSign size query failed");
+        goto err;
+    }
+    sig = OPENSSL_malloc(siglen);
+    if (sig == NULL) {
+        TEST_FAIL("malloc failed");
+        goto err;
+    }
+    if (EVP_DigestSign(sctx, sig, &siglen, msg, msglen) <= 0) {
+        TEST_FAIL("DigestSign failed");
+        goto err;
+    }
+
+    /* Verify */
+    vctx = EVP_MD_CTX_new();
+    if (vctx == NULL) {
+        TEST_FAIL("EVP_MD_CTX_new failed");
+        goto err;
+    }
+    if (EVP_DigestVerifyInit_ex(vctx, NULL, NULL, libctx,
+                                 "provider=hybrid", key, NULL) <= 0) {
+        TEST_FAIL("DigestVerifyInit failed");
+        goto err;
+    }
+    if (EVP_DigestVerify(vctx, sig, siglen, msg, msglen) <= 0) {
+        TEST_FAIL("DigestVerify failed");
+        goto err;
+    }
+
+    TEST_PASS();
+    ret = 1;
+
+err:
+    OPENSSL_free(sig);
+    EVP_MD_CTX_free(sctx);
+    EVP_MD_CTX_free(vctx);
+    EVP_PKEY_CTX_free(gctx);
+    EVP_PKEY_free(key);
+    return ret;
+}
+
+/*
+ * Signature test: wrong message — sign, corrupt message, verify should fail.
+ */
+static int test_sig_wrong_message(OSSL_LIB_CTX *libctx, const char *algname)
+{
+    char label[128];
+    EVP_PKEY_CTX *gctx = NULL;
+    EVP_PKEY *key = NULL;
+    EVP_MD_CTX *sctx = NULL, *vctx = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    const unsigned char msg[] = "hybrid signature test message";
+    const unsigned char bad[] = "hybrid signature WRONG message";
+    size_t msglen = sizeof(msg) - 1;
+    size_t badlen = sizeof(bad) - 1;
+    int ret = 0;
+
+    snprintf(label, sizeof(label), "sig wrong-message %s", algname);
+    TEST_START(label);
+
+    /* Generate keypair */
+    gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
+        || EVP_PKEY_keygen(gctx, &key) <= 0) {
+        TEST_FAIL("keygen failed");
+        goto err;
+    }
+
+    /* Sign */
+    sctx = EVP_MD_CTX_new();
+    if (sctx == NULL) {
+        TEST_FAIL("EVP_MD_CTX_new failed");
+        goto err;
+    }
+    if (EVP_DigestSignInit_ex(sctx, NULL, NULL, libctx,
+                               "provider=hybrid", key, NULL) <= 0) {
+        TEST_FAIL("DigestSignInit failed");
+        goto err;
+    }
+    if (EVP_DigestSign(sctx, NULL, &siglen, msg, msglen) <= 0) {
+        TEST_FAIL("DigestSign size query failed");
+        goto err;
+    }
+    sig = OPENSSL_malloc(siglen);
+    if (sig == NULL) {
+        TEST_FAIL("malloc failed");
+        goto err;
+    }
+    if (EVP_DigestSign(sctx, sig, &siglen, msg, msglen) <= 0) {
+        TEST_FAIL("DigestSign failed");
+        goto err;
+    }
+
+    /* Verify with wrong message — must fail */
+    vctx = EVP_MD_CTX_new();
+    if (vctx == NULL) {
+        TEST_FAIL("EVP_MD_CTX_new failed");
+        goto err;
+    }
+    if (EVP_DigestVerifyInit_ex(vctx, NULL, NULL, libctx,
+                                 "provider=hybrid", key, NULL) <= 0) {
+        TEST_FAIL("DigestVerifyInit failed");
+        goto err;
+    }
+    if (EVP_DigestVerify(vctx, sig, siglen, bad, badlen) > 0) {
+        TEST_FAIL("DigestVerify should have failed with wrong message");
+        goto err;
+    }
+
+    /* Clear expected errors */
+    ERR_clear_error();
+
+    TEST_PASS();
+    ret = 1;
+
+err:
+    OPENSSL_free(sig);
+    EVP_MD_CTX_free(sctx);
+    EVP_MD_CTX_free(vctx);
+    EVP_PKEY_CTX_free(gctx);
+    EVP_PKEY_free(key);
+    return ret;
+}
+
 int main(int argc, char **argv)
 {
     OSSL_LIB_CTX *libctx = NULL;
@@ -523,6 +687,28 @@ int main(int argc, char **argv)
         test_cross_encap_default_encaps(libctx, alg);
         test_cross_encap_hybrid_encaps(libctx, alg);
         printf("\n");
+    }
+
+    /* --- Signature tests --- */
+    {
+        static const char *sig_algorithms[] = {
+            "ed25519mldsa44",
+            "ed25519mldsa65",
+            "ed448mldsa87",
+            "p256mldsa44",
+            "p256mldsa65",
+            "p384mldsa87",
+        };
+        size_t nsigs = sizeof(sig_algorithms) / sizeof(sig_algorithms[0]);
+
+        for (size_t i = 0; i < nsigs; i++) {
+            const char *alg = sig_algorithms[i];
+
+            printf("[%s]\n", alg);
+            test_sig_self_consistency(libctx, alg);
+            test_sig_wrong_message(libctx, alg);
+            printf("\n");
+        }
     }
 
     printf("======================================\n");

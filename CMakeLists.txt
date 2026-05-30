@@ -18,6 +18,7 @@ add_library(hybrid-provider MODULE
     hybrid_prov.c
     hybrid_keymgmt.c
     hybrid_kem.c
+    hybrid_sig.c
 )
 target_include_directories(hybrid-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(hybrid-provider PRIVATE OpenSSL::Crypto)
@@ -38,3 +39,8 @@ add_test(NAME hybrid_interop_test COMMAND hybrid_test)
 set_tests_properties(hybrid_interop_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
+
+# Benchmark executable: hybrid provider vs default provider
+add_executable(hybrid_bench test/hybrid_bench.c)
+target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_bench PRIVATE OpenSSL::Crypto)

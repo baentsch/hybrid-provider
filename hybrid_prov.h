@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 hybrid-provider contributors
+ * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -47,11 +47,26 @@ typedef struct {
     size_t      alg2_ctext_bytes;
 } HYBRID_KEM_INFO;
 
-/* Composite key */
+/* Signature component info */
+typedef struct {
+    const char *hybrid_name;    /* e.g., "ed25519mldsa44" */
+    const char *alg1_name;      /* e.g., "Ed25519" */
+    const char *alg1_group;     /* e.g., NULL or "P-256" */
+    const char *alg2_name;      /* e.g., "ML-DSA-44" */
+    size_t      alg1_pubkey_bytes;
+    size_t      alg1_prvkey_bytes;
+    size_t      alg1_sig_bytes;     /* max signature size for alg1 */
+    size_t      alg2_pubkey_bytes;
+    size_t      alg2_prvkey_bytes;
+    size_t      alg2_sig_bytes;
+} HYBRID_SIG_INFO;
+
+/* Composite key — used for both KEM and SIG hybrids */
 typedef struct hybrid_key_st {
     OSSL_LIB_CTX *libctx;
     char *propq;
-    const HYBRID_KEM_INFO *info;
+    const void *info;           /* HYBRID_KEM_INFO * or HYBRID_SIG_INFO * */
+    int is_kem;                 /* 1 = KEM, 0 = signature */
     EVP_PKEY *key1;             /* classical component */
     EVP_PKEY *key2;             /* PQ component */
     unsigned int state;
@@ -75,7 +90,7 @@ static const HYBRID_KEM_INFO hybrid_kem_table[] = {
     {
         "X25519MLKEM768",
         "X25519", NULL, 0,          /* alg1: key-exchange */
-        "ML-KEM-768", NULL, 1,      /* alg2: native KEM */
+        "MLKEM768", NULL, 1,      /* alg2: native KEM */
         0,                           /* alg2_slot: ML-KEM first in ctext/ss */
         32, 32, 32,                  /* X25519: pub, prv, shsec */
         1184, 2400, 32, 1088         /* ML-KEM-768: pub, prv, shsec, ctext */
@@ -83,7 +98,7 @@ static const HYBRID_KEM_INFO hybrid_kem_table[] = {
     {
         "X448MLKEM1024",
         "X448", NULL, 0,
-        "ML-KEM-1024", NULL, 1,
+        "MLKEM1024", NULL, 1,
         0,
         56, 56, 56,                  /* X448 */
         1568, 3168, 32, 1568         /* ML-KEM-1024 */
@@ -91,7 +106,7 @@ static const HYBRID_KEM_INFO hybrid_kem_table[] = {
     {
         "SecP256r1MLKEM768",
         "EC", "P-256", 0,
-        "ML-KEM-768", NULL, 1,
+        "MLKEM768", NULL, 1,
         1,                           /* alg2_slot: ML-KEM second in ctext/ss */
         65, 32, 32,                  /* P-256 */
         1184, 2400, 32, 1088         /* ML-KEM-768 */
@@ -99,7 +114,7 @@ static const HYBRID_KEM_INFO hybrid_kem_table[] = {
     {
         "SecP384r1MLKEM1024",
         "EC", "P-384", 0,
-        "ML-KEM-1024", NULL, 1,
+        "MLKEM1024", NULL, 1,
         1,
         97, 48, 48,                  /* P-384 */
         1568, 3168, 32, 1568         /* ML-KEM-1024 */
@@ -109,7 +124,77 @@ static const HYBRID_KEM_INFO hybrid_kem_table[] = {
 #define HYBRID_KEM_ALG_COUNT \
     (sizeof(hybrid_kem_table) / sizeof(hybrid_kem_table[0]))
 
-/* Total sizes for a given algorithm */
+/*
+ * Signature algorithm table.
+ * Wire format: sig = alg1_sig || alg2_sig (classical first, PQ second).
+ * ECDSA signatures are DER-encoded with variable length; we use max sizes.
+ */
+static const HYBRID_SIG_INFO hybrid_sig_table[] = {
+    {
+        "ed25519mldsa44",
+        "Ed25519", NULL, "ML-DSA-44",
+        32, 32, 64,                  /* Ed25519: pub, prv, sig */
+        1312, 2560, 2420             /* ML-DSA-44: pub, prv, sig */
+    },
+    {
+        "ed25519mldsa65",
+        "Ed25519", NULL, "ML-DSA-65",
+        32, 32, 64,
+        1952, 4032, 3309
+    },
+    {
+        "ed448mldsa87",
+        "Ed448", NULL, "ML-DSA-87",
+        57, 57, 114,                 /* Ed448: pub, prv, sig */
+        2592, 4896, 4627
+    },
+    {
+        "p256mldsa44",
+        "EC", "P-256", "ML-DSA-44",
+        65, 32, 72,                  /* P-256: pub, prv, max DER sig */
+        1312, 2560, 2420
+    },
+    {
+        "p256mldsa65",
+        "EC", "P-256", "ML-DSA-65",
+        65, 32, 72,
+        1952, 4032, 3309
+    },
+    {
+        "p384mldsa87",
+        "EC", "P-384", "ML-DSA-87",
+        97, 48, 104,                 /* P-384: pub, prv, max DER sig */
+        2592, 4896, 4627
+    },
+};
+
+#define HYBRID_SIG_ALG_COUNT \
+    (sizeof(hybrid_sig_table) / sizeof(hybrid_sig_table[0]))
+
+/* Accessor macros — work for both KEM and SIG info via HYBRID_KEY */
+#define HYBRID_KEY_ALG1_NAME(k) \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_name \
+                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_name)
+#define HYBRID_KEY_ALG1_GROUP(k) \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_group \
+                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_group)
+#define HYBRID_KEY_ALG2_NAME(k) \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_name \
+                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_name)
+#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_pubkey_bytes \
+                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_pubkey_bytes)
+#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_pubkey_bytes \
+                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_pubkey_bytes)
+#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_prvkey_bytes \
+                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_prvkey_bytes)
+#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_prvkey_bytes \
+                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_prvkey_bytes)
+
+/* Total sizes for KEM algorithms */
 static inline size_t hybrid_kem_pubkey_bytes(const HYBRID_KEM_INFO *info)
 {
     return info->alg1_pubkey_bytes + info->alg2_pubkey_bytes;
@@ -132,16 +217,57 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEM_INFO *info)
     return info->alg1_shsec_bytes + info->alg2_shsec_bytes;
 }
 
+/* Total sizes for signature algorithms */
+static inline size_t hybrid_sig_pubkey_bytes(const HYBRID_SIG_INFO *info)
+{
+    return info->alg1_pubkey_bytes + info->alg2_pubkey_bytes;
+}
+
+static inline size_t hybrid_sig_prvkey_bytes(const HYBRID_SIG_INFO *info)
+{
+    return info->alg1_prvkey_bytes + info->alg2_prvkey_bytes;
+}
+
+static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_SIG_INFO *info)
+{
+    return info->alg1_sig_bytes + info->alg2_sig_bytes;
+}
+
+/* Generic total sizes via HYBRID_KEY */
+static inline size_t hybrid_key_pubkey_bytes(const HYBRID_KEY *key)
+{
+    if (key->is_kem)
+        return hybrid_kem_pubkey_bytes((const HYBRID_KEM_INFO *)key->info);
+    return hybrid_sig_pubkey_bytes((const HYBRID_SIG_INFO *)key->info);
+}
+
+static inline size_t hybrid_key_prvkey_bytes(const HYBRID_KEY *key)
+{
+    if (key->is_kem)
+        return hybrid_kem_prvkey_bytes((const HYBRID_KEM_INFO *)key->info);
+    return hybrid_sig_prvkey_bytes((const HYBRID_SIG_INFO *)key->info);
+}
+
 /* Extern declarations for dispatch tables */
 extern const OSSL_DISPATCH hybrid_kem_functions[];
+extern const OSSL_DISPATCH hybrid_sig_functions[];
 
 /* Per-algorithm keymgmt dispatch — declared by macro in hybrid_keymgmt.c */
-#define DECLARE_HYBRID_KEM_KMGMT_EXTERN(name) \
+#define DECLARE_HYBRID_KMGMT_EXTERN(name) \
     extern const OSSL_DISPATCH hybrid_##name##_kmgmt_functions[];
 
-DECLARE_HYBRID_KEM_KMGMT_EXTERN(x25519mlkem768)
-DECLARE_HYBRID_KEM_KMGMT_EXTERN(x448mlkem1024)
-DECLARE_HYBRID_KEM_KMGMT_EXTERN(secp256r1mlkem768)
-DECLARE_HYBRID_KEM_KMGMT_EXTERN(secp384r1mlkem1024)
+/* KEM keymgmt */
+DECLARE_HYBRID_KMGMT_EXTERN(x25519mlkem768)
+DECLARE_HYBRID_KMGMT_EXTERN(x448mlkem1024)
+DECLARE_HYBRID_KMGMT_EXTERN(secp256r1mlkem768)
+DECLARE_HYBRID_KMGMT_EXTERN(secp384r1mlkem1024)
+
+/* Signature keymgmt */
+DECLARE_HYBRID_KMGMT_EXTERN(ed25519mldsa44)
+DECLARE_HYBRID_KMGMT_EXTERN(ed25519mldsa65)
+DECLARE_HYBRID_KMGMT_EXTERN(ed448mldsa87)
+DECLARE_HYBRID_KMGMT_EXTERN(p256mldsa44)
+DECLARE_HYBRID_KMGMT_EXTERN(p256mldsa65)
+DECLARE_HYBRID_KMGMT_EXTERN(p384mldsa87)
 
 #endif /* HYBRID_PROV_H */

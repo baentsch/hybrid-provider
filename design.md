@@ -124,9 +124,17 @@ typedef struct {
 
 ### Initial Signature algorithms
 
-| Hybrid Name          | Component 1 | Component 2   |
-|----------------------|-------------|---------------|
-| (none in OpenSSL yet — define our own naming) |
+OpenSSL has no built-in hybrid signatures, so the provider defines its own
+naming (classical component first, PQ component second):
+
+| Hybrid Name      | Component 1     | Component 2 |
+|------------------|-----------------|-------------|
+| ed25519mldsa44   | Ed25519         | ML-DSA-44   |
+| ed25519mldsa65   | Ed25519         | ML-DSA-65   |
+| ed448mldsa87     | Ed448           | ML-DSA-87   |
+| p256mldsa44      | ECDSA P-256     | ML-DSA-44   |
+| p256mldsa65      | ECDSA P-256     | ML-DSA-65   |
+| p384mldsa87      | ECDSA P-384     | ML-DSA-87   |
 
 ## Composite Key Structure
 
@@ -261,20 +269,28 @@ exactly. From analysis of `mlx_kem.c`:
 ### Sign
 
 ```
-1. sig1 = EVP_DigestSign(key1, tbs, tbslen)
-2. sig2 = EVP_DigestSign(key2, tbs, tbslen)
-3. Output: sig = sig1 || sig2  (fixed-size concatenation)
+1. sig1 = EVP_DigestSign(key1, tbs, tbslen)   (classical, slot 0)
+2. sig2 = EVP_DigestSign(key2, tbs, tbslen)   (PQ, slot 1)
+3. Output: sig = sig1 || sig2
 ```
 
-Both sub-signatures are over the same `tbs` (to-be-signed) data.
+Both sub-signatures are over the same `tbs` (to-be-signed) data. Unlike the KEM
+hybrids, signature hybrids always use alg1-first ordering (no slot swapping).
+
+The classical component's size in the concatenation is fixed at the maximum
+signature length (`alg1_sig_bytes`). EdDSA signatures are constant-length and
+fill it exactly. ECDSA signatures are variable-length DER, so the actual signature
+is written into the slot and the remaining bytes are left zeroed.
 
 ### Verify
 
 ```
-1. Split sig into sig1, sig2 by known sizes
-2. ok1 = EVP_DigestVerify(key1, sig1, tbs, tbslen)
-3. ok2 = EVP_DigestVerify(key2, sig2, tbs, tbslen)
-4. Return success only if BOTH pass
+1. Split sig into sig1, sig2 by known sizes (sig1 = first alg1_sig_bytes)
+2. For ECDSA, parse the real DER length from sig1 before verifying
+   (the zero padding is ignored)
+3. ok1 = EVP_DigestVerify(key1, sig1, tbs, tbslen)
+4. ok2 = EVP_DigestVerify(key2, sig2, tbs, tbslen)
+5. Return success only if BOTH pass
 ```
 
 ### One-shot vs streaming
@@ -303,7 +319,9 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
 };
 
 static const OSSL_ALGORITHM hybrid_signatures[] = {
-    /* future */
+    { "ed25519mldsa44", "provider=hybrid", hybrid_signature_functions, "..." },
+    { "p256mldsa65", "provider=hybrid", hybrid_signature_functions, "..." },
+    ...
     { NULL, NULL, NULL, NULL }
 };
 ```
@@ -333,8 +351,12 @@ hybrid-provider/
 ├── hybrid_sig.c          ← signature dispatch (sign/verify)
 ├── hybrid_prov.h         ← shared types, HYBRID_KEY, info tables
 └── test/
-    └── hybrid_test.c     ← interop tests against default provider
+    ├── hybrid_test.c     ← interop tests against default provider
+    └── hybrid_bench.c    ← keygen/encaps/decaps benchmark vs default provider
 ```
+
+The build produces three artifacts: the `hybrid.so` provider module, the
+`hybrid_test` interop test, and the `hybrid_bench` benchmark.
 
 ## Interoperability Testing
 

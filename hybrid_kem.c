@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 hybrid-provider contributors
+ * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -202,7 +202,7 @@ static int hybrid_kem_encapsulate(void *vctx,
 {
     HYBRID_KEM_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
-    const HYBRID_KEM_INFO *info = key->info;
+    const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)key->info;
     size_t total_clen, total_slen;
     uint8_t *ct1, *ct2, *ss1, *ss2;
     size_t ct1len, ct2len, ss1len, ss2len;
@@ -279,7 +279,7 @@ static int hybrid_kem_decapsulate(void *vctx,
 {
     HYBRID_KEM_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
-    const HYBRID_KEM_INFO *info = key->info;
+    const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)key->info;
     size_t total_clen, total_slen;
     const uint8_t *ct1, *ct2;
     uint8_t *ss1, *ss2;

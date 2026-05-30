@@ -1,3 +1,8 @@
 build/
+build34/
 .local/
+.local-34/
 openssl/
+openssl-34/
+oqs-provider/
+liboqs/

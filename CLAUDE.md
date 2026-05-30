@@ -67,7 +67,8 @@ hybrid-provider/
 ├── hybrid_sig.c           ← signature dispatch (sign/verify)
 ├── hybrid_prov.h          ← shared types, HYBRID_KEY, info tables
 └── test/
-    └── hybrid_test.c      ← interop tests against default provider
+    ├── hybrid_test.c      ← interop tests against default provider
+    └── hybrid_bench.c     ← keygen/encaps/decaps benchmark vs default provider
 ```
 
 ## Code Conventions
