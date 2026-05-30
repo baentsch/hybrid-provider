@@ -17,10 +17,22 @@
 #include <openssl/param_build.h>
 #include <string.h>
 
+/* Config-section keys for selecting component sub-algorithm providers. */
+#define HYBRID_CONF_PQ_PROPQUERY       "pq-propquery"
+#define HYBRID_CONF_CLASSIC_PROPQUERY  "classic-propquery"
+
 /* Provider context */
 typedef struct {
     OSSL_LIB_CTX *libctx;
     const OSSL_CORE_HANDLE *handle;
+    /*
+     * Optional component property queries read from the provider's config
+     * section (pq-propquery / classic-propquery). They steer which provider
+     * supplies the PQ and classic sub-algorithms, independently of how the
+     * hybrid algorithm itself was selected. NULL when unset. Owned here.
+     */
+    char *pq_propq;
+    char *classic_propq;
 } HYBRID_PROV_CTX;
 
 /* Key state */
@@ -70,7 +82,20 @@ typedef struct hybrid_key_st {
     EVP_PKEY *key1;             /* classical component */
     EVP_PKEY *key2;             /* PQ component */
     unsigned int state;
+    /*
+     * Per-component property queries (borrowed pointers into the provider
+     * context, which outlives the key; not freed here). NULL when unset, in
+     * which case the per-component accessors fall back to propq.
+     */
+    const char *pq_propq;       /* for the PQ component (key2 / alg2) */
+    const char *classic_propq;  /* for the classical component (key1 / alg1) */
 } HYBRID_KEY;
+
+/* Per-component property query, falling back to the key's generic propq. */
+#define HYBRID_KEY_PQ_PROPQ(k) \
+    ((k)->pq_propq != NULL ? (k)->pq_propq : (k)->propq)
+#define HYBRID_KEY_CLASSIC_PROPQ(k) \
+    ((k)->classic_propq != NULL ? (k)->classic_propq : (k)->propq)
 
 #define hybrid_have_pubkey(key)  ((key)->state >= HYBRID_HAVE_PUBKEY)
 #define hybrid_have_prvkey(key)  ((key)->state >= HYBRID_HAVE_PRVKEY)

@@ -50,6 +50,15 @@ set_tests_properties(hybrid_tls_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Config-driven component selection test (pq-propquery / classic-propquery)
+add_executable(hybrid_config_test test/hybrid_config_test.c)
+target_include_directories(hybrid_config_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_config_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_config_test COMMAND hybrid_config_test)
+set_tests_properties(hybrid_config_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Benchmark executable: hybrid provider vs default provider
 add_executable(hybrid_bench test/hybrid_bench.c)
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})

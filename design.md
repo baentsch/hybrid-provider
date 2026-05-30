@@ -62,8 +62,40 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 During init, the provider:
 1. Extracts `OSSL_FUNC_core_get_libctx` from the `in` dispatch table
 2. Obtains the application's `OSSL_LIB_CTX` — all subsequent EVP calls use this
-3. Allocates a provider context holding `libctx` and configuration
-4. Returns the provider dispatch table via `out`
+3. Reads optional component property queries from its config section via
+   `OSSL_FUNC_core_get_params` (see "Component provider selection")
+4. Allocates a provider context holding `libctx` and configuration
+5. Returns the provider dispatch table via `out`
+
+### Component provider selection
+
+By default the hybrid provider fetches its sub-algorithms with whatever
+property query the caller passes (the key's `propq`, e.g. from
+`EVP_PKEY_CTX_set_params(OSSL_PKEY_PARAM_PROPERTIES)`). In flows that expose
+only a single property query — notably TLS, where the `SSL_CTX` query selects
+the hybrid group but is not propagated into key generation — that is not enough
+to independently steer the PQ and classical components to specific providers.
+
+To make this configurable without any change to OpenSSL itself, the provider
+reads two optional keys from its config section:
+
+```ini
+[hybrid_sect]
+module            = /path/to/hybrid.so
+activate          = 1
+pq-propquery      = ?provider=bcrust   # ML-KEM / ML-DSA component
+classic-propquery = ?provider=default  # X25519 / EC / Ed component
+```
+
+When set, `pq-propquery` is used for every fetch of the PQ component (alg2) and
+`classic-propquery` for the classical component (alg1) — in key generation,
+import, and the KEM/signature operations alike. Each falls back to the key's
+`propq` when its config key is absent, so the default behaviour is unchanged.
+Because the values come from configuration (not the per-operation query), they
+also take effect on the TLS path. This is preferred over propagating the
+selection query into key generation in libcrypto, which would change keygen
+semantics for every provider and break callers that use a mandatory
+`provider=` query to select a composing algorithm.
 
 The provider dispatch table exposes:
 - `OSSL_FUNC_PROVIDER_TEARDOWN`

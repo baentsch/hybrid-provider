@@ -15,8 +15,11 @@ static void hybrid_teardown(void *provctx)
 {
     HYBRID_PROV_CTX *ctx = provctx;
 
-    if (ctx != NULL)
+    if (ctx != NULL) {
+        OPENSSL_free(ctx->pq_propq);
+        OPENSSL_free(ctx->classic_propq);
         OPENSSL_free(ctx);
+    }
 }
 
 static const OSSL_PARAM *hybrid_gettable_params(void *provctx)
@@ -156,11 +159,15 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 {
     HYBRID_PROV_CTX *ctx;
     OSSL_FUNC_core_get_libctx_fn *c_get_libctx = NULL;
+    OSSL_FUNC_core_get_params_fn *c_get_params = NULL;
 
     for (; in->function_id != 0; in++) {
         switch (in->function_id) {
         case OSSL_FUNC_CORE_GET_LIBCTX:
             c_get_libctx = OSSL_FUNC_core_get_libctx(in);
+            break;
+        case OSSL_FUNC_CORE_GET_PARAMS:
+            c_get_params = OSSL_FUNC_core_get_params(in);
             break;
         default:
             break;
@@ -177,7 +184,36 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     ctx->handle = handle;
     ctx->libctx = (OSSL_LIB_CTX *)c_get_libctx(handle);
 
+    /*
+     * Read optional component property queries from the provider's config
+     * section. The core hands the configured values back as UTF8 pointers;
+     * duplicate them since the originals are not guaranteed to outlive this
+     * call. Absent keys leave the pointers untouched (NULL).
+     */
+    if (c_get_params != NULL) {
+        char *pq = NULL, *classic = NULL;
+        OSSL_PARAM core_params[3];
+
+        core_params[0] = OSSL_PARAM_construct_utf8_ptr(
+            HYBRID_CONF_PQ_PROPQUERY, &pq, 0);
+        core_params[1] = OSSL_PARAM_construct_utf8_ptr(
+            HYBRID_CONF_CLASSIC_PROPQUERY, &classic, 0);
+        core_params[2] = OSSL_PARAM_construct_end();
+
+        if (c_get_params(handle, core_params)) {
+            if (pq != NULL && (ctx->pq_propq = OPENSSL_strdup(pq)) == NULL)
+                goto err;
+            if (classic != NULL
+                    && (ctx->classic_propq = OPENSSL_strdup(classic)) == NULL)
+                goto err;
+        }
+    }
+
     *provctx = ctx;
     *out = hybrid_dispatch_table;
     return 1;
+
+err:
+    hybrid_teardown(ctx);
+    return 0;
 }

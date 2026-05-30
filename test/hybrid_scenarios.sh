@@ -38,13 +38,10 @@
 #       X25519/EC components (e.g. "bcrust", "default"). A provider's property
 #       name may differ from its module name (bcrust_provider.so advertises
 #       "provider=bcrust"); load the module separately with --extra-provider.
-#       NOTE: the hybrid provider applies ONE component property query to both
-#       sub-algorithms, and in a TLS handshake the single CLI -propquery also
-#       drives cert/store loading. So independent component selection is only
-#       fully exercised by the C test `hybrid_test` (set_component_propq()).
-#       Here these settings affect the `info`/`config` views; the TLS handshake
-#       uses the hybrid query and resolves components from the default
-#       provider.
+#       These are emitted into the generated openssl.cnf as the hybrid
+#       provider's pq-propquery / classic-propquery keys, which steer each
+#       component independently and also take effect on the TLS path. Use
+#       --use-config so the generated cnf (and thus these keys) is in effect.
 #   --extra-provider NAME
 #       MODULE name of an extra provider to load (== .so basename, the value
 #       you'd pass to `openssl -provider`), e.g. "bcrust_provider".
@@ -198,6 +195,13 @@ gen_config() {
             # default lives in libcrypto; others are loadable modules.
             [ "$p" = "default" ] || echo "module = $MODULE_DIR/${p}.so"
             echo "activate = 1"
+            # Steer the hybrid provider's components to the chosen providers.
+            if [ "$p" = "hybrid" ]; then
+                [ "$PQ_PROVIDER" = "default" ] \
+                    || echo "pq-propquery = ?provider=$PQ_PROVIDER"
+                [ "$CLASSIC_PROVIDER" = "default" ] \
+                    || echo "classic-propquery = ?provider=$CLASSIC_PROVIDER"
+            fi
         done
     } > "$cnf"
     echo "$cnf"
@@ -341,9 +345,9 @@ if [ "$COMMAND" = "tls" ] || [ "$COMMAND" = "all" ]; then
     hdr "Summary"
     echo "  passed: $pass   failed: $fail   skipped: $skip"
     echo
-    echo "  Note: file-based KEM/signature round-trips and independent PQ/classic"
-    echo "  component selection are exercised by the C test 'hybrid_test'"
-    echo "  (the hybrid provider has no encoder, so its keys cannot be"
-    echo "  serialized for multi-process CLI use)."
+    echo "  Note: independent PQ/classic component selection is driven by the"
+    echo "  generated cnf's pq-propquery/classic-propquery keys (use --use-config)."
+    echo "  File-based KEM/signature round-trips remain C-only ('hybrid_test') —"
+    echo "  the hybrid provider has no encoder, so its keys cannot be serialized."
     [ "$fail" -eq 0 ] || exit 1
 fi

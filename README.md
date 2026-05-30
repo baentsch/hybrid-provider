@@ -131,12 +131,32 @@ hybrid↔hybrid. `--pq-provider`/`--classic-provider` (property names) and
 `--extra-provider` (module name) configure component sourcing for the
 `info`/`config` views. Run `test/hybrid_scenarios.sh --help` for all options.
 
-Two scenarios from the C suite are **not** reproducible on the CLI and remain
-C-only: file-based KEM/signature round-trips (the provider has no encoder, so
-hybrid keys can't be serialized) and independent PQ/classic component selection
-(the hybrid provider applies a single component property query, and in a
-handshake the one CLI `-propquery` also governs cert/store loading). The script
-documents this and points to `hybrid_test`.
+Independent PQ/classic component provider selection is available via the
+provider's **config keys** `pq-propquery` / `classic-propquery` (see below) —
+including on the TLS path, where a single CLI `-propquery` cannot express it.
+File-based KEM/signature round-trips remain **not** reproducible on the CLI (the
+provider has no encoder, so hybrid keys can't be serialized); those stay covered
+by `hybrid_test`.
+
+### Selecting component providers (`pq-propquery` / `classic-propquery`)
+
+The hybrid provider reads two optional keys from its config section to steer
+which provider supplies each sub-algorithm, independently of how the hybrid
+algorithm itself is selected:
+
+```ini
+[hybrid_sect]
+module            = /path/to/hybrid.so
+activate          = 1
+pq-propquery      = ?provider=bcrust   # ML-KEM / ML-DSA component
+classic-propquery = ?provider=default  # X25519 / EC / Ed component
+```
+
+Each defaults to the key's normal property query when unset, so behaviour is
+unchanged without them. Because they come from configuration, they also take
+effect in TLS (where only one property query is otherwise exposed) — no OpenSSL
+core change required. `hybrid_config_test` verifies that each key independently
+governs its component.
 
 ## Benchmark
 

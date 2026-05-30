@@ -254,19 +254,19 @@ static int hybrid_kem_encapsulate(void *vctx,
 
     /* Encapsulate alg2 (PQ KEM) */
     if (info->alg2_is_kem) {
-        if (!encap_kem(key->libctx, key->propq, key->key2,
+        if (!encap_kem(key->libctx, HYBRID_KEY_PQ_PROPQ(key), key->key2,
                        ct2, &ct2len, ss2, &ss2len))
             return 0;
     }
 
     /* Encapsulate alg1 (key-exchange or KEM) */
     if (info->alg1_is_kem) {
-        if (!encap_kem(key->libctx, key->propq, key->key1,
+        if (!encap_kem(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key), key->key1,
                        ct1, &ct1len, ss1, &ss1len))
             return 0;
     } else {
-        if (!encap_keyexchange(key->libctx, key->propq, key->key1,
-                               ct1, &ct1len, ss1, &ss1len))
+        if (!encap_keyexchange(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+                               key->key1, ct1, &ct1len, ss1, &ss1len))
             return 0;
     }
 
@@ -323,19 +323,19 @@ static int hybrid_kem_decapsulate(void *vctx,
 
     /* Decapsulate alg2 (PQ KEM) */
     if (info->alg2_is_kem) {
-        if (!decap_kem(key->libctx, key->propq, key->key2,
+        if (!decap_kem(key->libctx, HYBRID_KEY_PQ_PROPQ(key), key->key2,
                        ct2, ct2len, ss2, &ss2len))
             return 0;
     }
 
     /* Decapsulate alg1 (key-exchange or KEM) */
     if (info->alg1_is_kem) {
-        if (!decap_kem(key->libctx, key->propq, key->key1,
+        if (!decap_kem(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key), key->key1,
                        ct1, ct1len, ss1, &ss1len))
             return 0;
     } else {
-        if (!decap_keyexchange(key->libctx, key->propq, key->key1,
-                               ct1, ct1len, ss1, &ss1len))
+        if (!decap_keyexchange(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+                               key->key1, ct1, ct1len, ss1, &ss1len))
             return 0;
     }
 

@@ -91,6 +91,8 @@ static void *hybrid_kem_dup(const void *vkey, int selection)
     ret->info = key->info;
     ret->state = HYBRID_HAVE_NOKEYS;
     ret->propq = NULL;
+    ret->pq_propq = key->pq_propq;
+    ret->classic_propq = key->classic_propq;
 
     if (key->propq != NULL
         && (ret->propq = OPENSSL_strdup(key->propq)) == NULL) {
@@ -201,13 +203,13 @@ load_keys(HYBRID_KEY *key,
         return 0;
     }
 
-    if (!load_component(key->libctx, key->propq,
+    if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
                         HYBRID_KEY_ALG1_NAME(key),
                         HYBRID_KEY_ALG1_GROUP(key),
                         pname, selection,
                         alg1_data, len1, &key->key1))
         goto err;
-    if (!load_component(key->libctx, key->propq,
+    if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
                         HYBRID_KEY_ALG2_NAME(key), NULL,
                         pname, selection,
                         alg2_data, len2, &key->key2))
@@ -568,6 +570,8 @@ err:
 typedef struct {
     OSSL_LIB_CTX *libctx;
     char *propq;
+    const char *pq_propq;       /* borrowed from provctx */
+    const char *classic_propq;  /* borrowed from provctx */
     int selection;
     int is_kem;
     unsigned int algo_idx;
@@ -587,13 +591,15 @@ static void *hybrid_gen(void *vgctx, OSSL_CALLBACK *cb, void *cbarg)
     key = hybrid_key_new(gctx->is_kem, gctx->algo_idx, gctx->libctx, propq);
     if (key == NULL)
         return NULL;
+    key->pq_propq = gctx->pq_propq;
+    key->classic_propq = gctx->classic_propq;
 
     if ((gctx->selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
         return key;
 
-    key->key2 = hybrid_component_keygen(key->libctx, key->propq,
+    key->key2 = hybrid_component_keygen(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
                                         HYBRID_KEY_ALG2_NAME(key), NULL);
-    key->key1 = hybrid_component_keygen(key->libctx, key->propq,
+    key->key1 = hybrid_component_keygen(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
                                         HYBRID_KEY_ALG1_NAME(key),
                                         HYBRID_KEY_ALG1_GROUP(key));
 
@@ -653,7 +659,12 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
     {                                                                        \
         HYBRID_PROV_CTX *ctx = provctx;                                      \
         OSSL_LIB_CTX *libctx = ctx ? ctx->libctx : NULL;                    \
-        return hybrid_key_new(is_kem_val, variant, libctx, NULL);            \
+        HYBRID_KEY *k = hybrid_key_new(is_kem_val, variant, libctx, NULL);   \
+        if (k != NULL && ctx != NULL) {                                      \
+            k->pq_propq = ctx->pq_propq;                                     \
+            k->classic_propq = ctx->classic_propq;                          \
+        }                                                                    \
+        return k;                                                            \
     }                                                                        \
     static void *hybrid_##name##_gen_init(void *provctx, int selection,      \
                                           const OSSL_PARAM params[])         \
@@ -668,6 +679,8 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
         gctx->is_kem = is_kem_val;                                          \
         gctx->algo_idx = variant;                                            \
         gctx->libctx = pctx->libctx;                                        \
+        gctx->pq_propq = pctx->pq_propq;                                     \
+        gctx->classic_propq = pctx->classic_propq;                          \
         gctx->selection = selection;                                         \
         if (!hybrid_gen_set_params(gctx, params)) {                          \
             hybrid_gen_cleanup(gctx);                                        \

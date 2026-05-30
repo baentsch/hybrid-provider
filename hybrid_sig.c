@@ -110,7 +110,7 @@ hybrid_sig_digest_sign(void *vctx,
     if (mctx1 == NULL)
         goto err;
     if (EVP_DigestSignInit_ex(mctx1, NULL, NULL, key->libctx,
-                               key->propq, key->key1, NULL) <= 0)
+                               HYBRID_KEY_CLASSIC_PROPQ(key), key->key1, NULL) <= 0)
         goto err;
     sig1len = info->alg1_sig_bytes;
     if (EVP_DigestSign(mctx1, sig, &sig1len, tbs, tbslen) <= 0)
@@ -122,7 +122,7 @@ hybrid_sig_digest_sign(void *vctx,
     if (mctx2 == NULL)
         goto err;
     if (EVP_DigestSignInit_ex(mctx2, NULL, NULL, key->libctx,
-                               key->propq, key->key2, NULL) <= 0)
+                               HYBRID_KEY_PQ_PROPQ(key), key->key2, NULL) <= 0)
         goto err;
     sig2len = info->alg2_sig_bytes;
     if (EVP_DigestSign(mctx2, sig + info->alg1_sig_bytes,
@@ -187,7 +187,7 @@ hybrid_sig_digest_verify(void *vctx,
     if (mctx1 == NULL)
         goto err;
     if (EVP_DigestVerifyInit_ex(mctx1, NULL, NULL, key->libctx,
-                                 key->propq, key->key1, NULL) <= 0)
+                                 HYBRID_KEY_CLASSIC_PROPQ(key), key->key1, NULL) <= 0)
         goto err;
     if (EVP_DigestVerify(mctx1, sig1, sig1len, tbs, tbslen) <= 0)
         goto err;
@@ -197,7 +197,7 @@ hybrid_sig_digest_verify(void *vctx,
     if (mctx2 == NULL)
         goto err;
     if (EVP_DigestVerifyInit_ex(mctx2, NULL, NULL, key->libctx,
-                                 key->propq, key->key2, NULL) <= 0)
+                                 HYBRID_KEY_PQ_PROPQ(key), key->key2, NULL) <= 0)
         goto err;
     if (EVP_DigestVerify(mctx2, sig2, sig2len, tbs, tbslen) <= 0)
         goto err;

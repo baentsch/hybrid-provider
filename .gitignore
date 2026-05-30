@@ -1,7 +1,9 @@
 build/
 build34/
+build-master/
 .local/
 .local-34/
+.local-master/
 openssl/
 openssl-34/
 oqs-provider/
