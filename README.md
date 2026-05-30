@@ -111,6 +111,13 @@ the negotiated group matches, and both peers derive identical exported keying
 material — proving wire compatibility end to end (12/12). `X448MLKEM1024` has no
 TLS codepoint and is covered only via the KEM API in `hybrid_test`.
 
+To exercise the same interop through the `openssl` command line — and to select
+component providers by **configuration alone** (no code), via the hybrid
+provider's `pq-propquery` / `classic-propquery` config keys — see the
+[CLI harness](#cli-harness-testhybrid_scenariossh) and
+[Selecting component providers](#selecting-component-providers-pq-propquery--classic-propquery)
+sections below.
+
 ### CLI harness (`test/hybrid_scenarios.sh`)
 
 A configurable shell harness drives the same TLS interop through the `openssl`

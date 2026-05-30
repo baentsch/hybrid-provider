@@ -256,21 +256,26 @@ static int hybrid_kem_encapsulate(void *vctx,
     if (info->alg2_is_kem) {
         if (!encap_kem(key->libctx, HYBRID_KEY_PQ_PROPQ(key), key->key2,
                        ct2, &ct2len, ss2, &ss2len))
-            return 0;
+            goto err;
     }
 
     /* Encapsulate alg1 (key-exchange or KEM) */
     if (info->alg1_is_kem) {
         if (!encap_kem(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key), key->key1,
                        ct1, &ct1len, ss1, &ss1len))
-            return 0;
+            goto err;
     } else {
         if (!encap_keyexchange(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
                                key->key1, ct1, &ct1len, ss1, &ss1len))
-            return 0;
+            goto err;
     }
 
     return 1;
+
+err:
+    /* Don't leave a partial shared secret in the caller's buffer. */
+    OPENSSL_cleanse(shsec, total_slen);
+    return 0;
 }
 
 static int hybrid_kem_decapsulate(void *vctx,
@@ -325,21 +330,26 @@ static int hybrid_kem_decapsulate(void *vctx,
     if (info->alg2_is_kem) {
         if (!decap_kem(key->libctx, HYBRID_KEY_PQ_PROPQ(key), key->key2,
                        ct2, ct2len, ss2, &ss2len))
-            return 0;
+            goto err;
     }
 
     /* Decapsulate alg1 (key-exchange or KEM) */
     if (info->alg1_is_kem) {
         if (!decap_kem(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key), key->key1,
                        ct1, ct1len, ss1, &ss1len))
-            return 0;
+            goto err;
     } else {
         if (!decap_keyexchange(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
                                key->key1, ct1, ct1len, ss1, &ss1len))
-            return 0;
+            goto err;
     }
 
     return 1;
+
+err:
+    /* Don't leave a partial shared secret in the caller's buffer. */
+    OPENSSL_cleanse(shsec, total_slen);
+    return 0;
 }
 
 static const OSSL_PARAM *hybrid_kem_settable_ctx_params(void *vctx,

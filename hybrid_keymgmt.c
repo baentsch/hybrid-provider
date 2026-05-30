@@ -390,6 +390,16 @@ static int hybrid_export(void *vkey, int selection,
     ret = param_cb(params, cbarg);
 
 err:
+    /*
+     * OSSL_PARAM_free() does not wipe payloads, so cleanse the private-key
+     * copy the param builder made before releasing it.
+     */
+    if (params != NULL) {
+        OSSL_PARAM *pp = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_PRIV_KEY);
+
+        if (pp != NULL && pp->data != NULL)
+            OPENSSL_cleanse(pp->data, pp->data_size);
+    }
     OSSL_PARAM_free(params);
     OSSL_PARAM_BLD_free(bld);
     OPENSSL_secure_clear_free(prvbuf, prvlen);
