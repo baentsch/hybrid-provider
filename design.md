@@ -331,9 +331,26 @@ must know which algorithm variant to create.
 
 ### get_capabilities
 
-For TLS integration, the provider can report TLS group capabilities. This is
-optional for the initial implementation — the default provider already registers
-the TLS groups for the built-in hybrids.
+The provider reports `TLS-GROUP` capabilities (`hybrid_caps.c`) so its KEMs are
+negotiable in a TLS handshake. Only the three MLX hybrids with standardized
+codepoints (draft-ietf-tls-ecdhe-mlkem) are advertised — `X25519MLKEM768`
+(0x11EC), `SecP256r1MLKEM768` (0x11EB), `SecP384r1MLKEM1024` (0x11ED);
+`X448MLKEM1024` has no TLS codepoint and is reachable only via the KEM API.
+
+The groups are advertised under their **canonical names and codepoints**,
+identical to the default provider's. Because the default provider also
+advertises them, both implementations collide on the group name. Selection is
+therefore driven by property query: `?provider=hybrid` prefers the hybrid
+implementation for the group while still resolving the X25519/EC/ML-KEM
+*components* from the default provider (the `?` keeps the query optional so the
+components fall back). This is the same lever intended for eventual config-only
+switching between the default-provider and hybrid-provider implementations.
+
+`test/hybrid_tls_test.c` exercises this end to end: an in-process TLS 1.3
+handshake between two `OSSL_LIB_CTX`s connected by memory BIOs — one peer
+sourcing the group from the hybrid provider, the other from the default
+provider — asserting handshake success, matching negotiated group, and
+identical exported keying material in both directions.
 
 ## Build System
 

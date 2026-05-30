@@ -67,9 +67,12 @@ This produces `hybrid.so` in the build directory.
 ```sh
 cd build
 LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./hybrid_test
+LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./hybrid_tls_test
 ```
 
-The test suite verifies:
+(Both run under `ctest` as well.)
+
+`hybrid_test` verifies:
 
 - **KEM self-consistency** — generate, encapsulate, decapsulate within the
   hybrid provider
@@ -97,6 +100,16 @@ Each cross-provider block is skipped (not failed) when its provider is not on
 the module path, so the baseline suite is 28/28; it grows to 42/42 with
 bcrust-provider and 48/48 with both bcrust-provider and oqsprovider. To enable a
 block, symlink the provider's `.so` into the module directory.
+
+`hybrid_tls_test` verifies **TLS 1.3 handshake interop**: an in-process
+handshake between two `OSSL_LIB_CTX`s connected by memory BIOs, with one peer
+sourcing the hybrid MLX group from the hybrid provider (via `?provider=hybrid`)
+and the other from the default provider. For each of the three groups with a
+standardized TLS codepoint (`X25519MLKEM768`, `SecP256r1MLKEM768`,
+`SecP384r1MLKEM1024`), in both directions, it asserts the handshake completes,
+the negotiated group matches, and both peers derive identical exported keying
+material — proving wire compatibility end to end (12/12). `X448MLKEM1024` has no
+TLS codepoint and is covered only via the KEM API in `hybrid_test`.
 
 ## Benchmark
 

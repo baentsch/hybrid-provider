@@ -252,6 +252,10 @@ static inline size_t hybrid_key_prvkey_bytes(const HYBRID_KEY *key)
 extern const OSSL_DISPATCH hybrid_kem_functions[];
 extern const OSSL_DISPATCH hybrid_sig_functions[];
 
+/* TLS-GROUP capability advertising (hybrid_caps.c) */
+int hybrid_get_capabilities(void *provctx, const char *capability,
+                            OSSL_CALLBACK *cb, void *arg);
+
 /* Per-algorithm keymgmt dispatch — declared by macro in hybrid_keymgmt.c */
 #define DECLARE_HYBRID_KMGMT_EXTERN(name) \
     extern const OSSL_DISPATCH hybrid_##name##_kmgmt_functions[];

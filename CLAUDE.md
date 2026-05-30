@@ -61,13 +61,15 @@ hybrid-provider/
 ├── CLAUDE.md              ← this file
 ├── design.md              ← full design document
 ├── openssl/               ← reference OpenSSL checkout (not built)
-├── hybrid_prov.c          ← provider init, query_operation
+├── hybrid_prov.c          ← provider init, query_operation, capabilities
 ├── hybrid_keymgmt.c       ← keymgmt dispatch (composite keys)
 ├── hybrid_kem.c           ← KEM dispatch (encaps/decaps)
 ├── hybrid_sig.c           ← signature dispatch (sign/verify)
+├── hybrid_caps.c          ← TLS-GROUP capability advertising
 ├── hybrid_prov.h          ← shared types, HYBRID_KEY, info tables
 └── test/
     ├── hybrid_test.c      ← interop tests against default provider
+    ├── hybrid_tls_test.c  ← in-process TLS 1.3 handshake interop (dual libctx)
     └── hybrid_bench.c     ← keygen/encaps/decaps benchmark vs default provider
 ```
 

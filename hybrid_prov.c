@@ -142,6 +142,8 @@ static const OSSL_DISPATCH hybrid_dispatch_table[] = {
       (void (*)(void))hybrid_gettable_params },
     { OSSL_FUNC_PROVIDER_GET_PARAMS, (void (*)(void))hybrid_get_params },
     { OSSL_FUNC_PROVIDER_QUERY_OPERATION, (void (*)(void))hybrid_query },
+    { OSSL_FUNC_PROVIDER_GET_CAPABILITIES,
+      (void (*)(void))hybrid_get_capabilities },
     { 0, NULL }
 };
 

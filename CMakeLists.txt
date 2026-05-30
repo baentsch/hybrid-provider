@@ -19,6 +19,7 @@ add_library(hybrid-provider MODULE
     hybrid_keymgmt.c
     hybrid_kem.c
     hybrid_sig.c
+    hybrid_caps.c
 )
 target_include_directories(hybrid-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(hybrid-provider PRIVATE OpenSSL::Crypto)
@@ -37,6 +38,15 @@ add_test(NAME hybrid_interop_test COMMAND hybrid_test)
 
 # Ensure test can find the provider and the right libcrypto
 set_tests_properties(hybrid_interop_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# TLS handshake interop test (in-process, dual libctx via memory BIOs)
+add_executable(hybrid_tls_test test/hybrid_tls_test.c)
+target_include_directories(hybrid_tls_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_tls_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+add_test(NAME hybrid_tls_test COMMAND hybrid_tls_test)
+set_tests_properties(hybrid_tls_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
