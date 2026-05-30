@@ -61,7 +61,7 @@ typedef struct {
     size_t      alg2_sig_bytes;
 } HYBRID_SIG_INFO;
 
-/* Composite key — used for both KEM and SIG hybrids */
+/* Hybrid key — used for both KEM and SIG hybrids */
 typedef struct hybrid_key_st {
     OSSL_LIB_CTX *libctx;
     char *propq;

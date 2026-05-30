@@ -62,7 +62,7 @@ hybrid-provider/
 ├── design.md              ← full design document
 ├── openssl/               ← reference OpenSSL checkout (not built)
 ├── hybrid_prov.c          ← provider init, query_operation, capabilities
-├── hybrid_keymgmt.c       ← keymgmt dispatch (composite keys)
+├── hybrid_keymgmt.c       ← keymgmt dispatch (hybrid keys)
 ├── hybrid_kem.c           ← KEM dispatch (encaps/decaps)
 ├── hybrid_sig.c           ← signature dispatch (sign/verify)
 ├── hybrid_caps.c          ← TLS-GROUP capability advertising

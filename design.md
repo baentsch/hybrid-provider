@@ -136,7 +136,7 @@ naming (classical component first, PQ component second):
 | p256mldsa65      | ECDSA P-256     | ML-DSA-65   |
 | p384mldsa87      | ECDSA P-384     | ML-DSA-87   |
 
-## Composite Key Structure
+## Hybrid Key Structure
 
 ```c
 typedef struct hybrid_key_st {
@@ -158,7 +158,7 @@ Each `EVP_PKEY` is obtained via EVP and may come from any provider.
 
 ## Operation: keymgmt
 
-The keymgmt implementation manages the composite `HYBRID_KEY`.
+The keymgmt implementation manages the hybrid `HYBRID_KEY`.
 
 ### Key Generation (`keymgmt_gen`)
 
@@ -363,7 +363,7 @@ hybrid-provider/
 ├── CLAUDE.md
 ├── openssl/              ← reference checkout (not built)
 ├── hybrid_prov.c         ← provider init, query_operation
-├── hybrid_keymgmt.c      ← keymgmt dispatch (composite keys)
+├── hybrid_keymgmt.c      ← keymgmt dispatch (hybrid keys)
 ├── hybrid_kem.c          ← KEM dispatch (encaps/decaps)
 ├── hybrid_sig.c          ← signature dispatch (sign/verify)
 ├── hybrid_prov.h         ← shared types, HYBRID_KEY, info tables

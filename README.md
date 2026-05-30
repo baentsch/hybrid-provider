@@ -111,6 +111,33 @@ the negotiated group matches, and both peers derive identical exported keying
 material — proving wire compatibility end to end (12/12). `X448MLKEM1024` has no
 TLS codepoint and is covered only via the KEM API in `hybrid_test`.
 
+### CLI harness (`test/hybrid_scenarios.sh`)
+
+A configurable shell harness drives the same TLS interop through the `openssl`
+command-line tool, with provider selection via flags or a config file:
+
+```sh
+test/hybrid_scenarios.sh all                       # info + TLS handshakes
+test/hybrid_scenarios.sh --hybrid-provider hybrid tls
+test/hybrid_scenarios.sh --extra-provider bcrust_provider --pq-provider bcrust info
+test/hybrid_scenarios.sh --use-config tls          # drive via generated openssl.cnf
+test/hybrid_scenarios.sh config > my.cnf           # emit the openssl.cnf
+test/hybrid_scenarios.sh --config settings.conf all
+```
+
+It selects the **hybrid** provider (`hybrid` vs `default`) per peer and runs
+`s_server`/`s_client` handshakes for each group, both directions plus
+hybrid↔hybrid. `--pq-provider`/`--classic-provider` (property names) and
+`--extra-provider` (module name) configure component sourcing for the
+`info`/`config` views. Run `test/hybrid_scenarios.sh --help` for all options.
+
+Two scenarios from the C suite are **not** reproducible on the CLI and remain
+C-only: file-based KEM/signature round-trips (the provider has no encoder, so
+hybrid keys can't be serialized) and independent PQ/classic component selection
+(the hybrid provider applies a single component property query, and in a
+handshake the one CLI `-propquery` also governs cert/store loading). The script
+documents this and points to `hybrid_test`.
+
 ## Benchmark
 
 `hybrid_bench` times `X25519MLKEM768` (keygen, encapsulate, decapsulate) across
