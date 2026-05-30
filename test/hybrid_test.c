@@ -37,26 +37,71 @@ static int fail_count = 0;
     ERR_print_errors_fp(stderr); \
 } while (0)
 
+/* Does the named provider (matched by property) expose ML-KEM-768? */
+static int provider_has_mlkem(OSSL_LIB_CTX *libctx, const char *provprop)
+{
+    char propq[128];
+    EVP_KEM *kem;
+    int ok;
+
+    snprintf(propq, sizeof(propq), "provider=%s", provprop);
+    kem = EVP_KEM_fetch(libctx, "MLKEM768", propq);
+    ok = (kem != NULL);
+    EVP_KEM_free(kem);
+    ERR_clear_error();
+    return ok;
+}
+
+/*
+ * Set the property query the hybrid provider uses to resolve its component
+ * sub-algorithms, so we can steer the ML-KEM component to a specific provider
+ * (e.g. "?provider=bcrust"). Returns 1 on success, 0 on failure.
+ */
+static int set_component_propq(EVP_PKEY_CTX *gctx, const char *comp_propq)
+{
+    OSSL_PARAM gp[2];
+
+    if (comp_propq == NULL)
+        return 1;
+    gp[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_PROPERTIES,
+                                             (char *)comp_propq, 0);
+    gp[1] = OSSL_PARAM_construct_end();
+    return EVP_PKEY_CTX_set_params(gctx, gp) > 0;
+}
+
 /*
  * Test 1: Self-consistency — generate, encapsulate, decapsulate within
- * the hybrid provider. Shared secrets must match.
+ * the hybrid provider. Shared secrets must match. When comp_propq is non-NULL
+ * the component sub-algorithms are resolved with that property query.
  */
-static int test_self_consistency(OSSL_LIB_CTX *libctx, const char *algname)
+static int test_self_consistency(OSSL_LIB_CTX *libctx, const char *algname,
+                                 const char *comp_propq)
 {
-    char label[128];
+    char label[160];
     EVP_PKEY_CTX *gctx = NULL, *ectx = NULL, *dctx = NULL;
     EVP_PKEY *key = NULL;
     unsigned char *ctext = NULL, *ss_enc = NULL, *ss_dec = NULL;
     size_t ctlen = 0, ss_enc_len = 0, ss_dec_len = 0;
     int ret = 0;
 
-    snprintf(label, sizeof(label), "self-consistency %s", algname);
+    if (comp_propq != NULL)
+        snprintf(label, sizeof(label), "self-consistency %s (components %s)",
+                 algname, comp_propq);
+    else
+        snprintf(label, sizeof(label), "self-consistency %s", algname);
     TEST_START(label);
 
     /* Generate keypair using hybrid provider */
     gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
-    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
-        || EVP_PKEY_keygen(gctx, &key) <= 0) {
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0) {
+        TEST_FAIL("keygen init failed");
+        goto err;
+    }
+    if (!set_component_propq(gctx, comp_propq)) {
+        TEST_FAIL("set component properties failed");
+        goto err;
+    }
+    if (EVP_PKEY_keygen(gctx, &key) <= 0) {
         TEST_FAIL("keygen failed");
         goto err;
     }
@@ -162,9 +207,10 @@ export_pubkey(EVP_PKEY *pkey, size_t *outlen)
  * decapsulate with hybrid. Compare shared secrets.
  */
 static int test_cross_encap_default_encaps(OSSL_LIB_CTX *libctx,
-                                            const char *algname)
+                                            const char *algname,
+                                            const char *comp_propq)
 {
-    char label[128];
+    char label[160];
     EVP_PKEY_CTX *gctx = NULL, *ectx = NULL, *dctx = NULL;
     EVP_PKEY_CTX *import_ctx = NULL;
     EVP_PKEY *hybrid_key = NULL, *default_key = NULL;
@@ -173,13 +219,26 @@ static int test_cross_encap_default_encaps(OSSL_LIB_CTX *libctx,
     size_t publen = 0, ctlen = 0, ss_enc_len = 0, ss_dec_len = 0;
     int ret = 0;
 
-    snprintf(label, sizeof(label), "cross-encap (default encaps) %s", algname);
+    if (comp_propq != NULL)
+        snprintf(label, sizeof(label),
+                 "cross-encap (default encaps) %s (components %s)",
+                 algname, comp_propq);
+    else
+        snprintf(label, sizeof(label),
+                 "cross-encap (default encaps) %s", algname);
     TEST_START(label);
 
     /* Generate keypair with hybrid provider */
     gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
-    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
-        || EVP_PKEY_keygen(gctx, &hybrid_key) <= 0) {
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0) {
+        TEST_FAIL("hybrid keygen init failed");
+        goto err;
+    }
+    if (!set_component_propq(gctx, comp_propq)) {
+        TEST_FAIL("set component properties failed");
+        goto err;
+    }
+    if (EVP_PKEY_keygen(gctx, &hybrid_key) <= 0) {
         TEST_FAIL("hybrid keygen failed");
         goto err;
     }
@@ -682,11 +741,39 @@ int main(int argc, char **argv)
         const char *alg = algorithms[i];
 
         printf("[%s]\n", alg);
-        test_self_consistency(libctx, alg);
+        test_self_consistency(libctx, alg, NULL);
         test_key_roundtrip(libctx, alg);
-        test_cross_encap_default_encaps(libctx, alg);
+        test_cross_encap_default_encaps(libctx, alg, NULL);
         test_cross_encap_hybrid_encaps(libctx, alg);
         printf("\n");
+    }
+
+    /*
+     * Optional: compose the ML-KEM component from bcrust-provider instead of
+     * the default provider. bcrust-provider ships its own FIPS 203 ML-KEM, so
+     * this exercises cross-provider composition and proves that a bcrust-sourced
+     * ML-KEM interoperates with OpenSSL's native MLX hybrid (requires 3.5+).
+     * The module loads as "bcrust_provider" but advertises "provider=bcrust".
+     * Skipped (not failed) when bcrust-provider is not on the module path.
+     */
+    {
+        OSSL_PROVIDER *bcrust_prov = OSSL_PROVIDER_load(libctx, "bcrust_provider");
+
+        if (bcrust_prov != NULL && provider_has_mlkem(libctx, "bcrust")) {
+            printf("[bcrust-provider ML-KEM composition]\n");
+            for (size_t i = 0; i < nalgs; i++) {
+                test_self_consistency(libctx, algorithms[i], "?provider=bcrust");
+                test_cross_encap_default_encaps(libctx, algorithms[i],
+                                                "?provider=bcrust");
+            }
+            printf("\n");
+        } else {
+            printf("[bcrust-provider ML-KEM composition] SKIPPED "
+                   "(bcrust_provider unavailable)\n\n");
+            ERR_clear_error();
+        }
+        if (bcrust_prov != NULL)
+            OSSL_PROVIDER_unload(bcrust_prov);
     }
 
     /* --- Signature tests --- */

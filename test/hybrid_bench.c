@@ -181,12 +181,16 @@ err:
     return ret;
 }
 
-/* Does oqsprovider actually expose a standalone ML-KEM-768 KEM? */
-static int oqs_has_mlkem(OSSL_LIB_CTX *libctx)
+/* Does the named provider expose a standalone ML-KEM-768 KEM? */
+static int provider_has_mlkem(OSSL_LIB_CTX *libctx, const char *provname)
 {
-    EVP_KEM *kem = EVP_KEM_fetch(libctx, "MLKEM768", "provider=oqsprovider");
-    int ok = (kem != NULL);
+    char propq[128];
+    EVP_KEM *kem;
+    int ok;
 
+    snprintf(propq, sizeof(propq), "provider=%s", provname);
+    kem = EVP_KEM_fetch(libctx, "MLKEM768", propq);
+    ok = (kem != NULL);
     EVP_KEM_free(kem);
     ERR_clear_error();
     return ok;
@@ -195,10 +199,11 @@ static int oqs_has_mlkem(OSSL_LIB_CTX *libctx)
 int main(int argc, char **argv)
 {
     OSSL_LIB_CTX *libctx = NULL;
-    OSSL_PROVIDER *hybrid_prov = NULL, *dflt_prov = NULL, *oqs_prov = NULL;
+    OSSL_PROVIDER *hybrid_prov = NULL, *dflt_prov = NULL;
+    OSSL_PROVIDER *oqs_prov = NULL, *bcrust_prov = NULL;
     const char *modulepath;
     int iterations = ITERATIONS;
-    int oqs_mlkem = 0;
+    int oqs_mlkem = 0, bcrust_mlkem = 0;
 
     if (argc > 1)
         iterations = atoi(argv[1]);
@@ -222,10 +227,18 @@ int main(int argc, char **argv)
     if (modulepath != NULL)
         OSSL_PROVIDER_set_default_search_path(libctx, modulepath);
 
-    /* oqsprovider is optional: only config 3 needs it. */
+    /* Alternative PQ providers are optional: only configs 3 and 4 need them. */
     oqs_prov = OSSL_PROVIDER_load(libctx, "oqsprovider");
     if (oqs_prov != NULL)
-        oqs_mlkem = oqs_has_mlkem(libctx);
+        oqs_mlkem = provider_has_mlkem(libctx, "oqsprovider");
+    else
+        ERR_clear_error();
+
+    /* Loaded as module "bcrust_provider", but its algorithms advertise the
+     * property "provider=bcrust" — the two names differ. */
+    bcrust_prov = OSSL_PROVIDER_load(libctx, "bcrust_provider");
+    if (bcrust_prov != NULL)
+        bcrust_mlkem = provider_has_mlkem(libctx, "bcrust");
     else
         ERR_clear_error();
 
@@ -238,11 +251,17 @@ int main(int argc, char **argv)
 
     printf("X25519MLKEM768 benchmark (%d iterations)\n", iterations);
     printf("OpenSSL %s\n", OpenSSL_version(OPENSSL_VERSION));
-    printf("oqsprovider: %s%s\n",
+    printf("oqsprovider:     %s%s\n",
            oqs_prov != NULL ? "loaded" : "not available",
            oqs_prov != NULL
                ? (oqs_mlkem ? " (provides MLKEM768)"
                             : " (no standalone ML-KEM)")
+               : "");
+    printf("bcrust_provider: %s%s\n",
+           bcrust_prov != NULL ? "loaded" : "not available",
+           bcrust_prov != NULL
+               ? (bcrust_mlkem ? " (provides MLKEM768)"
+                               : " (no standalone ML-KEM)")
                : "");
     printf("==================================================================="
            "==================\n");
@@ -268,11 +287,27 @@ int main(int argc, char **argv)
                "hybrid provider (X25519 default, ML-KEM oqsprovider)");
     }
 
+    /* 4. hybrid provider: X25519 from default, ML-KEM from bcrust_provider.
+     *    bcrust_provider ships its own ML-KEM, so it is available regardless
+     *    of the OpenSSL version; "?provider=bcrust_provider" prefers it for
+     *    ML-KEM and falls back to default for X25519. */
+    if (bcrust_mlkem) {
+        bench_kem(libctx, "X25519MLKEM768", "provider=hybrid",
+                  "?provider=bcrust",
+                  "hybrid provider (X25519 default, ML-KEM bcrust)",
+                  iterations);
+    } else {
+        printf("  %-46s  SKIPPED (bcrust_provider ML-KEM unavailable)\n",
+               "hybrid provider (X25519 default, ML-KEM bcrust)");
+    }
+
     printf("\n");
 
     OSSL_PROVIDER_unload(hybrid_prov);
     if (oqs_prov != NULL)
         OSSL_PROVIDER_unload(oqs_prov);
+    if (bcrust_prov != NULL)
+        OSSL_PROVIDER_unload(bcrust_prov);
     OSSL_PROVIDER_unload(dflt_prov);
     OSSL_LIB_CTX_free(libctx);
     return 0;

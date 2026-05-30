@@ -79,11 +79,18 @@ The test suite verifies:
 - **Signature self-consistency** — keygen, sign, verify within the hybrid
   provider
 - **Signature wrong-message rejection** — verify fails on tampered messages
+- **Cross-provider ML-KEM composition** — if `bcrust_provider` is on the module
+  path, the suite additionally composes each hybrid's ML-KEM component from
+  [bcrust-provider](https://github.com/baentsch/bcrustprovider) (via the
+  `?provider=bcrust` component query) and verifies both self-consistency and
+  interop with the default provider's native MLX hybrid. This proves a
+  bcrust-sourced ML-KEM is wire-compatible. The block is skipped (not failed)
+  when bcrust-provider is unavailable.
 
 ## Benchmark
 
 `hybrid_bench` times `X25519MLKEM768` (keygen, encapsulate, decapsulate) across
-three configurations, skipping any the running OpenSSL/provider mix can't
+four configurations, skipping any the running OpenSSL/provider mix can't
 satisfy:
 
 1. **default provider** — OpenSSL's native MLX hybrid (needs 3.5+)
@@ -92,6 +99,9 @@ satisfy:
 3. **hybrid provider** — X25519 from the default provider, ML-KEM from
    [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) (needs
    OpenSSL 3.4.x + oqsprovider)
+4. **hybrid provider** — X25519 from the default provider, ML-KEM from
+   [bcrust-provider](https://github.com/baentsch/bcrustprovider) (any OpenSSL
+   3.2+, since bcrust-provider ships its own ML-KEM)
 
 ```sh
 cd build
@@ -100,31 +110,42 @@ LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./hybrid_bench [iteration
 
 The optional `iterations` argument sets the number of operations to time
 (default 1000). Set `BENCH_DEBUG=1` to print errors for skipped configurations.
+The benchmark loads `oqsprovider` and `bcrust_provider` from the module search
+path if present, so symlink their `.so` files into the module directory to
+enable configurations 3 and 4. Note that bcrust-provider's algorithms advertise
+the property `provider=bcrust` even though the module loads as `bcrust_provider`.
 
-### Why configuration 3 needs a different OpenSSL version
+### Why the configurations span two OpenSSL versions
 
 oqsprovider intentionally disables its standalone ML-KEM when the default
 provider already ships it (OpenSSL 3.5+), so configuration 3 must run against an
 OpenSSL **3.4.x** build (where the default provider has no ML-KEM and
-oqsprovider supplies it). Conversely, configurations 1 and 2 require the native
-MLX hybrid and ML-KEM that only exist in 3.5+. No single OpenSSL version can
-host all three, so the benchmark is run once per version and the results are
-combined.
+oqsprovider supplies it). Configurations 1 and 2 conversely require the native
+MLX hybrid and ML-KEM that only exist in 3.5+. bcrust-provider implements its
+own ML-KEM, so configuration 4 runs on either. The benchmark is therefore run
+once per OpenSSL version and the results combined; on 3.4.x, configurations 3
+and 4 give a head-to-head ML-KEM comparison in the same environment.
 
 ### Sample results (3000 iterations, ms/op)
 
 | Configuration | OpenSSL | keygen | encaps | decaps |
 |---|---|---|---|---|
-| default provider (native MLX) | 3.5.6 | 0.058 | 0.072 | 0.054 |
-| hybrid provider (X25519 + ML-KEM from default) | 3.5.6 | 0.056 | 0.072 | 0.054 |
-| hybrid provider (X25519 default, ML-KEM oqsprovider) | 3.4.2 | 0.041 | 0.066 | 0.040 |
+| default provider (native MLX) | 3.5.6 | 0.062 | 0.072 | 0.055 |
+| hybrid provider (X25519 + ML-KEM from default) | 3.5.6 | 0.056 | 0.071 | 0.055 |
+| hybrid provider (X25519 default, ML-KEM **bcrust**) | 3.5.6 | 0.061 | 0.085 | 0.063 |
+| hybrid provider (X25519 default, ML-KEM **oqsprovider**) | 3.4.2 | 0.041 | 0.067 | 0.041 |
+| hybrid provider (X25519 default, ML-KEM **bcrust**) | 3.4.2 | 0.061 | 0.087 | 0.065 |
 
 Configurations 1 and 2 are statistically identical: the hybrid provider's
 EVP-based composition adds **no measurable overhead** over OpenSSL's built-in
-MLX hybrid. Configuration 3 is *not* directly comparable — it runs on a
-different OpenSSL version with a different ML-KEM implementation (liboqs) — but
-demonstrates that the hybrid provider transparently composes sub-algorithms
-sourced from *different* providers into a single key.
+MLX hybrid. The cleanest ML-KEM-implementation comparison is the third row
+versus the second, both on 3.5.6 in the same process: bcrust-provider's
+pure-Rust ML-KEM (auto-vectorised bc-rust) trails OpenSSL's native ML-KEM
+(hand-written AVX2 NTT) by ~20% on encapsulate and ~15% on decapsulate, with
+keygen within noise. On 3.4.2, oqsprovider (liboqs, hand-tuned AVX2) and bcrust
+run side-by-side, with liboqs fastest. In all cases the hybrid provider
+transparently composes sub-algorithms sourced from *different* providers into a
+single key.
 
 ## Usage
 
