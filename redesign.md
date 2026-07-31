@@ -363,34 +363,48 @@ Decisions: (a) use oqsprovider canonical names as the primary registered names
 
 ## Performance (measured 2026-07-31, OpenSSL 3.5.6 + oqsprovider main)
 
-The provider is a **near-zero-cost EVP composition layer**, so its performance is
-governed by the sourced primitives, not by the composition:
+The provider is a **near-zero-cost EVP composition layer**: its own glue adds ~0,
+but a hybrid is only ever as fast as each component's *EVP path* — which for fast
+PQ signatures is slower than a provider's internal direct call.
 
-- **Composition tax ≈ 2%.** hybrid `p256_mldsa44` sign 0.504 ms vs a hand-written
-  inline ECDSA+ML-DSA composite (same EVP calls, no provider boundary) 0.494 ms.
-  The provider double-dispatch is negligible.
+- **Our composition glue ≈ 0.** The hybrid provider's sign time equals a
+  hand-written inline composite doing the identical EVP calls (no provider
+  boundary): ML-DSA 0.504 vs 0.494 ms; Falcon 0.382 vs 0.384 ms. The provider
+  double-dispatch is negligible on both a slow and a fast PQ primitive.
 - **KEM encaps/decaps: parity** with default and oqsprovider (ML-KEM's default
   portable-C impl is fast — no rejection sampling).
 - **Keygen: faster than oqsprovider** (e.g. `p256_mlkem512` 0.09 vs 0.94 ms;
   `p256_mldsa44` 0.21 vs 2.83 ms); ~2× the native MLX keygen for the tiny
   hybrid KEMs (two EVP keygens vs one integrated impl), but sub-0.2 ms absolute.
-- **Sign/verify are primitive-bound.** Any gap vs oqsprovider is the underlying
-  PQ implementation: under 3.5 the default provider supplies `MLDSA44/65/87`
-  (and standalone ML-KEM) in **portable C** — oqsprovider *cedes* them — so a
-  hybrid's PQ part resolves to portable C (~0.48 ms/ML-DSA-44-sign) whereas
-  oqsprovider's native hybrid calls liboqs ML-DSA (AVX2, ~0.07 ms) directly.
+- **Sign/verify: two distinct effects, both outside our code.**
+  1. *Wrong-implementation trap (ML-DSA rows).* Under 3.5 the default provider
+     supplies `MLDSA44/65/87` (and standalone ML-KEM) in **portable C** —
+     oqsprovider *cedes* them — so `?provider=oqsprovider` for the PQ part
+     silently resolves to portable C (~0.48 ms/ML-DSA-44-sign) while native
+     oqsprovider calls liboqs ML-DSA (AVX2, ~0.07 ms). Not apples-to-apples.
+  2. *Standalone-EVP tax (Falcon/MAYO/SNOVA rows — the fair comparison).* Here
+     both sides use the **same liboqs** primitive (oqsprovider owns these
+     standalone; default doesn't). Yet native oqsprovider does ECDSA+Falcon in
+     0.205 ms while calling that same liboqs Falcon **through EVP** costs 0.363 ms
+     — oqsprovider's *standalone-signature* EVP path carries ~0.15 ms per-op setup
+     (liboqs key re-load on each `DigestSignInit`) that its *internal* hybrid path
+     avoids. We inherit this by composing via EVP.
 
-**Not worth doing:** per-key caching of the component fetch/context. Measured to
-give **no** benefit — the libctx method store already caches implicit fetches
-(reuse-one-ctx 0.483 ms == init-every-op 0.46–0.49 ms), and propq parsing is not
-the cost.
+**Not worth doing:** per-key caching of the component fetch/context. The libctx
+method store already caches implicit fetches (reuse-ctx == init-every-op, exactly:
+Falcon 0.354 == 0.354). Reusing a pre-fetched `EVP_SIGNATURE` + pkey-ctx recovers
+only ~14% (0.363 → 0.306) and still can't skip the sub-provider's per-init key
+load — not worth the added thread-safety complexity.
 
-**The only performance lever is primitive sourcing.** `pq-propquery` /
-`classic-propquery` steer each component to the fastest provider that exposes the
-standalone EVP algorithm. The path to beating oqsprovider on sign/verify is an
-AVX2 ML-DSA exposed as a standalone EVP signature (future OpenSSL, or oqsprovider
-exposing its liboqs sigs standalone); the hybrid would then inherit that speed at
-the ~2% tax with no code change. `test/hybrid_bench.c` runs the comparison.
+**The performance lever is primitive sourcing.** `pq-propquery` /
+`classic-propquery` steer each component to the fastest provider exposing the
+standalone EVP algorithm; the hybrid then inherits that path's speed with no code
+change. **M8 caveat:** replacing oqsprovider's hybrid code with delegation to this
+provider would regress fast-sig (Falcon/MAYO/SNOVA) performance ~1.8× *until
+oqsprovider trims the per-op setup in its standalone signature EVP path* — the
+hybrid can't be faster than the EVP path it's handed. `test/hybrid_bench.c` runs
+the comparison; note only the Falcon/MAYO/SNOVA rows are apples-to-apples (the
+ML-DSA rows compare portable-C vs AVX2, per effect 1 above).
 
 ---
 
