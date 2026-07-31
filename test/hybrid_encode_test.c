@@ -118,6 +118,82 @@ done:
     EVP_PKEY_CTX_free(g);
 }
 
+/* Reverse: oqsprovider signs + writes SPKI; hybrid decodes it and verifies. */
+static void check_decode(OSSL_LIB_CTX *ctx, const char *alg)
+{
+    EVP_PKEY_CTX *g = NULL;
+    EVP_PKEY *okey = NULL, *hkey = NULL;
+    EVP_MD_CTX *md = NULL;
+    OSSL_ENCODER_CTX *ectx = NULL;
+    OSSL_DECODER_CTX *dctx = NULL;
+    unsigned char *sig = NULL, *spki = NULL;
+    size_t siglen = 0, spkilen = 0;
+    const unsigned char *p;
+    const unsigned char msg[] = "reverse: oqs SPKI decoded by hybrid";
+    const char *stage = "keygen";
+
+    tests++;
+    printf("  %-26s oqs SPKI+sig -> hybrid verify ... ", alg);
+    fflush(stdout);
+
+    g = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=oqsprovider");
+    if (g == NULL || EVP_PKEY_keygen_init(g) <= 0
+        || EVP_PKEY_keygen(g, &okey) <= 0)
+        goto fail;
+    stage = "sign";
+    md = EVP_MD_CTX_new();
+    if (md == NULL
+        || EVP_DigestSignInit_ex(md, NULL, NULL, ctx, "provider=oqsprovider",
+                                 okey, NULL) <= 0
+        || EVP_DigestSign(md, NULL, &siglen, msg, sizeof(msg)) <= 0)
+        goto fail;
+    sig = OPENSSL_malloc(siglen);
+    if (sig == NULL || EVP_DigestSign(md, sig, &siglen, msg, sizeof(msg)) <= 0)
+        goto fail;
+
+    stage = "encode(oqs)";
+    ectx = OSSL_ENCODER_CTX_new_for_pkey(okey, EVP_PKEY_PUBLIC_KEY, "DER",
+                                         "SubjectPublicKeyInfo",
+                                         "provider=oqsprovider");
+    if (ectx == NULL || OSSL_ENCODER_to_data(ectx, &spki, &spkilen) <= 0)
+        goto fail;
+
+    stage = "decode(hybrid)";
+    dctx = OSSL_DECODER_CTX_new_for_pkey(&hkey, "DER", "SubjectPublicKeyInfo",
+                                         NULL, EVP_PKEY_PUBLIC_KEY, ctx,
+                                         "provider=hybrid");
+    p = spki;
+    if (dctx == NULL || OSSL_DECODER_from_data(dctx, &p, &spkilen) <= 0
+        || hkey == NULL)
+        goto fail;
+
+    stage = "verify(hybrid)";
+    EVP_MD_CTX_free(md);
+    md = EVP_MD_CTX_new();
+    if (md == NULL
+        || EVP_DigestVerifyInit_ex(md, NULL, NULL, ctx, "provider=hybrid",
+                                   hkey, NULL) <= 0
+        || EVP_DigestVerify(md, sig, siglen, msg, sizeof(msg)) != 1)
+        goto fail;
+
+    printf("PASS\n");
+    passed++;
+    goto done;
+fail:
+    printf("FAIL (stage=%s)\n", stage);
+    ERR_print_errors_fp(stdout);
+    failed++;
+done:
+    OPENSSL_free(sig);
+    OPENSSL_free(spki);
+    OSSL_ENCODER_CTX_free(ectx);
+    OSSL_DECODER_CTX_free(dctx);
+    EVP_MD_CTX_free(md);
+    EVP_PKEY_free(okey);
+    EVP_PKEY_free(hkey);
+    EVP_PKEY_CTX_free(g);
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -138,8 +214,10 @@ int main(void)
 
     printf("hybrid SPKI encode -> oqsprovider decode + verify\n");
     printf("=================================================\n");
-    for (i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++)
+    for (i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
         check(ctx, sigs[i]);
+        check_decode(ctx, sigs[i]);
+    }
     printf("\nResults: %d/%d passed, %d failed\n", passed, tests, failed);
 
     OSSL_LIB_CTX_free(ctx);

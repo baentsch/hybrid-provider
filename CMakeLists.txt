@@ -21,6 +21,7 @@ add_library(hybrid-provider MODULE
     hybrid_sig.c
     hybrid_caps.c
     hybrid_encoder.c
+    hybrid_decoder.c
 )
 target_include_directories(hybrid-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(hybrid-provider PRIVATE OpenSSL::Crypto)

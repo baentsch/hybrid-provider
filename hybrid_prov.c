@@ -153,6 +153,17 @@ static const OSSL_ALGORITHM hybrid_encoders[] = {
 };
 #undef HYBRID_SIG_ENC_REG
 
+/* Decoders: DER SubjectPublicKeyInfo -> key, one per signature algorithm. */
+#define HYBRID_SIG_DEC_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                \
+    { nm, "provider=hybrid,input=der,structure=SubjectPublicKeyInfo",        \
+      hybrid_spki_der_decoder_functions, ds " SPKI DER decoder" },
+
+static const OSSL_ALGORITHM hybrid_decoders[] = {
+    HYBRID_SIG_LIST(HYBRID_SIG_DEC_REG)
+    { NULL, NULL, NULL, NULL }
+};
+#undef HYBRID_SIG_DEC_REG
+
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)
 {
@@ -166,6 +177,8 @@ hybrid_query(void *provctx, int operation_id, int *no_cache)
         return hybrid_signatures;
     case OSSL_OP_ENCODER:
         return hybrid_encoders;
+    case OSSL_OP_DECODER:
+        return hybrid_decoders;
     default:
         return NULL;
     }
@@ -195,6 +208,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     OSSL_FUNC_core_get_libctx_fn *c_get_libctx = NULL;
     OSSL_FUNC_core_get_params_fn *c_get_params = NULL;
     OSSL_FUNC_BIO_write_ex_fn *bio_write_ex = NULL;
+    OSSL_FUNC_BIO_read_ex_fn *bio_read_ex = NULL;
 
     for (; in->function_id != 0; in++) {
         switch (in->function_id) {
@@ -206,6 +220,9 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
             break;
         case OSSL_FUNC_BIO_WRITE_EX:
             bio_write_ex = OSSL_FUNC_BIO_write_ex(in);
+            break;
+        case OSSL_FUNC_BIO_READ_EX:
+            bio_read_ex = OSSL_FUNC_BIO_read_ex(in);
             break;
         default:
             break;
@@ -222,6 +239,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     ctx->handle = handle;
     ctx->libctx = (OSSL_LIB_CTX *)c_get_libctx(handle);
     ctx->bio_write_ex = bio_write_ex;
+    ctx->bio_read_ex = bio_read_ex;
 
     /*
      * Read optional component property queries from the provider's config

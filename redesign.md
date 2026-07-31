@@ -224,10 +224,17 @@ oqsprovider and vice versa.
 > oqs pub blob (UINT32 classical-len prefix + ordered component pubkeys) with the
 > algorithm's OID. Avoids the core-BIO method by rendering to a memory BIO and
 > pushing bytes via a captured `BIO_write_ex` up-call. `hybrid_encode_test`:
-> hybrid signs + emits SPKI, oqsprovider decodes it and verifies our signature —
-> **16/16** across every EC-classical PQ family (suite 6/6 green). REMAINING M2:
-> RSA classical-pubkey blob (rsa3072_*); the decoder (read oqs SPKI); PKCS8
-> private encode/decode; PEM/text; KEM OIDs + KEM keys.
+> hybrid signs + emits SPKI, oqsprovider decodes it and verifies our signature.
+>
+> **SPKI public-key DECODER DONE (2026-07-31).** `hybrid_decoder.c`: DER
+> SubjectPublicKeyInfo -> hybrid key. Reads the core BIO via a captured
+> `BIO_read_ex` up-call, parses the X509_PUBKEY, matches the AlgId OID against the
+> sig table, rebuilds the key from the blob (UINT32 prefix), and hands it back as
+> an object reference; added `OSSL_FUNC_KEYMGMT_LOAD` so the reference
+> materializes. `hybrid_encode_test` now tests **both directions, 32/32**:
+> hybrid-SPKI+sig verified by oqs, AND oqs-SPKI+sig verified by hybrid. Suite 6/6.
+> REMAINING M2: RSA classical-pubkey blob (rsa3072_*); PKCS8 private encode/decode;
+> PEM/text; KEM OIDs + KEM keys.
 
 **M3 — ML-KEM legacy hybrid KEMs** (base primitive available from default OR
 oqsprovider): `p256_mlkem512`, `x25519_mlkem512`, `p384_mlkem768`,

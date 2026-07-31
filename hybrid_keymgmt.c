@@ -19,6 +19,22 @@ static void hybrid_key_free(void *vkey)
     OPENSSL_free(key);
 }
 
+/*
+ * Materialize a key from a decoder-provided reference (the decoder hands back a
+ * pointer to a HYBRID_KEY it built; ownership transfers to the EVP_PKEY).
+ */
+static void *hybrid_key_load(const void *reference, size_t reference_sz)
+{
+    HYBRID_KEY *key = NULL;
+
+    if (reference_sz == sizeof(key)) {
+        key = *(HYBRID_KEY **)reference;
+        *(HYBRID_KEY **)reference = NULL;   /* avoid a double free */
+        return key;
+    }
+    return NULL;
+}
+
 static void *
 hybrid_key_new(int is_kem, unsigned int variant,
                OSSL_LIB_CTX *libctx, char *propq)
@@ -143,6 +159,49 @@ load_component(OSSL_LIB_CTX *libctx, const char *propq,
 err:
     EVP_PKEY_CTX_free(ctx);
     return ret;
+}
+
+/* --- Decoder support: build a public key from oqs blob components --- */
+
+/* Free a hybrid key (public wrapper over the static free, for decoders). */
+void hybrid_keymgmt_free(void *vkey)
+{
+    hybrid_key_free(vkey);
+}
+
+/* Create an empty hybrid key of the given family/variant (used by decoders). */
+void *hybrid_keymgmt_new_by_variant(void *provctx, int is_kem,
+                                    unsigned int variant)
+{
+    HYBRID_PROV_CTX *ctx = provctx;
+    OSSL_LIB_CTX *lc = ctx ? HYBRID_COMPONENT_LIBCTX(ctx) : NULL;
+    HYBRID_KEY *k = hybrid_key_new(is_kem, variant, lc, NULL);
+
+    if (k != NULL && ctx != NULL) {
+        k->pq_propq = ctx->pq_propq;
+        k->classic_propq = ctx->classic_propq;
+    }
+    return k;
+}
+
+/* Load the classical + PQ public components from their raw byte ranges. */
+int hybrid_key_load_pub_components(HYBRID_KEY *key,
+                                  const unsigned char *classic, size_t clen,
+                                  const unsigned char *pq, size_t plen)
+{
+    int sel = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
+            | OSSL_KEYMGMT_SELECT_PUBLIC_KEY;
+
+    if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+                        HYBRID_KEY_ALG1_NAME(key), HYBRID_KEY_ALG1_GROUP(key),
+                        OSSL_PKEY_PARAM_PUB_KEY, sel, classic, clen, &key->key1))
+        return 0;
+    if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+                        HYBRID_KEY_ALG2_NAME(key), NULL,
+                        OSSL_PKEY_PARAM_PUB_KEY, sel, pq, plen, &key->key2))
+        return 0;
+    key->state = HYBRID_HAVE_PUBKEY;
+    return 1;
 }
 
 /* --- Runtime component-size discovery --- */
@@ -866,6 +925,7 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
     }                                                                        \
     const OSSL_DISPATCH hybrid_##name##_kmgmt_functions[] = {                \
         { OSSL_FUNC_KEYMGMT_NEW, (void (*)(void))hybrid_##name##_new },      \
+        { OSSL_FUNC_KEYMGMT_LOAD, (void (*)(void))hybrid_key_load },         \
         { OSSL_FUNC_KEYMGMT_FREE, (void (*)(void))hybrid_key_free },         \
         { OSSL_FUNC_KEYMGMT_HAS, (void (*)(void))hybrid_kem_has },           \
         { OSSL_FUNC_KEYMGMT_MATCH, (void (*)(void))hybrid_kem_match },       \
