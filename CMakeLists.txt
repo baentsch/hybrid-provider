@@ -20,6 +20,7 @@ add_library(hybrid-provider MODULE
     hybrid_kem.c
     hybrid_sig.c
     hybrid_caps.c
+    hybrid_encoder.c
 )
 target_include_directories(hybrid-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(hybrid-provider PRIVATE OpenSSL::Crypto)
@@ -78,6 +79,15 @@ target_include_directories(hybrid_compctx_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${
 target_link_libraries(hybrid_compctx_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 add_test(NAME hybrid_compctx_test COMMAND hybrid_compctx_test)
 set_tests_properties(hybrid_compctx_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# Encoder interop test: hybrid-written SPKI decoded + verified by oqsprovider.
+add_executable(hybrid_encode_test test/hybrid_encode_test.c)
+target_include_directories(hybrid_encode_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_encode_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_encode_test COMMAND hybrid_encode_test)
+set_tests_properties(hybrid_encode_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 

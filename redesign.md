@@ -202,6 +202,33 @@ format alongside the existing raw-concat paths.
 oqsprovider. Gate: `openssl pkey`/`x509` round-trips a key produced by
 oqsprovider and vice versa.
 
+> **oqsprovider byte format (from `oqsprov_keys.c` / `oqs_encode_key2any.c`):**
+> - **SPKI** = `AlgorithmIdentifier(OID)` + `BIT STRING(pubblob)` where
+>   `pubblob = ENCODE_UINT32(classical_pub_len) ‖ classical_pub ‖ pq_pub`
+>   (order reversed to `‖ pq_pub ‖ classical_pub` for the reverse-share KEMs,
+>   i.e. our `alg2_slot == 0`). The UINT32 always encodes the CLASSICAL length;
+>   classical_pub is the raw EC point / X25519 key.
+> - **PKCS8** = `AlgorithmIdentifier(OID)` + `OCTET STRING(i2d(OCTET STRING(privblob)))`
+>   (inner-octet-string wrapped) where `privblob = ENCODE_UINT32(classical_der_len)
+>   ‖ classical_privkey_DER ‖ pq_privkey_raw` — the CLASSICAL private key is
+>   DER-encoded (variable length), the PQ private key raw. (Some cases append the
+>   PQ public key after.)
+> - OIDs: sigs on `1.3.9999.*` (already in `HYBRID_SIG_INFO`); KEM hybrids need
+>   their OIDs added too. Orthogonal KEM vs SIG encode/decode paths per the user.
+> - **Slice order:** SPKI public-key DER first (proves SPKI + sig wire format via
+>   "oqsprovider verifies our signature from our SPKI"), then PKCS8 private, then
+>   PEM/text, then KEM OIDs.
+>
+> **SPKI public-key encoder DONE (2026-07-31).** `hybrid_encoder.c`: DER + PEM
+> SubjectPublicKeyInfo, one encoder pair per signature algorithm, emitting the
+> oqs pub blob (UINT32 classical-len prefix + ordered component pubkeys) with the
+> algorithm's OID. Avoids the core-BIO method by rendering to a memory BIO and
+> pushing bytes via a captured `BIO_write_ex` up-call. `hybrid_encode_test`:
+> hybrid signs + emits SPKI, oqsprovider decodes it and verifies our signature —
+> **16/16** across every EC-classical PQ family (suite 6/6 green). REMAINING M2:
+> RSA classical-pubkey blob (rsa3072_*); the decoder (read oqs SPKI); PKCS8
+> private encode/decode; PEM/text; KEM OIDs + KEM keys.
+
 **M3 — ML-KEM legacy hybrid KEMs** (base primitive available from default OR
 oqsprovider): `p256_mlkem512`, `x25519_mlkem512`, `p384_mlkem768`,
 `x448_mlkem768`, `p521_mlkem1024`, then brainpool `bp256/bp384/bp512` variants.

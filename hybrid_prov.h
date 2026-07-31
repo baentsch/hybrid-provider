@@ -57,6 +57,8 @@ typedef struct {
     int comp_owned;
     OSSL_PROVIDER *comp_provs[HYBRID_MAX_COMPONENT_PROVIDERS];
     int n_comp_provs;
+    /* Core BIO write up-call, captured from the core dispatch (encoders). */
+    OSSL_FUNC_BIO_write_ex_fn *bio_write_ex;
 } HYBRID_PROV_CTX;
 
 /* The context to use for component sub-algorithm fetches. */
@@ -390,6 +392,12 @@ static inline size_t hybrid_key_prvkey_bytes(const HYBRID_KEY *key)
 /* Extern declarations for dispatch tables */
 extern const OSSL_DISPATCH hybrid_kem_functions[];
 extern const OSSL_DISPATCH hybrid_sig_functions[];
+
+/* Encoders (hybrid_encoder.c) */
+extern const OSSL_DISPATCH hybrid_spki_der_encoder_functions[];
+extern const OSSL_DISPATCH hybrid_spki_pem_encoder_functions[];
+int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out,
+                           size_t *outlen);
 
 /*
  * Populate key->sizes by querying the component algorithms with throwaway

@@ -137,6 +137,22 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
 };
 #undef HYBRID_SIG_OP_REG
 
+/*
+ * Encoders: SubjectPublicKeyInfo in DER and PEM, one pair per signature
+ * algorithm (matched by key-type name + output/structure properties).
+ */
+#define HYBRID_SIG_ENC_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                \
+    { nm, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo",       \
+      hybrid_spki_der_encoder_functions, ds " SPKI DER encoder" },           \
+    { nm, "provider=hybrid,output=pem,structure=SubjectPublicKeyInfo",       \
+      hybrid_spki_pem_encoder_functions, ds " SPKI PEM encoder" },
+
+static const OSSL_ALGORITHM hybrid_encoders[] = {
+    HYBRID_SIG_LIST(HYBRID_SIG_ENC_REG)
+    { NULL, NULL, NULL, NULL }
+};
+#undef HYBRID_SIG_ENC_REG
+
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)
 {
@@ -148,6 +164,8 @@ hybrid_query(void *provctx, int operation_id, int *no_cache)
         return hybrid_kems;
     case OSSL_OP_SIGNATURE:
         return hybrid_signatures;
+    case OSSL_OP_ENCODER:
+        return hybrid_encoders;
     default:
         return NULL;
     }
@@ -176,6 +194,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     HYBRID_PROV_CTX *ctx;
     OSSL_FUNC_core_get_libctx_fn *c_get_libctx = NULL;
     OSSL_FUNC_core_get_params_fn *c_get_params = NULL;
+    OSSL_FUNC_BIO_write_ex_fn *bio_write_ex = NULL;
 
     for (; in->function_id != 0; in++) {
         switch (in->function_id) {
@@ -184,6 +203,9 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
             break;
         case OSSL_FUNC_CORE_GET_PARAMS:
             c_get_params = OSSL_FUNC_core_get_params(in);
+            break;
+        case OSSL_FUNC_BIO_WRITE_EX:
+            bio_write_ex = OSSL_FUNC_BIO_write_ex(in);
             break;
         default:
             break;
@@ -199,6 +221,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 
     ctx->handle = handle;
     ctx->libctx = (OSSL_LIB_CTX *)c_get_libctx(handle);
+    ctx->bio_write_ex = bio_write_ex;
 
     /*
      * Read optional component property queries from the provider's config
