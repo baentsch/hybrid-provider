@@ -359,6 +359,21 @@ Decisions: (a) use oqsprovider canonical names as the primary registered names
 (required for true drop-in); (b) DROP the current non-oqs signature combos
 (decided 2026-07-31).
 
+> **Perf blocker to fix in oqsprovider BEFORE (or alongside) hybrid-logic
+> removal.** Delegating to this provider composes each PQ component via EVP. For
+> fast signatures (Falcon/MAYO/SNOVA) oqsprovider's *standalone* signature EVP
+> path is ~2× its *internal* direct-liboqs call — it re-loads the liboqs secret
+> key on every `DigestSignInit` (measured 2026-07-31: liboqs Falcon direct
+> ~0.18 ms vs via EVP ~0.36 ms; our composition glue itself is ~0). So a naive
+> "delete hybrid code, delegate to hybrid-provider" PR would **regress fast-sig
+> sign throughput ~1.8×**. The hybrid provider cannot beat the EVP path it is
+> handed and caching on our side recovers only ~14% (see the Performance
+> section). **Prerequisite:** trim oqsprovider's standalone-signature per-op
+> setup (cache the liboqs sig context in the key so `DigestSignInit` doesn't
+> reload it) — then delegation is perf-neutral for these algorithms. ML-DSA is
+> unaffected here (oqsprovider cedes it to default). Verify with the
+> FAIR-tagged rows in `test/hybrid_bench.c`.
+
 ---
 
 ## Performance (measured 2026-07-31, OpenSSL 3.5.6 + oqsprovider main)
