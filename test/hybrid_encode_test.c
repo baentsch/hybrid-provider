@@ -194,6 +194,106 @@ done:
     EVP_PKEY_CTX_free(g);
 }
 
+/* Encode key's PKCS8 (PrivateKeyInfo, DER) via provider `prop`. */
+static int enc_p8(OSSL_LIB_CTX *ctx, EVP_PKEY *pk, const char *prop,
+                  unsigned char **der, size_t *derlen)
+{
+    OSSL_ENCODER_CTX *e = OSSL_ENCODER_CTX_new_for_pkey(
+        pk, EVP_PKEY_KEYPAIR, "DER", "PrivateKeyInfo", prop);
+    int ok = e != NULL && OSSL_ENCODER_to_data(e, der, derlen) > 0;
+
+    OSSL_ENCODER_CTX_free(e);
+    return ok;
+}
+
+/* Decode a PKCS8 (PrivateKeyInfo, DER) into an EVP_PKEY via provider `prop`. */
+static EVP_PKEY *dec_p8(OSSL_LIB_CTX *ctx, const char *alg, const char *prop,
+                        const unsigned char *der, size_t derlen)
+{
+    EVP_PKEY *pk = NULL;
+    OSSL_DECODER_CTX *d = OSSL_DECODER_CTX_new_for_pkey(
+        &pk, "DER", "PrivateKeyInfo", NULL, EVP_PKEY_KEYPAIR, ctx, prop);
+    const unsigned char *p = der;
+
+    if (d == NULL || OSSL_DECODER_from_data(d, &p, &derlen) <= 0)
+        pk = NULL;
+    OSSL_DECODER_CTX_free(d);
+    return pk;
+}
+
+/* Sign msg with signer (provider sprop), verify with verifier (vprop). */
+static int sign_verify(OSSL_LIB_CTX *ctx, EVP_PKEY *signer, const char *sprop,
+                       EVP_PKEY *verifier, const char *vprop)
+{
+    const unsigned char msg[] = "private-key round-trip";
+    EVP_MD_CTX *md = EVP_MD_CTX_new();
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    int ok = 0;
+
+    if (md == NULL
+        || EVP_DigestSignInit_ex(md, NULL, NULL, ctx, sprop, signer, NULL) <= 0
+        || EVP_DigestSign(md, NULL, &siglen, msg, sizeof(msg)) <= 0
+        || (sig = OPENSSL_malloc(siglen)) == NULL
+        || EVP_DigestSign(md, sig, &siglen, msg, sizeof(msg)) <= 0)
+        goto end;
+    EVP_MD_CTX_free(md);
+    md = EVP_MD_CTX_new();
+    ok = md != NULL
+        && EVP_DigestVerifyInit_ex(md, NULL, NULL, ctx, vprop, verifier,
+                                   NULL) > 0
+        && EVP_DigestVerify(md, sig, siglen, msg, sizeof(msg)) == 1;
+end:
+    OPENSSL_free(sig);
+    EVP_MD_CTX_free(md);
+    return ok;
+}
+
+/* Private-key PKCS8 round-trip, both directions. */
+static void check_priv(OSSL_LIB_CTX *ctx, const char *alg)
+{
+    EVP_PKEY_CTX *g = NULL;
+    EVP_PKEY *a = NULL, *b = NULL;
+    unsigned char *der = NULL;
+    size_t derlen = 0;
+
+    /* Direction A: hybrid private -> oqs (oqs signs, hybrid verifies). */
+    tests++;
+    printf("  %-26s priv hybrid->oqs (PKCS8) ... ", alg);
+    fflush(stdout);
+    g = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=hybrid");
+    if (g != NULL && EVP_PKEY_keygen_init(g) > 0 && EVP_PKEY_keygen(g, &a) > 0
+        && enc_p8(ctx, a, "provider=hybrid", &der, &derlen)
+        && (b = dec_p8(ctx, alg, "provider=oqsprovider", der, derlen)) != NULL
+        && sign_verify(ctx, b, "provider=oqsprovider", a, "provider=hybrid")) {
+        printf("PASS\n"); passed++;
+    } else {
+        printf("FAIL\n"); ERR_print_errors_fp(stdout); failed++;
+    }
+    OPENSSL_free(der); der = NULL; derlen = 0;
+    EVP_PKEY_free(a); a = NULL;
+    EVP_PKEY_free(b); b = NULL;
+    EVP_PKEY_CTX_free(g); g = NULL;
+
+    /* Direction B: oqs private -> hybrid (hybrid signs, oqs verifies). */
+    tests++;
+    printf("  %-26s priv oqs->hybrid (PKCS8) ... ", alg);
+    fflush(stdout);
+    g = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=oqsprovider");
+    if (g != NULL && EVP_PKEY_keygen_init(g) > 0 && EVP_PKEY_keygen(g, &a) > 0
+        && enc_p8(ctx, a, "provider=oqsprovider", &der, &derlen)
+        && (b = dec_p8(ctx, alg, "provider=hybrid", der, derlen)) != NULL
+        && sign_verify(ctx, b, "provider=hybrid", a, "provider=oqsprovider")) {
+        printf("PASS\n"); passed++;
+    } else {
+        printf("FAIL\n"); ERR_print_errors_fp(stdout); failed++;
+    }
+    OPENSSL_free(der);
+    EVP_PKEY_free(a);
+    EVP_PKEY_free(b);
+    EVP_PKEY_CTX_free(g);
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -217,6 +317,7 @@ int main(void)
     for (i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
         check(ctx, sigs[i]);
         check_decode(ctx, sigs[i]);
+        check_priv(ctx, sigs[i]);
     }
     printf("\nResults: %d/%d passed, %d failed\n", passed, tests, failed);
 

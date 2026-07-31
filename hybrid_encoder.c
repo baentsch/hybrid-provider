@@ -74,6 +74,87 @@ int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
     return 1;
 }
 
+/*
+ * Build the oqsprovider private-key blob:
+ *   UINT32(classical_der_len) || classical_privkey_DER || pq_privkey || pq_pubkey
+ * The classical private key is i2d_PrivateKey DER (EC/RSA); the PQ private and
+ * (appended, matching oqsprovider's default) PQ public keys are raw. Classical
+ * first for signature hybrids. Caller frees *out with OPENSSL_clear_free.
+ */
+int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
+{
+    unsigned char *cder = NULL, *buf = NULL;
+    int cderlen;
+    size_t a2v, a2p, total, got;
+
+    if (!hybrid_ensure_sizes(key) || !hybrid_have_prvkey(key))
+        return 0;
+    a2v = key->sizes.a2_prv;
+    a2p = key->sizes.a2_pub;
+
+    cderlen = i2d_PrivateKey(key->key1, &cder);
+    if (cderlen <= 0)
+        return 0;
+
+    total = sizeof(uint32_t) + (size_t)cderlen + a2v + a2p;
+    if ((buf = OPENSSL_secure_malloc(total)) == NULL)
+        goto err;
+
+    buf[0] = (unsigned char)((unsigned)cderlen >> 24);
+    buf[1] = (unsigned char)((unsigned)cderlen >> 16);
+    buf[2] = (unsigned char)((unsigned)cderlen >> 8);
+    buf[3] = (unsigned char)((unsigned)cderlen);
+    memcpy(buf + sizeof(uint32_t), cder, cderlen);
+    if (EVP_PKEY_get_octet_string_param(key->key2, OSSL_PKEY_PARAM_PRIV_KEY,
+            buf + sizeof(uint32_t) + cderlen, a2v, &got) <= 0 || got != a2v
+        || EVP_PKEY_get_octet_string_param(key->key2, OSSL_PKEY_PARAM_PUB_KEY,
+            buf + sizeof(uint32_t) + cderlen + a2v, a2p, &got) <= 0 || got != a2p)
+        goto err;
+
+    OPENSSL_clear_free(cder, cderlen);
+    *out = buf;
+    *outlen = total;
+    return 1;
+err:
+    OPENSSL_clear_free(cder, cderlen > 0 ? cderlen : 0);
+    OPENSSL_secure_clear_free(buf, total);
+    return 0;
+}
+
+/* Build a PKCS8_PRIV_KEY_INFO (AlgId(OID) + OCTET STRING(inner OCTET STRING)). */
+static PKCS8_PRIV_KEY_INFO *hybrid_key_to_p8info(HYBRID_KEY *key)
+{
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    ASN1_OCTET_STRING *oct = NULL;
+    ASN1_OBJECT *oid = NULL;
+    unsigned char *blob = NULL, *inner = NULL;
+    size_t bloblen = 0;
+    int innerlen;
+    const char *oidstr = hybrid_key_oid(key);
+
+    if (oidstr == NULL || (oid = OBJ_txt2obj(oidstr, 1)) == NULL
+        || !hybrid_encode_priv_blob(key, &blob, &bloblen)
+        || (oct = ASN1_OCTET_STRING_new()) == NULL
+        || !ASN1_STRING_set(oct, blob, (int)bloblen)
+        || (innerlen = i2d_ASN1_OCTET_STRING(oct, &inner)) < 0
+        || (p8 = PKCS8_PRIV_KEY_INFO_new()) == NULL)
+        goto err;
+
+    /* Transfers ownership of oid and inner to p8. */
+    if (!PKCS8_pkey_set0(p8, oid, 0, V_ASN1_UNDEF, NULL, inner, innerlen))
+        goto err;
+    OPENSSL_secure_clear_free(blob, bloblen);
+    ASN1_OCTET_STRING_free(oct);
+    return p8;
+err:
+    ASN1_OBJECT_free(oid);
+    OPENSSL_free(inner);
+    OPENSSL_secure_clear_free(blob, bloblen);
+    ASN1_OCTET_STRING_free(oct);
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    return NULL;
+}
+
 /* Build an X509_PUBKEY (AlgId(OID) + BIT STRING(blob)) for the key. */
 static X509_PUBKEY *hybrid_key_to_x509_pubkey(HYBRID_KEY *key)
 {
@@ -203,5 +284,83 @@ const OSSL_DISPATCH hybrid_spki_pem_encoder_functions[] = {
     { OSSL_FUNC_ENCODER_DOES_SELECTION,
       (void (*)(void))hybrid_enc_does_selection },
     { OSSL_FUNC_ENCODER_ENCODE, (void (*)(void))hybrid_encode_spki_pem },
+    { 0, NULL }
+};
+
+/* --- PKCS8 (PrivateKeyInfo) encoders --- */
+
+static int hybrid_enc_does_selection_priv(void *provctx, int selection)
+{
+    return (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0;
+}
+
+static int hybrid_encode_pkcs8(void *vctx, OSSL_CORE_BIO *cout, const void *key,
+                               const OSSL_PARAM key_abstract[], int selection,
+                               OSSL_PASSPHRASE_CALLBACK *cb, void *cbarg, int pem)
+{
+    HYBRID_ENC_CTX *ctx = vctx;
+    HYBRID_KEY *hkey = (HYBRID_KEY *)key;
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    BIO *mem = NULL;
+    char *data = NULL;
+    long datalen;
+    size_t written = 0;
+    int ret = 0;
+
+    if ((selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) == 0
+        || ctx->bio_write_ex == NULL)
+        return 0;
+    if ((mem = BIO_new(BIO_s_mem())) == NULL
+        || (p8 = hybrid_key_to_p8info(hkey)) == NULL)
+        goto end;
+    if ((pem ? PEM_write_bio_PKCS8_PRIV_KEY_INFO(mem, p8)
+             : i2d_PKCS8_PRIV_KEY_INFO_bio(mem, p8)) <= 0)
+        goto end;
+    datalen = BIO_get_mem_data(mem, &data);
+    if (datalen <= 0)
+        goto end;
+    ret = ctx->bio_write_ex(cout, data, (size_t)datalen, &written)
+          && written == (size_t)datalen;
+end:
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    BIO_free(mem);
+    return ret;
+}
+
+static int hybrid_encode_pkcs8_der(void *vctx, OSSL_CORE_BIO *cout,
+                                   const void *key,
+                                   const OSSL_PARAM key_abstract[],
+                                   int selection,
+                                   OSSL_PASSPHRASE_CALLBACK *cb, void *cbarg)
+{
+    return hybrid_encode_pkcs8(vctx, cout, key, key_abstract, selection,
+                               cb, cbarg, 0);
+}
+
+static int hybrid_encode_pkcs8_pem(void *vctx, OSSL_CORE_BIO *cout,
+                                   const void *key,
+                                   const OSSL_PARAM key_abstract[],
+                                   int selection,
+                                   OSSL_PASSPHRASE_CALLBACK *cb, void *cbarg)
+{
+    return hybrid_encode_pkcs8(vctx, cout, key, key_abstract, selection,
+                               cb, cbarg, 1);
+}
+
+const OSSL_DISPATCH hybrid_pkcs8_der_encoder_functions[] = {
+    { OSSL_FUNC_ENCODER_NEWCTX, (void (*)(void))hybrid_enc_newctx },
+    { OSSL_FUNC_ENCODER_FREECTX, (void (*)(void))hybrid_enc_freectx },
+    { OSSL_FUNC_ENCODER_DOES_SELECTION,
+      (void (*)(void))hybrid_enc_does_selection_priv },
+    { OSSL_FUNC_ENCODER_ENCODE, (void (*)(void))hybrid_encode_pkcs8_der },
+    { 0, NULL }
+};
+
+const OSSL_DISPATCH hybrid_pkcs8_pem_encoder_functions[] = {
+    { OSSL_FUNC_ENCODER_NEWCTX, (void (*)(void))hybrid_enc_newctx },
+    { OSSL_FUNC_ENCODER_FREECTX, (void (*)(void))hybrid_enc_freectx },
+    { OSSL_FUNC_ENCODER_DOES_SELECTION,
+      (void (*)(void))hybrid_enc_does_selection_priv },
+    { OSSL_FUNC_ENCODER_ENCODE, (void (*)(void))hybrid_encode_pkcs8_pem },
     { 0, NULL }
 };

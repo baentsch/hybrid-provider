@@ -232,9 +232,15 @@ oqsprovider and vice versa.
 > sig table, rebuilds the key from the blob (UINT32 prefix), and hands it back as
 > an object reference; added `OSSL_FUNC_KEYMGMT_LOAD` so the reference
 > materializes. `hybrid_encode_test` now tests **both directions, 32/32**:
-> hybrid-SPKI+sig verified by oqs, AND oqs-SPKI+sig verified by hybrid. Suite 6/6.
-> REMAINING M2: RSA classical-pubkey blob (rsa3072_*); PKCS8 private encode/decode;
-> PEM/text; KEM OIDs + KEM keys.
+> hybrid-SPKI+sig verified by oqs, AND oqs-SPKI+sig verified by hybrid.
+>
+> **PKCS8 private-key encode+decode DONE (2026-07-31).** DER + PEM PrivateKeyInfo;
+> blob = `UINT32(classical_der_len) || i2d_PrivateKey(classical) || pq_privkey ||
+> pq_pubkey` in an inner OCTET STRING (matches oqsprovider's default pubkey-append);
+> decode d2i's the classical and loads the PQ raw. Full private-key round-trip vs
+> oqsprovider both directions (`hybrid_encode_test` now **64/64**: SPKI both ways +
+> PKCS8 both ways). Suite 6/6 green. REMAINING M2: RSA classical blob (rsa3072_*);
+> text encoder; KEM OIDs + KEM keys.
 
 **M3 — ML-KEM legacy hybrid KEMs** (base primitive available from default OR
 oqsprovider): `p256_mlkem512`, `x25519_mlkem512`, `p384_mlkem768`,

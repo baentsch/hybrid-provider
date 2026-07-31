@@ -204,6 +204,30 @@ int hybrid_key_load_pub_components(HYBRID_KEY *key,
     return 1;
 }
 
+/* Load the classical (DER) + PQ (raw) private components (decoders). */
+int hybrid_key_load_prv_components(HYBRID_KEY *key,
+                                  const unsigned char *cder, size_t cderlen,
+                                  const unsigned char *pqv, size_t pqvlen)
+{
+    int sel = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
+            | OSSL_KEYMGMT_SELECT_PRIVATE_KEY;
+    const unsigned char *p = cder;
+
+    key->key1 = d2i_AutoPrivateKey_ex(NULL, &p, (long)cderlen, key->libctx,
+                                      HYBRID_KEY_CLASSIC_PROPQ(key));
+    if (key->key1 == NULL)
+        return 0;
+    if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+                        HYBRID_KEY_ALG2_NAME(key), NULL,
+                        OSSL_PKEY_PARAM_PRIV_KEY, sel, pqv, pqvlen, &key->key2)) {
+        EVP_PKEY_free(key->key1);
+        key->key1 = NULL;
+        return 0;
+    }
+    key->state = HYBRID_HAVE_PRVKEY;
+    return 1;
+}
+
 /* --- Runtime component-size discovery --- */
 
 /* Forward declaration; defined in the Key Generation section below. */

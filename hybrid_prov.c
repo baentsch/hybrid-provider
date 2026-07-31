@@ -145,7 +145,11 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
     { nm, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo",       \
       hybrid_spki_der_encoder_functions, ds " SPKI DER encoder" },           \
     { nm, "provider=hybrid,output=pem,structure=SubjectPublicKeyInfo",       \
-      hybrid_spki_pem_encoder_functions, ds " SPKI PEM encoder" },
+      hybrid_spki_pem_encoder_functions, ds " SPKI PEM encoder" },           \
+    { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
+      hybrid_pkcs8_der_encoder_functions, ds " PKCS8 DER encoder" },         \
+    { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
+      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },
 
 static const OSSL_ALGORITHM hybrid_encoders[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_ENC_REG)
@@ -156,7 +160,9 @@ static const OSSL_ALGORITHM hybrid_encoders[] = {
 /* Decoders: DER SubjectPublicKeyInfo -> key, one per signature algorithm. */
 #define HYBRID_SIG_DEC_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                \
     { nm, "provider=hybrid,input=der,structure=SubjectPublicKeyInfo",        \
-      hybrid_spki_der_decoder_functions, ds " SPKI DER decoder" },
+      hybrid_spki_der_decoder_functions, ds " SPKI DER decoder" },           \
+    { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \
+      hybrid_pkcs8_der_decoder_functions, ds " PKCS8 DER decoder" },
 
 static const OSSL_ALGORITHM hybrid_decoders[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_DEC_REG)

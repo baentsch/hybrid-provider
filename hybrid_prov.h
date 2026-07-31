@@ -397,11 +397,16 @@ extern const OSSL_DISPATCH hybrid_sig_functions[];
 /* Encoders (hybrid_encoder.c) */
 extern const OSSL_DISPATCH hybrid_spki_der_encoder_functions[];
 extern const OSSL_DISPATCH hybrid_spki_pem_encoder_functions[];
+extern const OSSL_DISPATCH hybrid_pkcs8_der_encoder_functions[];
+extern const OSSL_DISPATCH hybrid_pkcs8_pem_encoder_functions[];
 int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out,
                            size_t *outlen);
+int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out,
+                            size_t *outlen);
 
 /* Decoders (hybrid_decoder.c) */
 extern const OSSL_DISPATCH hybrid_spki_der_decoder_functions[];
+extern const OSSL_DISPATCH hybrid_pkcs8_der_decoder_functions[];
 
 /* Decoder support (hybrid_keymgmt.c) */
 void hybrid_keymgmt_free(void *vkey);
@@ -410,6 +415,9 @@ void *hybrid_keymgmt_new_by_variant(void *provctx, int is_kem,
 int hybrid_key_load_pub_components(HYBRID_KEY *key,
                                    const unsigned char *classic, size_t clen,
                                    const unsigned char *pq, size_t plen);
+int hybrid_key_load_prv_components(HYBRID_KEY *key,
+                                   const unsigned char *cder, size_t cderlen,
+                                   const unsigned char *pqv, size_t pqvlen);
 
 /*
  * Populate key->sizes by querying the component algorithms with throwaway

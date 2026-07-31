@@ -81,6 +81,26 @@ static int sig_variant_for_oid(const char *oid)
     return -1;
 }
 
+/* Hand a decoded key back to the caller as an object reference. */
+static int handback(HYBRID_KEY **key, int variant, OSSL_CALLBACK *data_cb,
+                    void *cbarg)
+{
+    int object_type = OSSL_OBJECT_PKEY;
+    const char *dtype = hybrid_sig_table[variant].hybrid_name;
+    OSSL_PARAM params[4];
+    int r;
+
+    params[0] = OSSL_PARAM_construct_int(OSSL_OBJECT_PARAM_TYPE, &object_type);
+    params[1] = OSSL_PARAM_construct_utf8_string(OSSL_OBJECT_PARAM_DATA_TYPE,
+                                                 (char *)dtype, 0);
+    params[2] = OSSL_PARAM_construct_octet_string(OSSL_OBJECT_PARAM_REFERENCE,
+                                                  key, sizeof(*key));
+    params[3] = OSSL_PARAM_construct_end();
+    r = data_cb(params, cbarg);
+    *key = NULL;   /* ownership passed to the caller's reference */
+    return r;
+}
+
 static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
                          OSSL_CALLBACK *data_cb, void *data_cbarg,
                          OSSL_PASSPHRASE_CALLBACK *pw_cb, void *pw_cbarg)
@@ -133,21 +153,7 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
         goto end;
     }
 
-    {
-        int object_type = OSSL_OBJECT_PKEY;
-        const char *dtype = hybrid_sig_table[variant].hybrid_name;
-        OSSL_PARAM params[4];
-
-        params[0] = OSSL_PARAM_construct_int(OSSL_OBJECT_PARAM_TYPE,
-                                             &object_type);
-        params[1] = OSSL_PARAM_construct_utf8_string(
-            OSSL_OBJECT_PARAM_DATA_TYPE, (char *)dtype, 0);
-        params[2] = OSSL_PARAM_construct_octet_string(
-            OSSL_OBJECT_PARAM_REFERENCE, &key, sizeof(key));
-        params[3] = OSSL_PARAM_construct_end();
-        ret = data_cb(params, data_cbarg);
-        key = NULL;   /* ownership passed to the caller's reference */
-    }
+    ret = handback(&key, variant, data_cb, data_cbarg);
 
 end:
     /* If we built a key but didn't hand it off, free it via the keymgmt. */
@@ -157,6 +163,81 @@ end:
     OPENSSL_free(der);
     return ret;
 }
+
+static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
+                            OSSL_CALLBACK *data_cb, void *data_cbarg,
+                            OSSL_PASSPHRASE_CALLBACK *pw_cb, void *pw_cbarg)
+{
+    HYBRID_DEC_CTX *ctx = vctx;
+    unsigned char *der = NULL;
+    const unsigned char *p, *inner;
+    size_t derlen = 0, a2v;
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    ASN1_OCTET_STRING *oct = NULL;
+    const ASN1_OBJECT *alg_oid = NULL;
+    int innerlen = 0, variant, ret = 1;
+    char oidbuf[128];
+    HYBRID_KEY *key = NULL;
+    uint32_t clen;
+
+    if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
+        goto end;
+    p = der;
+    if ((p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, (long)derlen)) == NULL) {
+        ERR_clear_error();
+        goto end;
+    }
+    if (!PKCS8_pkey_get0(&alg_oid, &inner, &innerlen, NULL, p8)
+        || OBJ_obj2txt(oidbuf, sizeof(oidbuf), alg_oid, 1) <= 0)
+        goto end;
+    variant = sig_variant_for_oid(oidbuf);
+    if (variant < 0)
+        goto end;
+
+    /* Inner OCTET STRING wraps the raw blob. */
+    if ((oct = d2i_ASN1_OCTET_STRING(NULL, &inner, innerlen)) == NULL
+        || oct->length < 4)
+        goto end;
+    clen = ((uint32_t)oct->data[0] << 24) | ((uint32_t)oct->data[1] << 16)
+         | ((uint32_t)oct->data[2] << 8) | (uint32_t)oct->data[3];
+
+    key = hybrid_keymgmt_new_by_variant(ctx->provctx, 0, (unsigned)variant);
+    if (key == NULL || !hybrid_ensure_sizes(key)) {
+        ret = 0;
+        goto end;
+    }
+    a2v = key->sizes.a2_prv;
+    if (sizeof(uint32_t) + (size_t)clen + a2v > (size_t)oct->length)
+        goto end;
+    if (!hybrid_key_load_prv_components(key, oct->data + 4, clen,
+                                       oct->data + 4 + clen, a2v)) {
+        ret = 0;
+        goto end;
+    }
+    ret = handback(&key, variant, data_cb, data_cbarg);
+end:
+    if (key != NULL)
+        hybrid_keymgmt_free(key);
+    ASN1_OCTET_STRING_free(oct);
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    OPENSSL_free(der);
+    return ret;
+}
+
+static int hybrid_dec_does_selection_priv(void *provctx, int selection)
+{
+    return selection == 0
+        || (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0;
+}
+
+const OSSL_DISPATCH hybrid_pkcs8_der_decoder_functions[] = {
+    { OSSL_FUNC_DECODER_NEWCTX, (void (*)(void))hybrid_dec_newctx },
+    { OSSL_FUNC_DECODER_FREECTX, (void (*)(void))hybrid_dec_freectx },
+    { OSSL_FUNC_DECODER_DOES_SELECTION,
+      (void (*)(void))hybrid_dec_does_selection_priv },
+    { OSSL_FUNC_DECODER_DECODE, (void (*)(void))hybrid_decode_p8 },
+    { 0, NULL }
+};
 
 const OSSL_DISPATCH hybrid_spki_der_decoder_functions[] = {
     { OSSL_FUNC_DECODER_NEWCTX, (void (*)(void))hybrid_dec_newctx },
