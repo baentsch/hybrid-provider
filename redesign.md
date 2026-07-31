@@ -239,6 +239,16 @@ non-interop surface. Implement only oqsprovider's exact sig set/names/format/OID
 **M5 — Remaining oqs hybrid sigs** (base only from oqsprovider): Falcon,
 FalconPadded, MAYO, OV (pkc/pkc_skc variants), SNOVA, MQOM.
 
+> **Falcon/FalconPadded/MAYO DONE (2026-07-31).** 10 rows added to
+> `HYBRID_SIG_LIST` (p256/rsa3072/p521 Falcon + Falcon-padded, p256/p384/p521
+> MAYO-1/2/3/5) with their oqs OIDs and NIST levels (Falcon-512/padded-512 &
+> MAYO-1/2 = L1; MAYO-3 = L3; Falcon-1024/padded-1024 & MAYO-5 = L5). Provider
+> advertises 14 hybrid sigs. Self-consistency (sign/verify + tamper-reject) with
+> the PQ base sourced from oqsprovider passes in `hybrid_oqs_test` (10/10).
+> REMAINING: OV / SNOVA / MQOM (many variants, less-obvious NIST levels) — add as
+> rows once levels are confirmed from liboqs. Cross-provider sig verification
+> (all sig families) still needs M2 (encode/decode).
+
 **M6 — Remaining oqs hybrid KEMs** (base only from oqsprovider): FrodoKEM, BIKE,
 HQC.
 

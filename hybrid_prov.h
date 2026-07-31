@@ -269,7 +269,30 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
   X(p384_mldsa65,   "p384_mldsa65",   "EC",  "P-384", "MLDSA65", 3,           \
       "1.3.9999.7.7", "P-384+ML-DSA-65")                                      \
   X(p521_mldsa87,   "p521_mldsa87",   "EC",  "P-521", "MLDSA87", 5,           \
-      "1.3.9999.7.8", "P-521+ML-DSA-87")
+      "1.3.9999.7.8", "P-521+ML-DSA-87")                                      \
+  /* --- Falcon hybrids (PQ base from oqsprovider only) --- */                \
+  X(p256_falcon512, "p256_falcon512", "EC",  "P-256", "falcon512", 1,         \
+      "1.3.9999.3.12", "P-256+Falcon-512")                                    \
+  X(rsa3072_falcon512,"rsa3072_falcon512","RSA",NULL, "falcon512", 1,         \
+      "1.3.9999.3.13", "RSA3072+Falcon-512")                                  \
+  X(p521_falcon1024,"p521_falcon1024","EC",  "P-521", "falcon1024", 5,        \
+      "1.3.9999.3.15", "P-521+Falcon-1024")                                   \
+  /* --- Falcon-padded hybrids --- */                                         \
+  X(p256_falconpadded512,"p256_falconpadded512","EC","P-256",                 \
+      "falconpadded512", 1, "1.3.9999.3.17", "P-256+Falcon-padded-512")       \
+  X(rsa3072_falconpadded512,"rsa3072_falconpadded512","RSA",NULL,             \
+      "falconpadded512", 1, "1.3.9999.3.18", "RSA3072+Falcon-padded-512")     \
+  X(p521_falconpadded1024,"p521_falconpadded1024","EC","P-521",               \
+      "falconpadded1024", 5, "1.3.9999.3.20", "P-521+Falcon-padded-1024")     \
+  /* --- MAYO hybrids --- */                                                  \
+  X(p256_mayo1,     "p256_mayo1",     "EC",  "P-256", "mayo1", 1,             \
+      "1.3.9999.8.1.4", "P-256+MAYO-1")                                       \
+  X(p256_mayo2,     "p256_mayo2",     "EC",  "P-256", "mayo2", 1,             \
+      "1.3.9999.8.2.4", "P-256+MAYO-2")                                       \
+  X(p384_mayo3,     "p384_mayo3",     "EC",  "P-384", "mayo3", 3,             \
+      "1.3.9999.8.3.4", "P-384+MAYO-3")                                       \
+  X(p521_mayo5,     "p521_mayo5",     "EC",  "P-521", "mayo5", 5,             \
+      "1.3.9999.8.5.4", "P-521+MAYO-5")
 
 /* Generate the info table from the master list. */
 #define HYBRID_SIG_ROW(cf, nm, a1, grp, a2, lvl, oid, ds)                     \

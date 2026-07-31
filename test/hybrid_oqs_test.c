@@ -156,6 +156,79 @@ done:
     EVP_PKEY_CTX_free(d);
 }
 
+/* Hybrid sigs whose PQ base exists only in oqsprovider. */
+static const char *oqs_sigs[] = {
+    "p256_falcon512", "rsa3072_falcon512", "p521_falcon1024",
+    "p256_falconpadded512", "rsa3072_falconpadded512", "p521_falconpadded1024",
+    "p256_mayo1", "p256_mayo2", "p384_mayo3", "p521_mayo5",
+};
+
+/*
+ * Sign/verify self-consistency for a hybrid signature composed by the hybrid
+ * provider (PQ base sourced from oqsprovider in the same libctx). Also checks a
+ * tampered message is rejected.
+ */
+static void sig_selfcheck(OSSL_LIB_CTX *ctx, const char *alg)
+{
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=hybrid");
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *md = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    const unsigned char msg[] = "hybrid signature interop message";
+    unsigned char bad[sizeof(msg)];
+
+    tests++;
+    printf("  %-24s sign/verify (base from oqs) ... ", alg);
+    fflush(stdout);
+
+    if (g == NULL || EVP_PKEY_keygen_init(g) <= 0
+        || EVP_PKEY_keygen(g, &pkey) <= 0)
+        goto fail;
+
+    md = EVP_MD_CTX_new();
+    if (md == NULL
+        || EVP_DigestSignInit_ex(md, NULL, NULL, ctx, "provider=hybrid",
+                                 pkey, NULL) <= 0
+        || EVP_DigestSign(md, NULL, &siglen, msg, sizeof(msg)) <= 0)
+        goto fail;
+    sig = OPENSSL_malloc(siglen);
+    if (sig == NULL || EVP_DigestSign(md, sig, &siglen, msg, sizeof(msg)) <= 0)
+        goto fail;
+
+    EVP_MD_CTX_free(md);
+    md = EVP_MD_CTX_new();
+    if (md == NULL
+        || EVP_DigestVerifyInit_ex(md, NULL, NULL, ctx, "provider=hybrid",
+                                   pkey, NULL) <= 0
+        || EVP_DigestVerify(md, sig, siglen, msg, sizeof(msg)) != 1)
+        goto fail;
+
+    /* tampered message must NOT verify */
+    memcpy(bad, msg, sizeof(msg));
+    bad[0] ^= 0x01;
+    EVP_MD_CTX_free(md);
+    md = EVP_MD_CTX_new();
+    if (md == NULL
+        || EVP_DigestVerifyInit_ex(md, NULL, NULL, ctx, "provider=hybrid",
+                                   pkey, NULL) <= 0
+        || EVP_DigestVerify(md, sig, siglen, bad, sizeof(bad)) == 1)
+        goto fail;
+
+    printf("PASS\n");
+    passed++;
+    goto done;
+fail:
+    printf("FAIL\n");
+    ERR_print_errors_fp(stdout);
+    failed++;
+done:
+    OPENSSL_free(sig);
+    EVP_MD_CTX_free(md);
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(g);
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -184,6 +257,11 @@ int main(void)
         cross(ctx, legacy_kems[i], "provider=oqsprovider", "provider=hybrid",
               "oqs-gen / hybrid-encaps");
     }
+    printf("\nhybrid signatures with oqsprovider PQ base (self-consistency)\n");
+    printf("=============================================================\n");
+    for (i = 0; i < sizeof(oqs_sigs) / sizeof(oqs_sigs[0]); i++)
+        sig_selfcheck(ctx, oqs_sigs[i]);
+
     printf("\nResults: %d/%d passed, %d failed\n", passed, tests, failed);
 
     OSSL_LIB_CTX_free(ctx);
