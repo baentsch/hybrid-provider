@@ -361,6 +361,39 @@ Decisions: (a) use oqsprovider canonical names as the primary registered names
 
 ---
 
+## Performance (measured 2026-07-31, OpenSSL 3.5.6 + oqsprovider main)
+
+The provider is a **near-zero-cost EVP composition layer**, so its performance is
+governed by the sourced primitives, not by the composition:
+
+- **Composition tax ≈ 2%.** hybrid `p256_mldsa44` sign 0.504 ms vs a hand-written
+  inline ECDSA+ML-DSA composite (same EVP calls, no provider boundary) 0.494 ms.
+  The provider double-dispatch is negligible.
+- **KEM encaps/decaps: parity** with default and oqsprovider (ML-KEM's default
+  portable-C impl is fast — no rejection sampling).
+- **Keygen: faster than oqsprovider** (e.g. `p256_mlkem512` 0.09 vs 0.94 ms;
+  `p256_mldsa44` 0.21 vs 2.83 ms); ~2× the native MLX keygen for the tiny
+  hybrid KEMs (two EVP keygens vs one integrated impl), but sub-0.2 ms absolute.
+- **Sign/verify are primitive-bound.** Any gap vs oqsprovider is the underlying
+  PQ implementation: under 3.5 the default provider supplies `MLDSA44/65/87`
+  (and standalone ML-KEM) in **portable C** — oqsprovider *cedes* them — so a
+  hybrid's PQ part resolves to portable C (~0.48 ms/ML-DSA-44-sign) whereas
+  oqsprovider's native hybrid calls liboqs ML-DSA (AVX2, ~0.07 ms) directly.
+
+**Not worth doing:** per-key caching of the component fetch/context. Measured to
+give **no** benefit — the libctx method store already caches implicit fetches
+(reuse-one-ctx 0.483 ms == init-every-op 0.46–0.49 ms), and propq parsing is not
+the cost.
+
+**The only performance lever is primitive sourcing.** `pq-propquery` /
+`classic-propquery` steer each component to the fastest provider that exposes the
+standalone EVP algorithm. The path to beating oqsprovider on sign/verify is an
+AVX2 ML-DSA exposed as a standalone EVP signature (future OpenSSL, or oqsprovider
+exposing its liboqs sigs standalone); the hybrid would then inherit that speed at
+the ~2% tax with no code change. `test/hybrid_bench.c` runs the comparison.
+
+---
+
 ## Phase 2 — Composite (LAMPS), later
 
 Separate **`composite_*`** family alongside `hybrid_*` (no shared combiner
