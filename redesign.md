@@ -244,10 +244,16 @@ FalconPadded, MAYO, OV (pkc/pkc_skc variants), SNOVA, MQOM.
 > MAYO-1/2/3/5) with their oqs OIDs and NIST levels (Falcon-512/padded-512 &
 > MAYO-1/2 = L1; MAYO-3 = L3; Falcon-1024/padded-1024 & MAYO-5 = L5). Provider
 > advertises 14 hybrid sigs. Self-consistency (sign/verify + tamper-reject) with
-> the PQ base sourced from oqsprovider passes in `hybrid_oqs_test` (10/10).
-> REMAINING: OV / SNOVA / MQOM (many variants, less-obvious NIST levels) — add as
-> rows once levels are confirmed from liboqs. Cross-provider sig verification
-> (all sig families) still needs M2 (encode/decode).
+> the PQ base sourced from oqsprovider passes in `hybrid_oqs_test`.
+>
+> **OV / SNOVA / MQOM DONE (2026-07-31).** 12 more rows: p256 OV-Is/Ip-pkc(+skc)
+> (L1); SNOVA p256_2454/2454esk/37172 (L1), p384_2455 (L3), p521_2965 (L5); MQOM2
+> p256_cat1/p384_cat3/p521_cat5 gf16-fast-r5 (L1/3/5). NIST levels taken
+> authoritatively from liboqs `claimed_nist_level` (a small probe over
+> OQS_SIG_alg_identifier), OIDs/base-names from oqsprovider. **All oqs hybrid sig
+> families now implemented: 26 hybrid sigs; sign/verify self-consistency 22/22 in
+> `hybrid_oqs_test` (suite 78/78).** Cross-provider sig verification still needs
+> M2 (encode/decode).
 
 **M6 — Remaining oqs hybrid KEMs** (base only from oqsprovider): FrodoKEM, BIKE,
 HQC.

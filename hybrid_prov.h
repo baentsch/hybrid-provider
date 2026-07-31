@@ -292,7 +292,34 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
   X(p384_mayo3,     "p384_mayo3",     "EC",  "P-384", "mayo3", 3,             \
       "1.3.9999.8.3.4", "P-384+MAYO-3")                                       \
   X(p521_mayo5,     "p521_mayo5",     "EC",  "P-521", "mayo5", 5,             \
-      "1.3.9999.8.5.4", "P-521+MAYO-5")
+      "1.3.9999.8.5.4", "P-521+MAYO-5")                                       \
+  /* --- OV (UOV) hybrids; all NIST level 1 --- */                            \
+  X(p256_OV_Is_pkc, "p256_OV_Is_pkc", "EC",  "P-256", "OV_Is_pkc", 1,         \
+      "1.3.9999.9.5.2", "P-256+OV-Is-pkc")                                    \
+  X(p256_OV_Ip_pkc, "p256_OV_Ip_pkc", "EC",  "P-256", "OV_Ip_pkc", 1,         \
+      "1.3.9999.9.6.2", "P-256+OV-Ip-pkc")                                    \
+  X(p256_OV_Is_pkc_skc,"p256_OV_Is_pkc_skc","EC","P-256","OV_Is_pkc_skc", 1,  \
+      "1.3.9999.9.9.2", "P-256+OV-Is-pkc-skc")                                \
+  X(p256_OV_Ip_pkc_skc,"p256_OV_Ip_pkc_skc","EC","P-256","OV_Ip_pkc_skc", 1,  \
+      "1.3.9999.9.10.2", "P-256+OV-Ip-pkc-skc")                               \
+  /* --- SNOVA hybrids --- */                                                 \
+  X(p256_snova2454, "p256_snova2454", "EC",  "P-256", "snova2454", 1,         \
+      "1.3.9999.10.1.2", "P-256+SNOVA-24-5-4")                                \
+  X(p256_snova2454esk,"p256_snova2454esk","EC","P-256","snova2454esk", 1,     \
+      "1.3.9999.10.3.2", "P-256+SNOVA-24-5-4-esk")                            \
+  X(p256_snova37172,"p256_snova37172","EC",  "P-256", "snova37172", 1,        \
+      "1.3.9999.10.5.2", "P-256+SNOVA-37-17-2")                               \
+  X(p384_snova2455, "p384_snova2455", "EC",  "P-384", "snova2455", 3,         \
+      "1.3.9999.10.10.2", "P-384+SNOVA-24-5-5")                               \
+  X(p521_snova2965, "p521_snova2965", "EC",  "P-521", "snova2965", 5,         \
+      "1.3.9999.10.12.2", "P-521+SNOVA-29-6-5")                               \
+  /* --- MQOM2 hybrids (GF16 fast r5) --- */                                  \
+  X(p256_mqom2cat1gf16fastr5,"p256_mqom2cat1gf16fastr5","EC","P-256",         \
+      "mqom2cat1gf16fastr5", 1, "1.3.9999.11.1.2", "P-256+MQOM2-cat1")        \
+  X(p384_mqom2cat3gf16fastr5,"p384_mqom2cat3gf16fastr5","EC","P-384",         \
+      "mqom2cat3gf16fastr5", 3, "1.3.9999.11.3.2", "P-384+MQOM2-cat3")        \
+  X(p521_mqom2cat5gf16fastr5,"p521_mqom2cat5gf16fastr5","EC","P-521",         \
+      "mqom2cat5gf16fastr5", 5, "1.3.9999.11.5.2", "P-521+MQOM2-cat5")
 
 /* Generate the info table from the master list. */
 #define HYBRID_SIG_ROW(cf, nm, a1, grp, a2, lvl, oid, ds)                     \

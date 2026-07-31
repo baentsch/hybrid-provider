@@ -161,6 +161,12 @@ static const char *oqs_sigs[] = {
     "p256_falcon512", "rsa3072_falcon512", "p521_falcon1024",
     "p256_falconpadded512", "rsa3072_falconpadded512", "p521_falconpadded1024",
     "p256_mayo1", "p256_mayo2", "p384_mayo3", "p521_mayo5",
+    "p256_OV_Is_pkc", "p256_OV_Ip_pkc",
+    "p256_OV_Is_pkc_skc", "p256_OV_Ip_pkc_skc",
+    "p256_snova2454", "p256_snova2454esk", "p256_snova37172",
+    "p384_snova2455", "p521_snova2965",
+    "p256_mqom2cat1gf16fastr5", "p384_mqom2cat3gf16fastr5",
+    "p521_mqom2cat5gf16fastr5",
 };
 
 /*
