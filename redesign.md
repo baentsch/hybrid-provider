@@ -177,6 +177,24 @@ name, and component EVP names resolvable from **either** provider (map e.g.
 serialization (`SIZE_OF_UINT32` classical prefix) and the `ENCODE_UINT32` sig
 format alongside the existing raw-concat paths.
 
+> **M1 empirical finding (probe `test/probe_oqs_hybrid.c` vs oqsprovider main,
+> OpenSSL 3.5.6).** For OQS-legacy ML-KEM hybrids, oqsprovider's byte layout is:
+> - `ENCODED_PUBLIC_KEY` (TLS key share) = **raw concat**, no prefix.
+> - encapsulation ciphertext = **raw concat** (classical ephemeral pub ‖ ML-KEM ct).
+> - shared secret = **raw concat** (classical ss ‖ ML-KEM ss).
+> - `PUB_KEY` param = raw concat **+ 4-byte length prefix** on the classical part.
+> - `PRIV_KEY` param = 4-byte-prefixed; **EC** classical component stored
+>   **DER-encoded** (X25519/X448 stored raw scalar).
+> - component order = oqsprovider `reverse_share`: classical-not-FIPS & PQ-FIPS →
+>   PQ first (`x25519_*`, `x448_*` → alg2 slot 0); else classical first
+>   (`p256_*`, `p384_*` → alg2 slot 1). Same pattern the MLX table already uses.
+>
+> Consequence: the KEM **runtime** path (encaps/decaps + `ENCODED_PUBLIC_KEY`) is
+> already raw-concat-compatible in `hybrid_kem.c`. The 4-byte prefix / EC-DER form
+> appears ONLY in the `PUB_KEY`/`PRIV_KEY` param serialization → deferred to M2
+> (encoders/decoders). So M3's first cross-provider KEM interop reduces to adding
+> table entries (sizes + slot) and exchanging keys via `ENCODED_PUBLIC_KEY`.
+
 **M2 — Encoders & decoders (currently missing subsystem).** New
 `hybrid_encoder.c` / `hybrid_decoder.c`: DER + PEM + text for
 `PrivateKeyInfo`/`SubjectPublicKeyInfo` keyed by the OQS OIDs, matching
