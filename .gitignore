@@ -8,3 +8,5 @@ openssl/
 openssl-34/
 oqs-provider/
 liboqs/
+.interop/
+.claude/settings.local.json

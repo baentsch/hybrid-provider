@@ -154,6 +154,21 @@ algorithm: encaps/decaps shared-secret equality, sign-here/verify-there (and
 reverse), and key-material byte-for-byte import/export. This gate blocks every
 later milestone.
 
+> **Reproducibility:** `test/setup_oqs_interop.sh` (re)builds the oqsprovider-main
+> peer + liboqs-main into `.local`/`.interop` (both gitignored, never `/tmp`) and
+> symlinks `oqsprovider.so` into `build/`. One command after any machine wipe.
+>
+> **Empirical finding (2026-07-31, oqsprovider main @ 00fde33 on OpenSSL 3.5.6):**
+> under 3.5 oqsprovider exposes NONE of the standardized MLX KEM names
+> (`X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024` — ceded to the
+> default provider). It exposes only its OQS-legacy hybrids: `p256_mlkem512`,
+> `x25519_mlkem512`, `bp256_mlkem512`, `p384_mlkem768`, `x448_mlkem768`,
+> `bp384_mlkem768`, `p521_mlkem1024`, `bp512_mlkem1024`, plus Frodo/BIKE/HQC.
+> Consequence: there is **zero KEM-name overlap** with today's provider, so the
+> first real cross-provider assertion requires implementing one OQS-legacy hybrid
+> (M3) — e.g. `p384_mlkem768` or `x25519_mlkem512`. M0 therefore delivers the rig;
+> the first green cross-test lands with M3.
+
 **M1 — Metadata & wire-format generalization (refactor, no new algs).** Extend
 `HYBRID_KEM_INFO`/`HYBRID_SIG_INFO` with: `format` (`RAW_CONCAT_MLX` vs
 `OQS_LENPREFIX`), `reverse_share`, TLS code point, OID string, oqs canonical
