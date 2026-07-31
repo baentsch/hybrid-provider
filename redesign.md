@@ -245,7 +245,16 @@ oqsprovider and vice versa.
 > (EC point / X25519) with an `i2d_PublicKey` fallback for RSA (RSAPublicKey DER,
 > matching oqsprovider); decode uses `d2i_PublicKey` for RSA. All 19 sig algs
 > (EC + RSA) round-trip SPKI + PKCS8 both ways — `hybrid_encode_test` **76/76**.
-> REMAINING M2: text encoder; KEM OIDs + KEM key files.
+>
+> **KEM key files — N/A (not an interop target).** oqsprovider assigns NULL OIDs
+> to ~all hybrid KEMs (every Frodo/BIKE/HQC, every brainpool, `p384_mlkem768`,
+> `x448_mlkem768`, …; only `p256_mlkem512`/`x25519_mlkem512` have OIDs) AND builds
+> KEM encoders only under the off-by-default `OQS_KEM_ENCODERS`. So there is no
+> oqsprovider counterpart to interop against; a hybrid-provider KEM key file would
+> be self-contained, which the project rule forbids. KEM interop is via the live
+> KEM/TLS paths (already complete), not key files. **M2 is therefore complete for
+> its purpose (signature key files).** Only optional leftover: a `text` encoder
+> (human-readable dump; no interop role).
 
 **M3 — ML-KEM legacy hybrid KEMs** (base primitive available from default OR
 oqsprovider): `p256_mlkem512`, `x25519_mlkem512`, `p384_mlkem768`,
