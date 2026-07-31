@@ -57,6 +57,7 @@ typedef struct {
     size_t      alg2_prvkey_bytes;
     size_t      alg2_shsec_bytes;
     size_t      alg2_ctext_bytes;
+    int         tls_codepoint;  /* TLS group code point, 0 if none */
 } HYBRID_KEM_INFO;
 
 /* Signature component info */
@@ -101,50 +102,75 @@ typedef struct hybrid_key_st {
 #define hybrid_have_prvkey(key)  ((key)->state >= HYBRID_HAVE_PRVKEY)
 
 /*
- * Algorithm table — matches OpenSSL's built-in MLX KEM wire format.
+ * Master hybrid-KEM list — single source of truth. One row per algorithm drives
+ * the info table (below), the per-algorithm keymgmt thunks/dispatch tables
+ * (hybrid_keymgmt.c) and the provider registration (hybrid_prov.c). To add a
+ * hybrid KEM, add exactly one row here.
  *
- * Wire format analysis from openssl/providers/implementations/kem/mlx_kem.c:
- *   X25519MLKEM768:    ml_kem_slot=0 → ctext = mlkem_ct || x25519_pub
- *   X448MLKEM1024:     ml_kem_slot=0 → ctext = mlkem_ct || x448_pub
- *   SecP256r1MLKEM768: ml_kem_slot=1 → ctext = ec_pub   || mlkem_ct
- *   SecP384r1MLKEM1024:ml_kem_slot=1 → ctext = ec_pub   || mlkem_ct
+ * The alg2 (PQ) component is always a native ML-KEM. `slot` is the position of
+ * the PQ share in the ctext/shared-secret/pubkey concatenation (0 = PQ first),
+ * which equals oqsprovider's `reverse_share` (reverse_share=1 -> slot 0). It
+ * also matches OpenSSL's built-in MLX layout for the standardized names.
  *
- * Our alg2_slot matches ml_kem_slot (alg2 = PQ = ML-KEM).
+ * X(cfield, name,
+ *   alg1, alg1_group, alg1_is_kem,   alg2, slot,
+ *   a1_pub,a1_prv,a1_ss,   a2_pub,a2_prv,a2_ss,a2_ct,
+ *   tls_codepoint, desc)
  */
+#define HYBRID_KEM_LIST(X)                                                    \
+  /* --- default-provider MLX names (raw concat) --- */                       \
+  X(x25519mlkem768,    "X25519MLKEM768",     "X25519", NULL,           0,     \
+      "MLKEM768",  0,  32,32,32,    1184,2400,32,1088,  0x11ec,               \
+      "X25519+ML-KEM-768")                                                    \
+  X(x448mlkem1024,     "X448MLKEM1024",      "X448",   NULL,           0,     \
+      "MLKEM1024", 0,  56,56,56,    1568,3168,32,1568,  0x0000,               \
+      "X448+ML-KEM-1024")                                                     \
+  X(secp256r1mlkem768, "SecP256r1MLKEM768",  "EC",     "P-256",        0,     \
+      "MLKEM768",  1,  65,32,32,    1184,2400,32,1088,  0x11eb,               \
+      "P-256+ML-KEM-768")                                                     \
+  X(secp384r1mlkem1024,"SecP384r1MLKEM1024", "EC",     "P-384",        0,     \
+      "MLKEM1024", 1,  97,48,48,    1568,3168,32,1568,  0x11ed,               \
+      "P-384+ML-KEM-1024")                                                    \
+  /* --- oqsprovider OQS-legacy ML-KEM hybrids --- */                         \
+  X(x25519_mlkem512,   "x25519_mlkem512",    "X25519", NULL,           0,     \
+      "MLKEM512",  0,  32,32,32,    800,1632,32,768,    0x2fb6,               \
+      "X25519+ML-KEM-512")                                                    \
+  X(p256_mlkem512,     "p256_mlkem512",      "EC",     "P-256",        0,     \
+      "MLKEM512",  1,  65,32,32,    800,1632,32,768,    0x2f4b,               \
+      "P-256+ML-KEM-512")                                                     \
+  X(bp256_mlkem512,    "bp256_mlkem512",     "EC",   "brainpoolP256r1",0,     \
+      "MLKEM512",  0,  65,32,32,    800,1632,32,768,    0xfe20,               \
+      "brainpoolP256r1+ML-KEM-512")                                          \
+  X(p384_mlkem768,     "p384_mlkem768",      "EC",     "P-384",        0,     \
+      "MLKEM768",  1,  97,48,48,    1184,2400,32,1088,  0x2f4c,               \
+      "P-384+ML-KEM-768")                                                     \
+  X(x448_mlkem768,     "x448_mlkem768",      "X448",   NULL,           0,     \
+      "MLKEM768",  0,  56,56,56,    1184,2400,32,1088,  0x2fb7,               \
+      "X448+ML-KEM-768")                                                      \
+  X(bp384_mlkem768,    "bp384_mlkem768",     "EC",   "brainpoolP384r1",0,     \
+      "MLKEM768",  0,  97,48,48,    1184,2400,32,1088,  0xfe21,               \
+      "brainpoolP384r1+ML-KEM-768")                                          \
+  X(p521_mlkem1024,    "p521_mlkem1024",     "EC",     "P-521",        0,     \
+      "MLKEM1024", 1,  133,66,66,   1568,3168,32,1568,  0x2f4d,               \
+      "P-521+ML-KEM-1024")                                                    \
+  X(bp512_mlkem1024,   "bp512_mlkem1024",    "EC",   "brainpoolP512r1",0,     \
+      "MLKEM1024", 0,  129,64,64,   1568,3168,32,1568,  0xfe22,               \
+      "brainpoolP512r1+ML-KEM-1024")
+
+/* Generate the info table from the master list. */
+#define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot,                        \
+                       a1p, a1v, a1s, a2p, a2v, a2s, a2c, cp, ds)             \
+    { nm, a1, grp, a1k, a2, NULL, 1, slot,                                    \
+      a1p, a1v, a1s, a2p, a2v, a2s, a2c, cp },
 static const HYBRID_KEM_INFO hybrid_kem_table[] = {
-    {
-        "X25519MLKEM768",
-        "X25519", NULL, 0,          /* alg1: key-exchange */
-        "MLKEM768", NULL, 1,      /* alg2: native KEM */
-        0,                           /* alg2_slot: ML-KEM first in ctext/ss */
-        32, 32, 32,                  /* X25519: pub, prv, shsec */
-        1184, 2400, 32, 1088         /* ML-KEM-768: pub, prv, shsec, ctext */
-    },
-    {
-        "X448MLKEM1024",
-        "X448", NULL, 0,
-        "MLKEM1024", NULL, 1,
-        0,
-        56, 56, 56,                  /* X448 */
-        1568, 3168, 32, 1568         /* ML-KEM-1024 */
-    },
-    {
-        "SecP256r1MLKEM768",
-        "EC", "P-256", 0,
-        "MLKEM768", NULL, 1,
-        1,                           /* alg2_slot: ML-KEM second in ctext/ss */
-        65, 32, 32,                  /* P-256 */
-        1184, 2400, 32, 1088         /* ML-KEM-768 */
-    },
-    {
-        "SecP384r1MLKEM1024",
-        "EC", "P-384", 0,
-        "MLKEM1024", NULL, 1,
-        1,
-        97, 48, 48,                  /* P-384 */
-        1568, 3168, 32, 1568         /* ML-KEM-1024 */
-    },
+    HYBRID_KEM_LIST(HYBRID_KEM_ROW)
 };
+#undef HYBRID_KEM_ROW
+
+/* Per-algorithm table index, in list order (used to bind keymgmt thunks). */
+#define HYBRID_KEM_IDX_ROW(cf, ...) HYBRID_KEM_IDX_##cf,
+enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
+#undef HYBRID_KEM_IDX_ROW
 
 #define HYBRID_KEM_ALG_COUNT \
     (sizeof(hybrid_kem_table) / sizeof(hybrid_kem_table[0]))
@@ -285,11 +311,10 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
 #define DECLARE_HYBRID_KMGMT_EXTERN(name) \
     extern const OSSL_DISPATCH hybrid_##name##_kmgmt_functions[];
 
-/* KEM keymgmt */
-DECLARE_HYBRID_KMGMT_EXTERN(x25519mlkem768)
-DECLARE_HYBRID_KMGMT_EXTERN(x448mlkem1024)
-DECLARE_HYBRID_KMGMT_EXTERN(secp256r1mlkem768)
-DECLARE_HYBRID_KMGMT_EXTERN(secp384r1mlkem1024)
+/* KEM keymgmt — generated from the master list */
+#define HYBRID_KEM_EXTERN_ROW(cf, ...) DECLARE_HYBRID_KMGMT_EXTERN(cf)
+HYBRID_KEM_LIST(HYBRID_KEM_EXTERN_ROW)
+#undef HYBRID_KEM_EXTERN_ROW
 
 /* Signature keymgmt */
 DECLARE_HYBRID_KMGMT_EXTERN(ed25519mldsa44)

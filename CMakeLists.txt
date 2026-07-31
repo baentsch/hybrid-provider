@@ -59,6 +59,17 @@ set_tests_properties(hybrid_config_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Cross-provider interop test against oqsprovider (built from GitHub main via
+# test/setup_oqs_interop.sh, which symlinks oqsprovider.so into the build dir).
+# Self-skips when oqsprovider is not on the module path.
+add_executable(hybrid_oqs_test test/hybrid_oqs_test.c)
+target_include_directories(hybrid_oqs_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_oqs_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_oqs_test COMMAND hybrid_oqs_test)
+set_tests_properties(hybrid_oqs_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Benchmark executable: hybrid provider vs default provider
 add_executable(hybrid_bench test/hybrid_bench.c)
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})

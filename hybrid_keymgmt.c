@@ -730,11 +730,12 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
         { 0, NULL }                                                          \
     }
 
-/* KEM keymgmt instances */
-DECLARE_HYBRID_KMGMT(x25519mlkem768, 1, 0);
-DECLARE_HYBRID_KMGMT(x448mlkem1024, 1, 1);
-DECLARE_HYBRID_KMGMT(secp256r1mlkem768, 1, 2);
-DECLARE_HYBRID_KMGMT(secp384r1mlkem1024, 1, 3);
+/* KEM keymgmt instances — generated from the master list in hybrid_prov.h.
+ * Each row binds its keymgmt thunks to the matching info-table index. */
+#define HYBRID_KEM_KMGMT_ROW(cf, ...) \
+    DECLARE_HYBRID_KMGMT(cf, 1, HYBRID_KEM_IDX_##cf);
+HYBRID_KEM_LIST(HYBRID_KEM_KMGMT_ROW)
+#undef HYBRID_KEM_KMGMT_ROW
 
 /* Signature keymgmt instances */
 DECLARE_HYBRID_KMGMT(ed25519mldsa44, 0, 0);

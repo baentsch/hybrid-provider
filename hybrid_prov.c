@@ -47,20 +47,15 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
 
 /* --- Algorithm tables --- */
 
+/* KEM keymgmt registration rows, generated from the master list. */
+#define HYBRID_KEM_KMGMT_REG(cf, nm, a1, grp, a1k, a2, slot,                  \
+                             a1p, a1v, a1s, a2p, a2v, a2s, a2c, cp, ds)       \
+    { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
+      ds " hybrid key management" },
+
 static const OSSL_ALGORITHM hybrid_keymgmts[] = {
     /* KEM keymgmts */
-    { "X25519MLKEM768", "provider=hybrid",
-      hybrid_x25519mlkem768_kmgmt_functions,
-      "X25519+ML-KEM-768 hybrid key management" },
-    { "X448MLKEM1024", "provider=hybrid",
-      hybrid_x448mlkem1024_kmgmt_functions,
-      "X448+ML-KEM-1024 hybrid key management" },
-    { "SecP256r1MLKEM768", "provider=hybrid",
-      hybrid_secp256r1mlkem768_kmgmt_functions,
-      "P-256+ML-KEM-768 hybrid key management" },
-    { "SecP384r1MLKEM1024", "provider=hybrid",
-      hybrid_secp384r1mlkem1024_kmgmt_functions,
-      "P-384+ML-KEM-1024 hybrid key management" },
+    HYBRID_KEM_LIST(HYBRID_KEM_KMGMT_REG)
     /* Signature keymgmts */
     { "ed25519mldsa44", "provider=hybrid",
       hybrid_ed25519mldsa44_kmgmt_functions,
@@ -83,21 +78,16 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
     { NULL, NULL, NULL, NULL }
 };
 
+/* KEM operation registration rows, generated from the master list. */
+#define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot,                     \
+                          a1p, a1v, a1s, a2p, a2v, a2s, a2c, cp, ds)          \
+    { nm, "provider=hybrid", hybrid_kem_functions, ds " hybrid KEM" },
+
 static const OSSL_ALGORITHM hybrid_kems[] = {
-    { "X25519MLKEM768", "provider=hybrid",
-      hybrid_kem_functions,
-      "X25519+ML-KEM-768 hybrid KEM" },
-    { "X448MLKEM1024", "provider=hybrid",
-      hybrid_kem_functions,
-      "X448+ML-KEM-1024 hybrid KEM" },
-    { "SecP256r1MLKEM768", "provider=hybrid",
-      hybrid_kem_functions,
-      "P-256+ML-KEM-768 hybrid KEM" },
-    { "SecP384r1MLKEM1024", "provider=hybrid",
-      hybrid_kem_functions,
-      "P-384+ML-KEM-1024 hybrid KEM" },
+    HYBRID_KEM_LIST(HYBRID_KEM_OP_REG)
     { NULL, NULL, NULL, NULL }
 };
+#undef HYBRID_KEM_OP_REG
 
 static const OSSL_ALGORITHM hybrid_signatures[] = {
     { "ed25519mldsa44", "provider=hybrid",
