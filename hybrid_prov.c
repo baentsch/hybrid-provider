@@ -102,30 +102,20 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
     { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
       ds " hybrid key management" },
 
+/* SIG keymgmt registration rows, generated from the master list. */
+#define HYBRID_SIG_KMGMT_REG(cf, nm, a1, grp, a2, lvl, oid, ds)              \
+    { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
+      ds " hybrid key management" },
+
 static const OSSL_ALGORITHM hybrid_keymgmts[] = {
     /* KEM keymgmts */
     HYBRID_KEM_LIST(HYBRID_KEM_KMGMT_REG)
     /* Signature keymgmts */
-    { "ed25519mldsa44", "provider=hybrid",
-      hybrid_ed25519mldsa44_kmgmt_functions,
-      "Ed25519+ML-DSA-44 hybrid key management" },
-    { "ed25519mldsa65", "provider=hybrid",
-      hybrid_ed25519mldsa65_kmgmt_functions,
-      "Ed25519+ML-DSA-65 hybrid key management" },
-    { "ed448mldsa87", "provider=hybrid",
-      hybrid_ed448mldsa87_kmgmt_functions,
-      "Ed448+ML-DSA-87 hybrid key management" },
-    { "p256mldsa44", "provider=hybrid",
-      hybrid_p256mldsa44_kmgmt_functions,
-      "P-256+ML-DSA-44 hybrid key management" },
-    { "p256mldsa65", "provider=hybrid",
-      hybrid_p256mldsa65_kmgmt_functions,
-      "P-256+ML-DSA-65 hybrid key management" },
-    { "p384mldsa87", "provider=hybrid",
-      hybrid_p384mldsa87_kmgmt_functions,
-      "P-384+ML-DSA-87 hybrid key management" },
+    HYBRID_SIG_LIST(HYBRID_SIG_KMGMT_REG)
     { NULL, NULL, NULL, NULL }
 };
+#undef HYBRID_SIG_KMGMT_REG
+#undef HYBRID_KEM_KMGMT_REG
 
 /* KEM operation registration rows, generated from the master list. */
 #define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)        \
@@ -137,27 +127,15 @@ static const OSSL_ALGORITHM hybrid_kems[] = {
 };
 #undef HYBRID_KEM_OP_REG
 
+/* SIG operation registration rows, generated from the master list. */
+#define HYBRID_SIG_OP_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                 \
+    { nm, "provider=hybrid", hybrid_sig_functions, ds " hybrid signature" },
+
 static const OSSL_ALGORITHM hybrid_signatures[] = {
-    { "ed25519mldsa44", "provider=hybrid",
-      hybrid_sig_functions,
-      "Ed25519+ML-DSA-44 hybrid signature" },
-    { "ed25519mldsa65", "provider=hybrid",
-      hybrid_sig_functions,
-      "Ed25519+ML-DSA-65 hybrid signature" },
-    { "ed448mldsa87", "provider=hybrid",
-      hybrid_sig_functions,
-      "Ed448+ML-DSA-87 hybrid signature" },
-    { "p256mldsa44", "provider=hybrid",
-      hybrid_sig_functions,
-      "P-256+ML-DSA-44 hybrid signature" },
-    { "p256mldsa65", "provider=hybrid",
-      hybrid_sig_functions,
-      "P-256+ML-DSA-65 hybrid signature" },
-    { "p384mldsa87", "provider=hybrid",
-      hybrid_sig_functions,
-      "P-384+ML-DSA-87 hybrid signature" },
+    HYBRID_SIG_LIST(HYBRID_SIG_OP_REG)
     { NULL, NULL, NULL, NULL }
 };
+#undef HYBRID_SIG_OP_REG
 
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)

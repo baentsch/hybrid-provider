@@ -791,12 +791,10 @@ int main(int argc, char **argv)
     /* --- Signature tests --- */
     {
         static const char *sig_algorithms[] = {
-            "ed25519mldsa44",
-            "ed25519mldsa65",
-            "ed448mldsa87",
-            "p256mldsa44",
-            "p256mldsa65",
-            "p384mldsa87",
+            "p256_mldsa44",
+            "rsa3072_mldsa44",
+            "p384_mldsa65",
+            "p521_mldsa87",
         };
         size_t nsigs = sizeof(sig_algorithms) / sizeof(sig_algorithms[0]);
 

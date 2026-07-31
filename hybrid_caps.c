@@ -35,7 +35,13 @@ typedef struct {
     int is_kem;
 } HYBRID_TLS_GROUP_CONSTANTS;
 
-/* Per-group constants, generated in master-list order. */
+/*
+ * Per-group constants, generated in master-list order. min_tls = TLS1_3_VERSION
+ * enables every group for TLS 1.3 — including the BIKE-L1 groups, which
+ * oqsprovider disables (enable_tls:false -> min_tls=-1). Per oqsprovider PR #711
+ * that disablement is an arbitrary test artifact, not a security decision, so we
+ * keep BIKE-L1 enabled here.
+ */
 #define HYBRID_CAPS_CONST_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)    \
     { (cp), (sb), TLS1_3_VERSION, 0, -1, -1, 1 },
 static const HYBRID_TLS_GROUP_CONSTANTS hybrid_group_list[] = {

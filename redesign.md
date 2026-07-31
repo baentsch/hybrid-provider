@@ -224,6 +224,18 @@ names/format/OIDs: `p256_mldsa44` (1.3.9999.7.5), `rsa3072_mldsa44` (.6),
 signature entries entirely** — they are not oqsprovider algorithms and only add
 non-interop surface. Implement only oqsprovider's exact sig set/names/format/OIDs.
 
+> **DONE (2026-07-31).** Old non-oqs sigs dropped. The 4 ML-DSA hybrids
+> (`p256_mldsa44`, `rsa3072_mldsa44`, `p384_mldsa65`, `p521_mldsa87`) generated
+> from a `HYBRID_SIG_LIST` X-macro (like the KEMs), with runtime size discovery
+> extended to sigs and RSA-3072 keygen support. `hybrid_sig.c` rewritten to the
+> oqsprovider wire format: `ENCODE_UINT32(classical_len) || classical_sig ||
+> pq_sig`, classical = `EVP_PKEY_sign` over a SHA-256/384/512 digest chosen by PQ
+> NIST level (ECDSA DER / RSA PKCS#1 v1.5), PQ signs the raw message. Self-
+> consistency + wrong-message pass (`hybrid_test`, 36/36); full ctest green. OIDs
+> recorded in the table for M2. NOTE: cross-provider sig interop (sign-here /
+> verify-in-oqsprovider) needs key import → deferred to M2 (encode/decode); the
+> format matches oqsprovider by construction (from `oqs_sig.c`).
+
 **M5 — Remaining oqs hybrid sigs** (base only from oqsprovider): Falcon,
 FalconPadded, MAYO, OV (pkc/pkc_skc variants), SNOVA, MQOM.
 

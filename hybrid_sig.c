@@ -2,15 +2,20 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Hybrid signature dispatch — one-shot DigestSign/DigestVerify
- * combining a classical signature (EdDSA or ECDSA) with a PQ
- * signature (ML-DSA).
+ * Hybrid signature dispatch — one-shot DigestSign/DigestVerify combining a
+ * classical signature (ECDSA or RSA) with a PQ signature (ML-DSA/…), matching
+ * oqsprovider's hybrid-sig wire format:
  *
- * Wire format: sig = alg1_sig || alg2_sig
- * For ECDSA (variable-length DER), alg1_sig is zero-padded to max size.
+ *   sig = ENCODE_UINT32(classical_len) || classical_sig || pq_sig
+ *
+ * The classical component signs a digest of the message — SHA-256/384/512 chosen
+ * by the PQ component's NIST level (1 -> 256, 2/3 -> 384, 4/5 -> 512) — via
+ * EVP_PKEY_sign (ECDSA DER, or RSA PKCS#1 v1.5). The PQ component signs the raw
+ * message. Verify requires BOTH to pass.
  */
 
 #include "hybrid_prov.h"
+#include <openssl/rsa.h>
 
 typedef struct {
     OSSL_LIB_CTX *libctx;
@@ -73,9 +78,67 @@ hybrid_sig_digest_verify_init(void *vctx, const char *mdname,
     return 1;
 }
 
+/* Digest the classical component signs, chosen by the PQ NIST level. */
+static const char *classical_md_name(int nist_level)
+{
+    switch (nist_level) {
+    case 1:  return "SHA256";
+    case 2:
+    case 3:  return "SHA384";
+    default: return "SHA512";
+    }
+}
+
 /*
- * One-shot DigestSign: sign tbs with both sub-keys, concatenate.
- * sig = alg1_sig (zero-padded to max) || alg2_sig
+ * Classical sign/verify over a pre-computed digest via EVP_PKEY_sign/verify
+ * (ECDSA DER, or RSA PKCS#1 v1.5). `is_rsa` selects PKCS#1 padding.
+ * For signing, out/outlen receive the signature; for verify, sig/siglen are the
+ * input. Returns 1 on success.
+ */
+static int classical_op(HYBRID_KEY *key, int sign, int is_rsa, const char *md,
+                        const unsigned char *tbs, size_t tbslen,
+                        unsigned char *sig, size_t *siglen, size_t sigmax)
+{
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_MD *mdobj = NULL;
+    unsigned char dig[EVP_MAX_MD_SIZE];
+    size_t diglen = sizeof(dig);
+    int ret = 0;
+
+    if (!EVP_Q_digest(key->libctx, md, HYBRID_KEY_CLASSIC_PROPQ(key),
+                      tbs, tbslen, dig, &diglen))
+        return 0;
+
+    pctx = EVP_PKEY_CTX_new_from_pkey(key->libctx, key->key1,
+                                      HYBRID_KEY_CLASSIC_PROPQ(key));
+    if (pctx == NULL)
+        goto end;
+    if ((sign ? EVP_PKEY_sign_init(pctx) : EVP_PKEY_verify_init(pctx)) <= 0)
+        goto end;
+    if (is_rsa && EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) <= 0)
+        goto end;
+    mdobj = EVP_MD_fetch(key->libctx, md, HYBRID_KEY_CLASSIC_PROPQ(key));
+    if (mdobj == NULL || EVP_PKEY_CTX_set_signature_md(pctx, mdobj) <= 0)
+        goto end;
+
+    if (sign) {
+        *siglen = sigmax;
+        if (EVP_PKEY_sign(pctx, sig, siglen, dig, diglen) <= 0)
+            goto end;
+    } else {
+        if (EVP_PKEY_verify(pctx, sig, *siglen, dig, diglen) <= 0)
+            goto end;
+    }
+    ret = 1;
+end:
+    EVP_MD_free(mdobj);
+    EVP_PKEY_CTX_free(pctx);
+    return ret;
+}
+
+/*
+ * One-shot sign:
+ *   sig = ENCODE_UINT32(classical_len) || classical_sig || pq_sig
  */
 static int
 hybrid_sig_digest_sign(void *vctx,
@@ -86,61 +149,52 @@ hybrid_sig_digest_sign(void *vctx,
     HYBRID_SIG_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
     const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
-    size_t total_siglen = info->alg1_sig_bytes + info->alg2_sig_bytes;
-    EVP_MD_CTX *mctx1 = NULL, *mctx2 = NULL;
-    size_t sig1len, sig2len;
+    EVP_MD_CTX *mctx = NULL;
+    size_t clen = 0, plen = 0, maxsig;
+    int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
 
-    /* Size query */
-    if (sig == NULL) {
-        *siglen = total_siglen;
+    if (!hybrid_ensure_sizes(key))
+        return 0;
+    maxsig = hybrid_sig_max_sig_bytes(key);
+
+    if (sig == NULL) {          /* size query */
+        *siglen = maxsig;
         return 1;
     }
-    if (sigsize < total_siglen)
+    if (sigsize < maxsig || !hybrid_have_prvkey(key))
         return 0;
 
-    if (!hybrid_have_prvkey(key))
-        return 0;
+    /* classical signature, written after the 4-byte length prefix */
+    if (!classical_op(key, 1, is_rsa, classical_md_name(info->nist_level),
+                      tbs, tbslen, sig + sizeof(uint32_t), &clen,
+                      key->sizes.a1_sig))
+        goto err;
+    sig[0] = (unsigned char)(clen >> 24);
+    sig[1] = (unsigned char)(clen >> 16);
+    sig[2] = (unsigned char)(clen >> 8);
+    sig[3] = (unsigned char)(clen);
 
-    /* Zero the output so variable-length alg1 sigs are zero-padded */
-    memset(sig, 0, total_siglen);
-
-    /* Sign with alg1 (classical) */
-    mctx1 = EVP_MD_CTX_new();
-    if (mctx1 == NULL)
+    /* PQ signature over the raw message, appended after the classical sig */
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL
+        || EVP_DigestSignInit_ex(mctx, NULL, NULL, key->libctx,
+                                 HYBRID_KEY_PQ_PROPQ(key), key->key2, NULL) <= 0)
         goto err;
-    if (EVP_DigestSignInit_ex(mctx1, NULL, NULL, key->libctx,
-                               HYBRID_KEY_CLASSIC_PROPQ(key), key->key1, NULL) <= 0)
-        goto err;
-    sig1len = info->alg1_sig_bytes;
-    if (EVP_DigestSign(mctx1, sig, &sig1len, tbs, tbslen) <= 0)
-        goto err;
-    /* sig1len may be < alg1_sig_bytes for ECDSA; that's fine, rest is zeroed */
-
-    /* Sign with alg2 (PQ) */
-    mctx2 = EVP_MD_CTX_new();
-    if (mctx2 == NULL)
-        goto err;
-    if (EVP_DigestSignInit_ex(mctx2, NULL, NULL, key->libctx,
-                               HYBRID_KEY_PQ_PROPQ(key), key->key2, NULL) <= 0)
-        goto err;
-    sig2len = info->alg2_sig_bytes;
-    if (EVP_DigestSign(mctx2, sig + info->alg1_sig_bytes,
-                        &sig2len, tbs, tbslen) <= 0)
+    plen = key->sizes.a2_sig;
+    if (EVP_DigestSign(mctx, sig + sizeof(uint32_t) + clen, &plen,
+                       tbs, tbslen) <= 0)
         goto err;
 
-    *siglen = total_siglen;
+    *siglen = sizeof(uint32_t) + clen + plen;
     ret = 1;
-
 err:
-    EVP_MD_CTX_free(mctx1);
-    EVP_MD_CTX_free(mctx2);
+    EVP_MD_CTX_free(mctx);
     return ret;
 }
 
 /*
- * One-shot DigestVerify: split signature, verify both sub-keys.
- * Both must pass for the hybrid verify to succeed.
+ * One-shot verify: split at the 4-byte classical length; both parts must pass.
  */
 static int
 hybrid_sig_digest_verify(void *vctx,
@@ -150,63 +204,41 @@ hybrid_sig_digest_verify(void *vctx,
     HYBRID_SIG_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
     const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
-    size_t total_siglen = info->alg1_sig_bytes + info->alg2_sig_bytes;
-    EVP_MD_CTX *mctx1 = NULL, *mctx2 = NULL;
-    const unsigned char *sig1, *sig2;
-    size_t sig1len, sig2len;
+    EVP_MD_CTX *mctx = NULL;
+    size_t clen, plen;
+    int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
 
-    if (siglen != total_siglen)
+    if (!hybrid_ensure_sizes(key) || !hybrid_have_pubkey(key))
         return 0;
-    if (!hybrid_have_pubkey(key))
+    if (siglen < sizeof(uint32_t))
         return 0;
+    clen = ((size_t)sig[0] << 24) | ((size_t)sig[1] << 16)
+         | ((size_t)sig[2] << 8) | (size_t)sig[3];
+    if (sizeof(uint32_t) + clen > siglen)
+        return 0;
+    plen = siglen - sizeof(uint32_t) - clen;
 
-    sig1 = sig;
-    sig1len = info->alg1_sig_bytes;
-    sig2 = sig + info->alg1_sig_bytes;
-    sig2len = info->alg2_sig_bytes;
-
-    /*
-     * For ECDSA, the actual DER signature may be shorter than the max.
-     * Find the real length from the DER encoding: tag(0x30) + length.
-     * EdDSA signatures are fixed-length, so this is safe for them too
-     * (they won't match 0x30 tag pattern in a meaningful way, but their
-     * sig1len already equals the exact size).
-     */
-    if (sig1len > 2 && sig1[0] == 0x30) {
-        /* DER sequence: parse length */
-        if (sig1[1] < 0x80) {
-            sig1len = 2 + sig1[1];
-        } else if (sig1[1] == 0x81 && sig1len > 3) {
-            sig1len = 3 + sig1[2];
-        }
-    }
-
-    /* Verify alg1 (classical) */
-    mctx1 = EVP_MD_CTX_new();
-    if (mctx1 == NULL)
-        goto err;
-    if (EVP_DigestVerifyInit_ex(mctx1, NULL, NULL, key->libctx,
-                                 HYBRID_KEY_CLASSIC_PROPQ(key), key->key1, NULL) <= 0)
-        goto err;
-    if (EVP_DigestVerify(mctx1, sig1, sig1len, tbs, tbslen) <= 0)
+    /* verify classical over the digest */
+    if (!classical_op(key, 0, is_rsa, classical_md_name(info->nist_level),
+                      tbs, tbslen, (unsigned char *)sig + sizeof(uint32_t),
+                      &clen, 0))
         goto err;
 
-    /* Verify alg2 (PQ) */
-    mctx2 = EVP_MD_CTX_new();
-    if (mctx2 == NULL)
+    /* verify PQ over the raw message */
+    mctx = EVP_MD_CTX_new();
+    if (mctx == NULL
+        || EVP_DigestVerifyInit_ex(mctx, NULL, NULL, key->libctx,
+                                   HYBRID_KEY_PQ_PROPQ(key), key->key2,
+                                   NULL) <= 0)
         goto err;
-    if (EVP_DigestVerifyInit_ex(mctx2, NULL, NULL, key->libctx,
-                                 HYBRID_KEY_PQ_PROPQ(key), key->key2, NULL) <= 0)
-        goto err;
-    if (EVP_DigestVerify(mctx2, sig2, sig2len, tbs, tbslen) <= 0)
+    if (EVP_DigestVerify(mctx, sig + sizeof(uint32_t) + clen, plen,
+                         tbs, tbslen) <= 0)
         goto err;
 
     ret = 1;
-
 err:
-    EVP_MD_CTX_free(mctx1);
-    EVP_MD_CTX_free(mctx2);
+    EVP_MD_CTX_free(mctx);
     return ret;
 }
 

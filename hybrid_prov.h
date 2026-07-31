@@ -82,18 +82,22 @@ typedef struct {
     /* Component sizes are discovered at runtime; see HYBRID_SIZES. */
 } HYBRID_KEM_INFO;
 
-/* Signature component info */
+/*
+ * Signature component info. Sizes are discovered at runtime (see
+ * hybrid_ensure_sizes); the table carries only identity + the parameters that
+ * define oqsprovider's hybrid-sig wire format:
+ *   - nist_level: NIST level of the PQ component, which selects the digest the
+ *     classical component signs (1 -> SHA-256, 2/3 -> SHA-384, 4/5 -> SHA-512).
+ *   - alg1 is always ECDSA ("EC" + group) or "RSA" (3072-bit); no EdDSA.
+ * Signature layout: ENCODE_UINT32(classical_len) || classical_sig || pq_sig.
+ */
 typedef struct {
-    const char *hybrid_name;    /* e.g., "ed25519mldsa44" */
-    const char *alg1_name;      /* e.g., "Ed25519" */
-    const char *alg1_group;     /* e.g., NULL or "P-256" */
-    const char *alg2_name;      /* e.g., "MLDSA44" */
-    size_t      alg1_pubkey_bytes;
-    size_t      alg1_prvkey_bytes;
-    size_t      alg1_sig_bytes;     /* max signature size for alg1 */
-    size_t      alg2_pubkey_bytes;
-    size_t      alg2_prvkey_bytes;
-    size_t      alg2_sig_bytes;
+    const char *hybrid_name;    /* e.g., "p256_mldsa44" */
+    const char *alg1_name;      /* "EC" or "RSA" */
+    const char *alg1_group;     /* EC group (e.g. "P-256"), or NULL for RSA */
+    const char *alg2_name;      /* PQ, e.g. "MLDSA44" */
+    int         nist_level;     /* PQ NIST level -> classical digest choice */
+    const char *oid;            /* X.509 OID (used by M2 encoders/decoders) */
 } HYBRID_SIG_INFO;
 
 /*
@@ -104,8 +108,9 @@ typedef struct {
  * public-key length for a key-exchange component, KEM ciphertext otherwise).
  */
 typedef struct {
-    size_t a1_pub, a1_prv, a1_ss, a1_ct;   /* classical (alg1) */
-    size_t a2_pub, a2_prv, a2_ss, a2_ct;   /* PQ (alg2) */
+    size_t a1_pub, a1_prv, a1_ss, a1_ct;   /* classical (alg1); KEM: ss/ct */
+    size_t a2_pub, a2_prv, a2_ss, a2_ct;   /* PQ (alg2); KEM: ss/ct */
+    size_t a1_sig, a2_sig;                 /* SIG only: max signature sizes */
     int    valid;
 } HYBRID_SIZES;
 
@@ -246,48 +251,38 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
     (sizeof(hybrid_kem_table) / sizeof(hybrid_kem_table[0]))
 
 /*
- * Signature algorithm table.
- * Wire format: sig = alg1_sig || alg2_sig (classical first, PQ second).
- * ECDSA signatures are DER-encoded with variable length; we use max sizes.
+ * Master hybrid-SIG list — single source of truth, mirroring HYBRID_KEM_LIST.
+ * These are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ), matching
+ * its names, OIDs and wire format. Component sizes are discovered at runtime.
+ *
+ * X(cfield, name, alg1, alg1_group, alg2, nist_level, oid, desc)
+ *   alg1        : "EC" or "RSA"
+ *   alg1_group  : EC group, or NULL for RSA (3072-bit)
+ *   nist_level  : PQ NIST level -> classical digest (1:SHA256 2/3:SHA384 4/5:SHA512)
  */
+#define HYBRID_SIG_LIST(X)                                                    \
+  /* --- ML-DSA hybrids --- */                                                \
+  X(p256_mldsa44,   "p256_mldsa44",   "EC",  "P-256", "MLDSA44", 2,           \
+      "1.3.9999.7.5", "P-256+ML-DSA-44")                                      \
+  X(rsa3072_mldsa44,"rsa3072_mldsa44","RSA", NULL,    "MLDSA44", 2,           \
+      "1.3.9999.7.6", "RSA3072+ML-DSA-44")                                    \
+  X(p384_mldsa65,   "p384_mldsa65",   "EC",  "P-384", "MLDSA65", 3,           \
+      "1.3.9999.7.7", "P-384+ML-DSA-65")                                      \
+  X(p521_mldsa87,   "p521_mldsa87",   "EC",  "P-521", "MLDSA87", 5,           \
+      "1.3.9999.7.8", "P-521+ML-DSA-87")
+
+/* Generate the info table from the master list. */
+#define HYBRID_SIG_ROW(cf, nm, a1, grp, a2, lvl, oid, ds)                     \
+    { nm, a1, grp, a2, lvl, oid },
 static const HYBRID_SIG_INFO hybrid_sig_table[] = {
-    {
-        "ed25519mldsa44",
-        "Ed25519", NULL, "MLDSA44",
-        32, 32, 64,                  /* Ed25519: pub, prv, sig */
-        1312, 2560, 2420             /* ML-DSA-44: pub, prv, sig */
-    },
-    {
-        "ed25519mldsa65",
-        "Ed25519", NULL, "MLDSA65",
-        32, 32, 64,
-        1952, 4032, 3309
-    },
-    {
-        "ed448mldsa87",
-        "Ed448", NULL, "MLDSA87",
-        57, 57, 114,                 /* Ed448: pub, prv, sig */
-        2592, 4896, 4627
-    },
-    {
-        "p256mldsa44",
-        "EC", "P-256", "MLDSA44",
-        65, 32, 72,                  /* P-256: pub, prv, max DER sig */
-        1312, 2560, 2420
-    },
-    {
-        "p256mldsa65",
-        "EC", "P-256", "MLDSA65",
-        65, 32, 72,
-        1952, 4032, 3309
-    },
-    {
-        "p384mldsa87",
-        "EC", "P-384", "MLDSA87",
-        97, 48, 104,                 /* P-384: pub, prv, max DER sig */
-        2592, 4896, 4627
-    },
+    HYBRID_SIG_LIST(HYBRID_SIG_ROW)
 };
+#undef HYBRID_SIG_ROW
+
+/* Per-algorithm table index, in list order (used to bind keymgmt thunks). */
+#define HYBRID_SIG_IDX_ROW(cf, ...) HYBRID_SIG_IDX_##cf,
+enum { HYBRID_SIG_LIST(HYBRID_SIG_IDX_ROW) HYBRID_SIG_ALG_COUNT_ENUM };
+#undef HYBRID_SIG_IDX_ROW
 
 #define HYBRID_SIG_ALG_COUNT \
     (sizeof(hybrid_sig_table) / sizeof(hybrid_sig_table[0]))
@@ -303,22 +298,13 @@ static const HYBRID_SIG_INFO hybrid_sig_table[] = {
     ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_name \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_name)
 /*
- * KEM size accessors read the runtime-discovered cache (key->sizes); SIG size
- * accessors read the static signature table. Callers must have populated the
- * KEM cache via hybrid_kem_ensure_sizes() before using the KEM branch.
+ * Size accessors read the runtime-discovered cache (key->sizes) for both KEM
+ * and SIG keys. Callers must have populated it via hybrid_ensure_sizes() first.
  */
-#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) \
-    ((k)->is_kem ? (k)->sizes.a1_pub \
-                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_pubkey_bytes)
-#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) \
-    ((k)->is_kem ? (k)->sizes.a2_pub \
-                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_pubkey_bytes)
-#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) \
-    ((k)->is_kem ? (k)->sizes.a1_prv \
-                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_prvkey_bytes)
-#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) \
-    ((k)->is_kem ? (k)->sizes.a2_prv \
-                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_prvkey_bytes)
+#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) ((k)->sizes.a1_pub)
+#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) ((k)->sizes.a2_pub)
+#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) ((k)->sizes.a1_prv)
+#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) ((k)->sizes.a2_prv)
 
 /* Total ciphertext / shared-secret sizes for a KEM key (from the cache). */
 static inline size_t hybrid_kem_ctext_bytes(const HYBRID_KEY *key)
@@ -331,35 +317,24 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
     return key->sizes.a1_ss + key->sizes.a2_ss;
 }
 
-/* Total sizes for signature algorithms */
-static inline size_t hybrid_sig_pubkey_bytes(const HYBRID_SIG_INFO *info)
+/*
+ * Maximum hybrid signature size (from the cache):
+ * ENCODE_UINT32(classical_len) + max classical sig + PQ sig.
+ */
+static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_KEY *key)
 {
-    return info->alg1_pubkey_bytes + info->alg2_pubkey_bytes;
+    return sizeof(uint32_t) + key->sizes.a1_sig + key->sizes.a2_sig;
 }
 
-static inline size_t hybrid_sig_prvkey_bytes(const HYBRID_SIG_INFO *info)
-{
-    return info->alg1_prvkey_bytes + info->alg2_prvkey_bytes;
-}
-
-static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_SIG_INFO *info)
-{
-    return info->alg1_sig_bytes + info->alg2_sig_bytes;
-}
-
-/* Generic total sizes via HYBRID_KEY */
+/* Generic total sizes via HYBRID_KEY (from the cache). */
 static inline size_t hybrid_key_pubkey_bytes(const HYBRID_KEY *key)
 {
-    if (key->is_kem)
-        return key->sizes.a1_pub + key->sizes.a2_pub;
-    return hybrid_sig_pubkey_bytes((const HYBRID_SIG_INFO *)key->info);
+    return key->sizes.a1_pub + key->sizes.a2_pub;
 }
 
 static inline size_t hybrid_key_prvkey_bytes(const HYBRID_KEY *key)
 {
-    if (key->is_kem)
-        return key->sizes.a1_prv + key->sizes.a2_prv;
-    return hybrid_sig_prvkey_bytes((const HYBRID_SIG_INFO *)key->info);
+    return key->sizes.a1_prv + key->sizes.a2_prv;
 }
 
 /* Extern declarations for dispatch tables */
@@ -367,12 +342,13 @@ extern const OSSL_DISPATCH hybrid_kem_functions[];
 extern const OSSL_DISPATCH hybrid_sig_functions[];
 
 /*
- * Populate key->sizes for a KEM hybrid by querying the component algorithms
- * (using existing components when present, otherwise throwaway keygens). Safe to
- * call repeatedly; a no-op once the cache is valid. Returns 1 on success.
- * Implemented in hybrid_keymgmt.c.
+ * Populate key->sizes by querying the component algorithms with throwaway
+ * keygens (sizes are deterministic per algorithm). Handles both KEM keys
+ * (pub/priv/shared-secret/ciphertext) and SIG keys (pub/priv/max-signature).
+ * Safe to call repeatedly; a no-op once the cache is valid. Returns 1 on
+ * success. Implemented in hybrid_keymgmt.c.
  */
-int hybrid_kem_ensure_sizes(HYBRID_KEY *key);
+int hybrid_ensure_sizes(HYBRID_KEY *key);
 
 /* TLS-GROUP capability advertising (hybrid_caps.c) */
 int hybrid_get_capabilities(void *provctx, const char *capability,
@@ -387,12 +363,9 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
 HYBRID_KEM_LIST(HYBRID_KEM_EXTERN_ROW)
 #undef HYBRID_KEM_EXTERN_ROW
 
-/* Signature keymgmt */
-DECLARE_HYBRID_KMGMT_EXTERN(ed25519mldsa44)
-DECLARE_HYBRID_KMGMT_EXTERN(ed25519mldsa65)
-DECLARE_HYBRID_KMGMT_EXTERN(ed448mldsa87)
-DECLARE_HYBRID_KMGMT_EXTERN(p256mldsa44)
-DECLARE_HYBRID_KMGMT_EXTERN(p256mldsa65)
-DECLARE_HYBRID_KMGMT_EXTERN(p384mldsa87)
+/* Signature keymgmt — generated from the master list */
+#define HYBRID_SIG_EXTERN_ROW(cf, ...) DECLARE_HYBRID_KMGMT_EXTERN(cf)
+HYBRID_SIG_LIST(HYBRID_SIG_EXTERN_ROW)
+#undef HYBRID_SIG_EXTERN_ROW
 
 #endif /* HYBRID_PROV_H */
