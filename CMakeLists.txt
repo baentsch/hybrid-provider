@@ -92,7 +92,13 @@ set_tests_properties(hybrid_encode_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
-# Benchmark executable: hybrid provider vs default provider
+# Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
+# with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired
+# into ctest as a low-iteration smoke test that it runs and completes.
 add_executable(hybrid_bench test/hybrid_bench.c)
+add_test(NAME hybrid_bench COMMAND hybrid_bench 10)
+set_tests_properties(hybrid_bench PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_bench PRIVATE OpenSSL::Crypto)

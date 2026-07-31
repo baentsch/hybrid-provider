@@ -78,14 +78,18 @@ hybrid_sig_digest_verify_init(void *vctx, const char *mdname,
     return 1;
 }
 
-/* Digest the classical component signs, chosen by the PQ NIST level. */
-static const char *classical_md_name(int nist_level)
+/*
+ * Digest the classical component signs, chosen by the PQ NIST level. Uses the
+ * static (non-fetched) EVP_MD accessors — matching oqsprovider and avoiding an
+ * EVP_MD_fetch per operation.
+ */
+static const EVP_MD *classical_md(int nist_level)
 {
     switch (nist_level) {
-    case 1:  return "SHA256";
+    case 1:  return EVP_sha256();
     case 2:
-    case 3:  return "SHA384";
-    default: return "SHA512";
+    case 3:  return EVP_sha384();
+    default: return EVP_sha512();
     }
 }
 
@@ -95,18 +99,17 @@ static const char *classical_md_name(int nist_level)
  * For signing, out/outlen receive the signature; for verify, sig/siglen are the
  * input. Returns 1 on success.
  */
-static int classical_op(HYBRID_KEY *key, int sign, int is_rsa, const char *md,
+static int classical_op(HYBRID_KEY *key, int sign, int is_rsa,
+                        const EVP_MD *md,
                         const unsigned char *tbs, size_t tbslen,
                         unsigned char *sig, size_t *siglen, size_t sigmax)
 {
     EVP_PKEY_CTX *pctx = NULL;
-    EVP_MD *mdobj = NULL;
     unsigned char dig[EVP_MAX_MD_SIZE];
-    size_t diglen = sizeof(dig);
+    unsigned int diglen = sizeof(dig);
     int ret = 0;
 
-    if (!EVP_Q_digest(key->libctx, md, HYBRID_KEY_CLASSIC_PROPQ(key),
-                      tbs, tbslen, dig, &diglen))
+    if (!EVP_Digest(tbs, tbslen, dig, &diglen, md, NULL))
         return 0;
 
     pctx = EVP_PKEY_CTX_new_from_pkey(key->libctx, key->key1,
@@ -117,8 +120,7 @@ static int classical_op(HYBRID_KEY *key, int sign, int is_rsa, const char *md,
         goto end;
     if (is_rsa && EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) <= 0)
         goto end;
-    mdobj = EVP_MD_fetch(key->libctx, md, HYBRID_KEY_CLASSIC_PROPQ(key));
-    if (mdobj == NULL || EVP_PKEY_CTX_set_signature_md(pctx, mdobj) <= 0)
+    if (EVP_PKEY_CTX_set_signature_md(pctx, md) <= 0)
         goto end;
 
     if (sign) {
@@ -131,7 +133,6 @@ static int classical_op(HYBRID_KEY *key, int sign, int is_rsa, const char *md,
     }
     ret = 1;
 end:
-    EVP_MD_free(mdobj);
     EVP_PKEY_CTX_free(pctx);
     return ret;
 }
@@ -166,7 +167,7 @@ hybrid_sig_digest_sign(void *vctx,
         return 0;
 
     /* classical signature, written after the 4-byte length prefix */
-    if (!classical_op(key, 1, is_rsa, classical_md_name(info->nist_level),
+    if (!classical_op(key, 1, is_rsa, classical_md(info->nist_level),
                       tbs, tbslen, sig + sizeof(uint32_t), &clen,
                       key->sizes.a1_sig))
         goto err;
@@ -220,7 +221,7 @@ hybrid_sig_digest_verify(void *vctx,
     plen = siglen - sizeof(uint32_t) - clen;
 
     /* verify classical over the digest */
-    if (!classical_op(key, 0, is_rsa, classical_md_name(info->nist_level),
+    if (!classical_op(key, 0, is_rsa, classical_md(info->nist_level),
                       tbs, tbslen, (unsigned char *)sig + sizeof(uint32_t),
                       &clen, 0))
         goto err;
