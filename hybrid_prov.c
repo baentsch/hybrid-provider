@@ -5,6 +5,7 @@
 
 #include "hybrid_prov.h"
 #include <openssl/provider.h>
+#include <stdlib.h>
 
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;
 static OSSL_FUNC_provider_gettable_params_fn hybrid_gettable_params;
@@ -14,12 +15,61 @@ static OSSL_FUNC_provider_query_operation_fn hybrid_query;
 static void hybrid_teardown(void *provctx)
 {
     HYBRID_PROV_CTX *ctx = provctx;
+    int i;
 
     if (ctx != NULL) {
+        for (i = 0; i < ctx->n_comp_provs; i++)
+            OSSL_PROVIDER_unload(ctx->comp_provs[i]);
+        if (ctx->comp_owned)
+            OSSL_LIB_CTX_free(ctx->comp_libctx);
         OPENSSL_free(ctx->pq_propq);
         OPENSSL_free(ctx->classic_propq);
         OPENSSL_free(ctx);
     }
+}
+
+/*
+ * Set up a private component context from a space/comma-separated provider
+ * list. On success ctx->comp_libctx points at the new context (comp_owned = 1);
+ * when `providers` is empty the component context stays the application context.
+ */
+static int hybrid_setup_component_ctx(HYBRID_PROV_CTX *ctx,
+                                      const char *providers, const char *path)
+{
+    char *list = NULL, *tok, *save = NULL;
+    OSSL_LIB_CTX *cc = NULL;
+
+    if (providers == NULL || *providers == '\0')
+        return 1;   /* not configured: comp_libctx remains the app context */
+
+    if ((cc = OSSL_LIB_CTX_new()) == NULL)
+        return 0;
+    if (path == NULL)
+        path = getenv("OPENSSL_MODULES");
+    if (path != NULL)
+        OSSL_PROVIDER_set_default_search_path(cc, path);
+
+    if ((list = OPENSSL_strdup(providers)) == NULL)
+        goto err;
+    for (tok = strtok_r(list, " \t,", &save); tok != NULL;
+         tok = strtok_r(NULL, " \t,", &save)) {
+        OSSL_PROVIDER *p;
+
+        if (ctx->n_comp_provs >= HYBRID_MAX_COMPONENT_PROVIDERS)
+            break;
+        if ((p = OSSL_PROVIDER_load(cc, tok)) == NULL)
+            goto err;
+        ctx->comp_provs[ctx->n_comp_provs++] = p;
+    }
+    OPENSSL_free(list);
+
+    ctx->comp_libctx = cc;
+    ctx->comp_owned = 1;
+    return 1;
+err:
+    OPENSSL_free(list);
+    OSSL_LIB_CTX_free(cc);
+    return 0;
 }
 
 static const OSSL_PARAM *hybrid_gettable_params(void *provctx)
@@ -48,7 +98,7 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
 /* --- Algorithm tables --- */
 
 /* KEM keymgmt registration rows, generated from the master list. */
-#define HYBRID_KEM_KMGMT_REG(cf, nm, a1, grp, a1k, a2, slot, cp, ds)         \
+#define HYBRID_KEM_KMGMT_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)     \
     { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
       ds " hybrid key management" },
 
@@ -78,7 +128,7 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
 };
 
 /* KEM operation registration rows, generated from the master list. */
-#define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot, cp, ds)            \
+#define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)        \
     { nm, "provider=hybrid", hybrid_kem_functions, ds " hybrid KEM" },
 
 static const OSSL_ALGORITHM hybrid_kems[] = {
@@ -179,20 +229,26 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
      * call. Absent keys leave the pointers untouched (NULL).
      */
     if (c_get_params != NULL) {
-        char *pq = NULL, *classic = NULL;
-        OSSL_PARAM core_params[3];
+        char *pq = NULL, *classic = NULL, *comp = NULL, *comp_path = NULL;
+        OSSL_PARAM core_params[5];
 
         core_params[0] = OSSL_PARAM_construct_utf8_ptr(
             HYBRID_CONF_PQ_PROPQUERY, &pq, 0);
         core_params[1] = OSSL_PARAM_construct_utf8_ptr(
             HYBRID_CONF_CLASSIC_PROPQUERY, &classic, 0);
-        core_params[2] = OSSL_PARAM_construct_end();
+        core_params[2] = OSSL_PARAM_construct_utf8_ptr(
+            HYBRID_CONF_COMPONENT_PROVIDERS, &comp, 0);
+        core_params[3] = OSSL_PARAM_construct_utf8_ptr(
+            HYBRID_CONF_COMPONENT_PATH, &comp_path, 0);
+        core_params[4] = OSSL_PARAM_construct_end();
 
         if (c_get_params(handle, core_params)) {
             if (pq != NULL && (ctx->pq_propq = OPENSSL_strdup(pq)) == NULL)
                 goto err;
             if (classic != NULL
                     && (ctx->classic_propq = OPENSSL_strdup(classic)) == NULL)
+                goto err;
+            if (!hybrid_setup_component_ctx(ctx, comp, comp_path))
                 goto err;
         }
     }

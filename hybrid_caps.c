@@ -10,25 +10,20 @@
 /*
  * TLS group capabilities for the hybrid KEMs.
  *
- * Only the three MLX hybrids with standardized TLS codepoints
- * (draft-ietf-tls-ecdhe-mlkem) are advertised; X448MLKEM1024 has no registered
- * codepoint and is therefore usable only via the KEM API, not as a TLS group.
+ * Both the constants table and the per-group OSSL_PARAM arrays are generated
+ * from the single master list in hybrid_prov.h, so a hybrid KEM automatically
+ * becomes a TLS group with its listed code point and security level. Groups
+ * whose code point is 0 (e.g. X448MLKEM1024, which has no registered code
+ * point) are skipped at advertisement time and remain usable only via the KEM
+ * API.
  *
- * Codepoints (wire values) are hard-coded rather than pulled from
- * internal/tlsgroups.h, per the EVP-only / no-internal-headers rule.
- *
- * The TLS group names and ALG names are the canonical MLX names, identical to
- * the default provider's, so that choosing between the two implementations is
- * driven purely by provider load order / property query (config-only
- * switching) rather than by distinct names.
+ * The group name and the fetched ALG name are identical to the algorithm names
+ * registered in hybrid_prov.c — the canonical MLX names for the standardized
+ * hybrids (so hybrid vs. default provider is a config-only choice) and the OQS
+ * names for the rest (matching oqsprovider, so the two interoperate on the
+ * wire). Code points are the oqsprovider / IETF defaults; per the EVP-only rule
+ * they are hard-coded here rather than pulled from internal TLS headers.
  */
-#define HYBRID_TLS_GROUP_ID_SecP256r1MLKEM768   0x11EB
-#define HYBRID_TLS_GROUP_ID_X25519MLKEM768      0x11EC
-#define HYBRID_TLS_GROUP_ID_SecP384r1MLKEM1024  0x11ED
-
-/* ML-KEM security strengths: ML-KEM-768 = NIST level 3, ML-KEM-1024 = level 5 */
-#define HYBRID_MLKEM768_SECBITS    192
-#define HYBRID_MLKEM1024_SECBITS   256
 
 typedef struct {
     unsigned int group_id;
@@ -40,29 +35,28 @@ typedef struct {
     int is_kem;
 } HYBRID_TLS_GROUP_CONSTANTS;
 
+/* Per-group constants, generated in master-list order. */
+#define HYBRID_CAPS_CONST_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)    \
+    { (cp), (sb), TLS1_3_VERSION, 0, -1, -1, 1 },
 static const HYBRID_TLS_GROUP_CONSTANTS hybrid_group_list[] = {
-    { HYBRID_TLS_GROUP_ID_X25519MLKEM768,     HYBRID_MLKEM768_SECBITS,
-      TLS1_3_VERSION, 0, -1, -1, 1 },
-    { HYBRID_TLS_GROUP_ID_SecP256r1MLKEM768,  HYBRID_MLKEM768_SECBITS,
-      TLS1_3_VERSION, 0, -1, -1, 1 },
-    { HYBRID_TLS_GROUP_ID_SecP384r1MLKEM1024, HYBRID_MLKEM1024_SECBITS,
-      TLS1_3_VERSION, 0, -1, -1, 1 },
+    HYBRID_KEM_LIST(HYBRID_CAPS_CONST_ROW)
 };
+#undef HYBRID_CAPS_CONST_ROW
 
 /*
- * One OSSL_PARAM array per group. NAME and ALG are the canonical name; the
- * ALG name is what the TLS layer fetches as a KEM/keymgmt — it matches the
- * algorithm names registered in hybrid_prov.c. NAME_INTERNAL is left empty,
- * as the default provider does for these groups.
+ * One OSSL_PARAM array per group. NAME and ALG are the algorithm name; the ALG
+ * name is what the TLS layer fetches as a KEM. The row index into the constants
+ * table is the algorithm's list-order index (HYBRID_KEM_IDX_*), so the two
+ * generated tables stay aligned.
  */
-#define HYBRID_TLS_GROUP_ENTRY(tlsname, algorithm, idx)                 \
+#define HYBRID_TLS_GROUP_ENTRY(tlsname, idx)                            \
     {                                                                   \
         OSSL_PARAM_utf8_string(OSSL_CAPABILITY_TLS_GROUP_NAME,          \
             tlsname, sizeof(tlsname)),                                  \
         OSSL_PARAM_utf8_string(OSSL_CAPABILITY_TLS_GROUP_NAME_INTERNAL, \
             "", sizeof("")),                                            \
         OSSL_PARAM_utf8_string(OSSL_CAPABILITY_TLS_GROUP_ALG,           \
-            algorithm, sizeof(algorithm)),                              \
+            tlsname, sizeof(tlsname)),                                  \
         OSSL_PARAM_uint(OSSL_CAPABILITY_TLS_GROUP_ID,                   \
             (unsigned int *)&hybrid_group_list[idx].group_id),          \
         OSSL_PARAM_uint(OSSL_CAPABILITY_TLS_GROUP_SECURITY_BITS,        \
@@ -80,11 +74,12 @@ static const HYBRID_TLS_GROUP_CONSTANTS hybrid_group_list[] = {
         OSSL_PARAM_END                                                  \
     }
 
+#define HYBRID_CAPS_PARAM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)    \
+    HYBRID_TLS_GROUP_ENTRY(nm, HYBRID_KEM_IDX_##cf),
 static const OSSL_PARAM hybrid_param_group_list[][11] = {
-    HYBRID_TLS_GROUP_ENTRY("X25519MLKEM768",     "X25519MLKEM768",     0),
-    HYBRID_TLS_GROUP_ENTRY("SecP256r1MLKEM768",  "SecP256r1MLKEM768",  1),
-    HYBRID_TLS_GROUP_ENTRY("SecP384r1MLKEM1024", "SecP384r1MLKEM1024", 2),
+    HYBRID_KEM_LIST(HYBRID_CAPS_PARAM_ROW)
 };
+#undef HYBRID_CAPS_PARAM_ROW
 
 #define HYBRID_TLS_GROUP_COUNT \
     (sizeof(hybrid_param_group_list) / sizeof(hybrid_param_group_list[0]))
@@ -98,8 +93,11 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
             || OPENSSL_strcasecmp(capability, "TLS-GROUP") != 0)
         return 0;
 
-    for (i = 0; i < HYBRID_TLS_GROUP_COUNT; i++)
+    for (i = 0; i < HYBRID_TLS_GROUP_COUNT; i++) {
+        if (hybrid_group_list[i].group_id == 0)
+            continue;   /* no registered TLS code point */
         if (!cb(hybrid_param_group_list[i], arg))
             return 0;
+    }
     return 1;
 }

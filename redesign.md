@@ -243,6 +243,32 @@ HQC.
 overrides, full TLS-GROUP + TLS-SIGALG capability advertisement, and per-algorithm
 enable/disable parity with oqsprovider defaults.
 
+> **KEM TLS-GROUP part DONE (2026-07-31).** `hybrid_caps.c` now generates the
+> TLS-group table from the master list (code point + secbits per row; code
+> point 0 = KEM-API-only, skipped). Provider advertises 31 hybrid TLS groups.
+> In-process TLS 1.3 handshake interop (`hybrid_tls_test.c`, 28/28) covers:
+> MLX groups vs the **default** provider, and the 8 OQS-legacy **ML-KEM** groups
+> vs **oqsprovider**, both directions, with matching negotiated group + exported
+> keying material.
+>
+> **Frodo/BIKE/HQC over TLS — DONE via a private component context.** Their PQ
+> base exists only in oqsprovider; loading oqsprovider into the *application*
+> context would collide on group names (both providers advertise the same
+> group+code point, and an optional `?provider=hybrid` query loses to
+> oqsprovider; a mandatory `provider=hybrid` query wins the group but then also
+> hits cert/signature fetches the default provider must serve). Fix: the
+> **`component-providers` config key** makes the hybrid provider load its
+> component providers (`default oqsprovider`) into its OWN libctx and source all
+> sub-algorithms from there. The application context then holds only
+> `default + hybrid` — no collision — so these groups resolve to hybrid with a
+> plain query and handshake against pure oqsprovider. `hybrid_compctx_test.c`:
+> Frodo/BIKE-L3/L5/HQC, both directions, 24/24. (BIKE-L1 groups aren't negotiated
+> by the oqsprovider peer over TLS in this build — its own client/server reject
+> them — so they're KEM-level-only; not a hybrid-provider limitation.)
+>
+> Still pending for full M7: `OQS_CODEPOINT_*`/`OQS_OID_*` env overrides and
+> TLS-SIGALG advertisement (post M4/M5).
+
 **M8 — Replacement validation & upstreaming.** Run oqsprovider's own test suite +
 TLS interop with hybrid-provider substituted for its hybrid code; then prepare the
 oqsprovider PR that removes its hybrid logic and delegates to this provider.

@@ -775,7 +775,8 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
     static void *hybrid_##name##_new(void *provctx)                          \
     {                                                                        \
         HYBRID_PROV_CTX *ctx = provctx;                                      \
-        OSSL_LIB_CTX *libctx = ctx ? ctx->libctx : NULL;                    \
+        OSSL_LIB_CTX *libctx =                                               \
+            ctx ? HYBRID_COMPONENT_LIBCTX(ctx) : NULL;                       \
         HYBRID_KEY *k = hybrid_key_new(is_kem_val, variant, libctx, NULL);   \
         if (k != NULL && ctx != NULL) {                                      \
             k->pq_propq = ctx->pq_propq;                                     \
@@ -795,7 +796,7 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
         if (gctx == NULL) return NULL;                                       \
         gctx->is_kem = is_kem_val;                                          \
         gctx->algo_idx = variant;                                            \
-        gctx->libctx = pctx->libctx;                                        \
+        gctx->libctx = HYBRID_COMPONENT_LIBCTX(pctx);                       \
         gctx->pq_propq = pctx->pq_propq;                                     \
         gctx->classic_propq = pctx->classic_propq;                          \
         gctx->selection = selection;                                         \

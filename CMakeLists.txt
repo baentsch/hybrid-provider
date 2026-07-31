@@ -70,6 +70,17 @@ set_tests_properties(hybrid_oqs_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Private component-context test: hybrid sources Frodo/BIKE/HQC base from its
+# own libctx (default + oqsprovider), so the app context has no group collision
+# and these hybrids work over TLS. Self-skips when oqsprovider is unavailable.
+add_executable(hybrid_compctx_test test/hybrid_compctx_test.c)
+target_include_directories(hybrid_compctx_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_compctx_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+add_test(NAME hybrid_compctx_test COMMAND hybrid_compctx_test)
+set_tests_properties(hybrid_compctx_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Benchmark executable: hybrid provider vs default provider
 add_executable(hybrid_bench test/hybrid_bench.c)
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})

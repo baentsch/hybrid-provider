@@ -323,6 +323,68 @@ int main(void)
             TEST_FAIL("handshake / keying-material mismatch");
     }
 
+    /*
+     * TLS interop with oqsprovider for the OQS-legacy ML-KEM hybrid groups.
+     * These have no default-provider equivalent, so oqsprovider is the peer.
+     * Their ML-KEM base comes from the default provider, so the hybrid side
+     * needs no oqsprovider and the two libctxs stay collision-free. Skipped
+     * (not failed) when oqsprovider is unavailable.
+     */
+    {
+        static const struct { const char *name; int codepoint; } OQS_GROUPS[] = {
+            { "x25519_mlkem512", 0x2FB6 }, { "p256_mlkem512", 0x2F4B },
+            { "bp256_mlkem512",  0xFE20 }, { "p384_mlkem768", 0x2F4C },
+            { "x448_mlkem768",   0x2FB7 }, { "bp384_mlkem768", 0xFE21 },
+            { "p521_mlkem1024",  0x2F4D }, { "bp512_mlkem1024", 0xFE22 },
+        };
+        size_t n = sizeof(OQS_GROUPS) / sizeof(OQS_GROUPS[0]);
+        OSSL_LIB_CTX *oqs_ctx = OSSL_LIB_CTX_new();
+        OSSL_PROVIDER *od = NULL, *oq = NULL;
+
+        if (oqs_ctx != NULL
+                && (od = OSSL_PROVIDER_load(oqs_ctx, "default")) != NULL
+                && (oq = OSSL_PROVIDER_load(oqs_ctx, "oqsprovider")) != NULL) {
+            printf("\n[hybrid <-> oqsprovider TLS interop]\n");
+            for (g = 0; g < n; g++) {
+                char t[128];
+
+                snprintf(t, sizeof(t), "%s: hybrid server <-> oqs client",
+                         OQS_GROUPS[g].name);
+                TEST_START(t);
+                if (run_handshake(hyb_ctx, "?provider=hybrid", oqs_ctx, NULL,
+                                  OQS_GROUPS[g].name, OQS_GROUPS[g].codepoint))
+                    TEST_PASS();
+                else
+                    TEST_FAIL("handshake / keying-material mismatch");
+
+                snprintf(t, sizeof(t), "%s: oqs server <-> hybrid client",
+                         OQS_GROUPS[g].name);
+                TEST_START(t);
+                if (run_handshake(oqs_ctx, NULL, hyb_ctx, "?provider=hybrid",
+                                  OQS_GROUPS[g].name, OQS_GROUPS[g].codepoint))
+                    TEST_PASS();
+                else
+                    TEST_FAIL("handshake / keying-material mismatch");
+            }
+        } else {
+            printf("\n[hybrid <-> oqsprovider TLS interop] SKIPPED "
+                   "(oqsprovider unavailable)\n");
+            ERR_clear_error();
+        }
+        OSSL_PROVIDER_unload(oq);
+        OSSL_PROVIDER_unload(od);
+        OSSL_LIB_CTX_free(oqs_ctx);
+    }
+
+    /*
+     * Note: Frodo/BIKE/HQC hybrid groups are validated at the KEM level in
+     * hybrid_oqs_test (56/56, all directions). They are not exercised here over
+     * TLS in-process: the hybrid side must load oqsprovider to source their PQ
+     * base, at which point both providers advertise the same group name/code
+     * point in one libctx and the TLS keyshare keygen cannot be steered to the
+     * hybrid implementation. Cross-provider TLS for these needs two separate
+     * processes and is out of scope for this in-process harness.
+     */
     printf("\nNote: X448MLKEM1024 has no standardized TLS group codepoint and "
            "is exercised only via the KEM API (see hybrid_test).\n");
 
