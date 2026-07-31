@@ -239,8 +239,13 @@ oqsprovider and vice versa.
 > pq_pubkey` in an inner OCTET STRING (matches oqsprovider's default pubkey-append);
 > decode d2i's the classical and loads the PQ raw. Full private-key round-trip vs
 > oqsprovider both directions (`hybrid_encode_test` now **64/64**: SPKI both ways +
-> PKCS8 both ways). Suite 6/6 green. REMAINING M2: RSA classical blob (rsa3072_*);
-> text encoder; KEM OIDs + KEM keys.
+> PKCS8 both ways). Suite 6/6 green.
+>
+> **RSA classical DONE (2026-07-31).** Classical public key is the octet param
+> (EC point / X25519) with an `i2d_PublicKey` fallback for RSA (RSAPublicKey DER,
+> matching oqsprovider); decode uses `d2i_PublicKey` for RSA. All 19 sig algs
+> (EC + RSA) round-trip SPKI + PKCS8 both ways — `hybrid_encode_test` **76/76**.
+> REMAINING M2: text encoder; KEM OIDs + KEM key files.
 
 **M3 — ML-KEM legacy hybrid KEMs** (base primitive available from default OR
 oqsprovider): `p256_mlkem512`, `x25519_mlkem512`, `p384_mlkem768`,

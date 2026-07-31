@@ -4,6 +4,7 @@
  */
 
 #include "hybrid_prov.h"
+#include <openssl/x509.h>
 
 /* --- Key lifecycle --- */
 
@@ -192,10 +193,19 @@ int hybrid_key_load_pub_components(HYBRID_KEY *key,
     int sel = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
             | OSSL_KEYMGMT_SELECT_PUBLIC_KEY;
 
-    if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+    if (strcmp(HYBRID_KEY_ALG1_NAME(key), "RSA") == 0) {
+        /* RSA public key is i2d_PublicKey (RSAPublicKey) DER, not an octet. */
+        const unsigned char *p = classic;
+
+        key->key1 = d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)clen);
+        if (key->key1 == NULL)
+            return 0;
+    } else if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
                         HYBRID_KEY_ALG1_NAME(key), HYBRID_KEY_ALG1_GROUP(key),
-                        OSSL_PKEY_PARAM_PUB_KEY, sel, classic, clen, &key->key1))
+                        OSSL_PKEY_PARAM_PUB_KEY, sel, classic, clen,
+                        &key->key1)) {
         return 0;
+    }
     if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
                         HYBRID_KEY_ALG2_NAME(key), NULL,
                         OSSL_PKEY_PARAM_PUB_KEY, sel, pq, plen, &key->key2))

@@ -30,48 +30,80 @@ static const char *hybrid_key_oid(const HYBRID_KEY *key)
  * Build the oqsprovider public-key blob (UINT32 classical-length prefix +
  * ordered component public keys). Caller frees *out.
  */
+/*
+ * Extract a component's public key in oqsprovider's on-wire form: the raw octet
+ * (EC point / X25519 key), or i2d_PublicKey for RSA (no octet param). Caller
+ * frees *buf with OPENSSL_free.
+ */
+static int get_component_pub(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
+{
+    size_t n = 0;
+
+    if (EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
+                                        NULL, 0, &n) > 0 && n > 0) {
+        if ((*buf = OPENSSL_malloc(n)) == NULL
+            || EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
+                                               *buf, n, len) <= 0) {
+            OPENSSL_free(*buf);
+            *buf = NULL;
+            return 0;
+        }
+        return 1;
+    }
+    ERR_clear_error();
+    {
+        unsigned char *der = NULL;
+        int dlen = i2d_PublicKey(pkey, &der);
+
+        if (dlen <= 0)
+            return 0;
+        *buf = der;
+        *len = (size_t)dlen;
+        return 1;
+    }
+}
+
 int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
-    size_t a1, a2, total, got;
-    unsigned char *buf, *classical, *pq;
-    int pq_first;
+    unsigned char *cbuf = NULL, *pqbuf = NULL, *buf = NULL;
+    size_t clen = 0, pqlen = 0, total;
+    int pq_first, ret = 0;
 
-    if (!hybrid_ensure_sizes(key) || !hybrid_have_pubkey(key))
+    if (!hybrid_have_pubkey(key))
         return 0;
-    a1 = key->sizes.a1_pub;
-    a2 = key->sizes.a2_pub;
-    total = sizeof(uint32_t) + a1 + a2;
+    if (!get_component_pub(key->key1, &cbuf, &clen)
+        || !get_component_pub(key->key2, &pqbuf, &pqlen))
+        goto end;
 
+    total = sizeof(uint32_t) + clen + pqlen;
     if ((buf = OPENSSL_malloc(total)) == NULL)
-        return 0;
+        goto end;
 
     /* UINT32 big-endian classical public-key length */
-    buf[0] = (unsigned char)(a1 >> 24);
-    buf[1] = (unsigned char)(a1 >> 16);
-    buf[2] = (unsigned char)(a1 >> 8);
-    buf[3] = (unsigned char)(a1);
+    buf[0] = (unsigned char)(clen >> 24);
+    buf[1] = (unsigned char)(clen >> 16);
+    buf[2] = (unsigned char)(clen >> 8);
+    buf[3] = (unsigned char)(clen);
 
     /* Reverse-share KEMs (alg2_slot == 0) place the PQ share first. */
     pq_first = key->is_kem
             && ((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0;
     if (pq_first) {
-        pq = buf + sizeof(uint32_t);
-        classical = buf + sizeof(uint32_t) + a2;
+        memcpy(buf + sizeof(uint32_t), pqbuf, pqlen);
+        memcpy(buf + sizeof(uint32_t) + pqlen, cbuf, clen);
     } else {
-        classical = buf + sizeof(uint32_t);
-        pq = buf + sizeof(uint32_t) + a1;
-    }
-
-    if (EVP_PKEY_get_octet_string_param(key->key1, OSSL_PKEY_PARAM_PUB_KEY,
-                                        classical, a1, &got) <= 0 || got != a1
-        || EVP_PKEY_get_octet_string_param(key->key2, OSSL_PKEY_PARAM_PUB_KEY,
-                                           pq, a2, &got) <= 0 || got != a2) {
-        OPENSSL_free(buf);
-        return 0;
+        memcpy(buf + sizeof(uint32_t), cbuf, clen);
+        memcpy(buf + sizeof(uint32_t) + clen, pqbuf, pqlen);
     }
     *out = buf;
     *outlen = total;
-    return 1;
+    buf = NULL;
+    ret = 1;
+end:
+    OPENSSL_free(cbuf);
+    OPENSSL_free(pqbuf);
+    OPENSSL_free(buf);
+    return ret;
 }
 
 /*

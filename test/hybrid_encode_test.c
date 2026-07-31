@@ -22,14 +22,11 @@
 
 static int tests, passed, failed;
 
-/*
- * EC-classical hybrid sigs across every PQ family. The rsa3072_* hybrids are
- * excluded for now: the RSA classical public key is not an octet string, so its
- * blob serialization needs separate handling (follow-up M2 item).
- */
+/* Hybrid sigs across every PQ family and both classical types (EC + RSA-3072). */
 static const char *sigs[] = {
-    "p256_mldsa44", "p384_mldsa65", "p521_mldsa87",
-    "p256_falcon512", "p521_falcon1024", "p256_falconpadded512",
+    "p256_mldsa44", "rsa3072_mldsa44", "p384_mldsa65", "p521_mldsa87",
+    "p256_falcon512", "rsa3072_falcon512", "p521_falcon1024",
+    "p256_falconpadded512", "rsa3072_falconpadded512",
     "p256_mayo1", "p384_mayo3", "p521_mayo5",
     "p256_OV_Is_pkc", "p256_OV_Ip_pkc_skc",
     "p256_snova2454", "p384_snova2455", "p521_snova2965",
