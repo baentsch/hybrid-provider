@@ -230,6 +230,15 @@ FalconPadded, MAYO, OV (pkc/pkc_skc variants), SNOVA, MQOM.
 **M6 — Remaining oqs hybrid KEMs** (base only from oqsprovider): FrodoKEM, BIKE,
 HQC.
 
+> **DONE (2026-07-31).** Enabled by **runtime component-size discovery**
+> (`hybrid_kem_ensure_sizes`): sizes are queried from the component algorithms at
+> key setup (throwaway keygen; EC private width from field bits since EC exposes
+> PRIV_KEY as a BIGNUM), so the algorithm table carries NO size constants — adding
+> a hybrid is just `(name, classical, group, PQ-base, slot)`. All 10 Frodo, 5
+> BIKE and 5 HQC hybrids added as rows. Cross-provider interop now covers **all 28
+> oqs hybrid KEMs bidirectionally: 56/56** (`test/hybrid_oqs_test.c`). Provider
+> advertises 32 hybrid KEMs total. Full ctest suite green.
+
 **M7 — Drop-in compatibility polish.** `OQS_CODEPOINT_*` / `OQS_OID_*` env-var
 overrides, full TLS-GROUP + TLS-SIGALG capability advertisement, and per-algorithm
 enable/disable parity with oqsprovider defaults.

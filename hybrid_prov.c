@@ -48,8 +48,7 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
 /* --- Algorithm tables --- */
 
 /* KEM keymgmt registration rows, generated from the master list. */
-#define HYBRID_KEM_KMGMT_REG(cf, nm, a1, grp, a1k, a2, slot,                  \
-                             a1p, a1v, a1s, a2p, a2v, a2s, a2c, cp, ds)       \
+#define HYBRID_KEM_KMGMT_REG(cf, nm, a1, grp, a1k, a2, slot, cp, ds)         \
     { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
       ds " hybrid key management" },
 
@@ -79,8 +78,7 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
 };
 
 /* KEM operation registration rows, generated from the master list. */
-#define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot,                     \
-                          a1p, a1v, a1s, a2p, a2v, a2s, a2c, cp, ds)          \
+#define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot, cp, ds)            \
     { nm, "provider=hybrid", hybrid_kem_functions, ds " hybrid KEM" },
 
 static const OSSL_ALGORITHM hybrid_kems[] = {

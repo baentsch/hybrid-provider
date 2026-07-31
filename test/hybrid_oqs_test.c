@@ -23,9 +23,20 @@
 static int tests = 0, passed = 0, failed = 0;
 
 static const char *legacy_kems[] = {
+    /* ML-KEM hybrids */
     "x25519_mlkem512", "p256_mlkem512", "bp256_mlkem512",
     "p384_mlkem768",   "x448_mlkem768", "bp384_mlkem768",
     "p521_mlkem1024",  "bp512_mlkem1024",
+    /* FrodoKEM hybrids */
+    "p256_frodo640aes", "x25519_frodo640aes",
+    "p256_frodo640shake", "x25519_frodo640shake",
+    "p384_frodo976aes", "x448_frodo976aes",
+    "p384_frodo976shake", "x448_frodo976shake",
+    "p521_frodo1344aes", "p521_frodo1344shake",
+    /* BIKE hybrids */
+    "p256_bikel1", "x25519_bikel1", "p384_bikel3", "x448_bikel3", "p521_bikel5",
+    /* HQC hybrids */
+    "p256_hqc1", "x25519_hqc1", "p384_hqc3", "x448_hqc3", "p521_hqc5",
 };
 
 /*

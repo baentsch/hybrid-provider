@@ -50,14 +50,8 @@ typedef struct {
     const char *alg2_group;     /* e.g., NULL */
     int         alg2_is_kem;    /* 1 = native KEM */
     int         alg2_slot;      /* position of alg2 in concatenation (0 or 1) */
-    size_t      alg1_pubkey_bytes;
-    size_t      alg1_prvkey_bytes;
-    size_t      alg1_shsec_bytes;
-    size_t      alg2_pubkey_bytes;
-    size_t      alg2_prvkey_bytes;
-    size_t      alg2_shsec_bytes;
-    size_t      alg2_ctext_bytes;
     int         tls_codepoint;  /* TLS group code point, 0 if none */
+    /* Component sizes are discovered at runtime; see HYBRID_SIZES. */
 } HYBRID_KEM_INFO;
 
 /* Signature component info */
@@ -74,6 +68,19 @@ typedef struct {
     size_t      alg2_sig_bytes;
 } HYBRID_SIG_INFO;
 
+/*
+ * Per-component sizes for a KEM hybrid, discovered at runtime from the actual
+ * component algorithms (see hybrid_kem_ensure_sizes) rather than hardcoded.
+ * This keeps the algorithm table free of size constants: adding a hybrid needs
+ * only component names + slot. `ct` is the ciphertext contribution (ephemeral
+ * public-key length for a key-exchange component, KEM ciphertext otherwise).
+ */
+typedef struct {
+    size_t a1_pub, a1_prv, a1_ss, a1_ct;   /* classical (alg1) */
+    size_t a2_pub, a2_prv, a2_ss, a2_ct;   /* PQ (alg2) */
+    int    valid;
+} HYBRID_SIZES;
+
 /* Hybrid key — used for both KEM and SIG hybrids */
 typedef struct hybrid_key_st {
     OSSL_LIB_CTX *libctx;
@@ -83,6 +90,7 @@ typedef struct hybrid_key_st {
     EVP_PKEY *key1;             /* classical component */
     EVP_PKEY *key2;             /* PQ component */
     unsigned int state;
+    HYBRID_SIZES sizes;         /* KEM only: runtime-discovered component sizes */
     /*
      * Per-component property queries (borrowed pointers into the provider
      * context, which outlives the key; not freed here). NULL when unset, in
@@ -107,61 +115,92 @@ typedef struct hybrid_key_st {
  * (hybrid_keymgmt.c) and the provider registration (hybrid_prov.c). To add a
  * hybrid KEM, add exactly one row here.
  *
- * The alg2 (PQ) component is always a native ML-KEM. `slot` is the position of
+ * The alg2 (PQ) component is always a native KEM. `slot` is the position of
  * the PQ share in the ctext/shared-secret/pubkey concatenation (0 = PQ first),
  * which equals oqsprovider's `reverse_share` (reverse_share=1 -> slot 0). It
  * also matches OpenSSL's built-in MLX layout for the standardized names.
  *
- * X(cfield, name,
- *   alg1, alg1_group, alg1_is_kem,   alg2, slot,
- *   a1_pub,a1_prv,a1_ss,   a2_pub,a2_prv,a2_ss,a2_ct,
+ * Component sizes are NOT listed here — they are discovered at runtime from the
+ * component algorithms (hybrid_kem_ensure_sizes), so a new hybrid needs only its
+ * component names, EC group and slot.
+ *
+ * X(cfield, name, alg1, alg1_group, alg1_is_kem, alg2, slot,
  *   tls_codepoint, desc)
  */
 #define HYBRID_KEM_LIST(X)                                                    \
   /* --- default-provider MLX names (raw concat) --- */                       \
-  X(x25519mlkem768,    "X25519MLKEM768",     "X25519", NULL,           0,     \
-      "MLKEM768",  0,  32,32,32,    1184,2400,32,1088,  0x11ec,               \
-      "X25519+ML-KEM-768")                                                    \
-  X(x448mlkem1024,     "X448MLKEM1024",      "X448",   NULL,           0,     \
-      "MLKEM1024", 0,  56,56,56,    1568,3168,32,1568,  0x0000,               \
-      "X448+ML-KEM-1024")                                                     \
-  X(secp256r1mlkem768, "SecP256r1MLKEM768",  "EC",     "P-256",        0,     \
-      "MLKEM768",  1,  65,32,32,    1184,2400,32,1088,  0x11eb,               \
-      "P-256+ML-KEM-768")                                                     \
-  X(secp384r1mlkem1024,"SecP384r1MLKEM1024", "EC",     "P-384",        0,     \
-      "MLKEM1024", 1,  97,48,48,    1568,3168,32,1568,  0x11ed,               \
-      "P-384+ML-KEM-1024")                                                    \
+  X(x25519mlkem768,    "X25519MLKEM768",     "X25519", NULL,            0,    \
+      "MLKEM768",  0, 0x11ec, "X25519+ML-KEM-768")                            \
+  X(x448mlkem1024,     "X448MLKEM1024",      "X448",   NULL,            0,    \
+      "MLKEM1024", 0, 0x0000, "X448+ML-KEM-1024")                            \
+  X(secp256r1mlkem768, "SecP256r1MLKEM768",  "EC",     "P-256",         0,    \
+      "MLKEM768",  1, 0x11eb, "P-256+ML-KEM-768")                            \
+  X(secp384r1mlkem1024,"SecP384r1MLKEM1024", "EC",     "P-384",         0,    \
+      "MLKEM1024", 1, 0x11ed, "P-384+ML-KEM-1024")                           \
   /* --- oqsprovider OQS-legacy ML-KEM hybrids --- */                         \
-  X(x25519_mlkem512,   "x25519_mlkem512",    "X25519", NULL,           0,     \
-      "MLKEM512",  0,  32,32,32,    800,1632,32,768,    0x2fb6,               \
-      "X25519+ML-KEM-512")                                                    \
-  X(p256_mlkem512,     "p256_mlkem512",      "EC",     "P-256",        0,     \
-      "MLKEM512",  1,  65,32,32,    800,1632,32,768,    0x2f4b,               \
-      "P-256+ML-KEM-512")                                                     \
-  X(bp256_mlkem512,    "bp256_mlkem512",     "EC",   "brainpoolP256r1",0,     \
-      "MLKEM512",  0,  65,32,32,    800,1632,32,768,    0xfe20,               \
-      "brainpoolP256r1+ML-KEM-512")                                          \
-  X(p384_mlkem768,     "p384_mlkem768",      "EC",     "P-384",        0,     \
-      "MLKEM768",  1,  97,48,48,    1184,2400,32,1088,  0x2f4c,               \
-      "P-384+ML-KEM-768")                                                     \
-  X(x448_mlkem768,     "x448_mlkem768",      "X448",   NULL,           0,     \
-      "MLKEM768",  0,  56,56,56,    1184,2400,32,1088,  0x2fb7,               \
-      "X448+ML-KEM-768")                                                      \
-  X(bp384_mlkem768,    "bp384_mlkem768",     "EC",   "brainpoolP384r1",0,     \
-      "MLKEM768",  0,  97,48,48,    1184,2400,32,1088,  0xfe21,               \
-      "brainpoolP384r1+ML-KEM-768")                                          \
-  X(p521_mlkem1024,    "p521_mlkem1024",     "EC",     "P-521",        0,     \
-      "MLKEM1024", 1,  133,66,66,   1568,3168,32,1568,  0x2f4d,               \
-      "P-521+ML-KEM-1024")                                                    \
-  X(bp512_mlkem1024,   "bp512_mlkem1024",    "EC",   "brainpoolP512r1",0,     \
-      "MLKEM1024", 0,  129,64,64,   1568,3168,32,1568,  0xfe22,               \
-      "brainpoolP512r1+ML-KEM-1024")
+  X(x25519_mlkem512,   "x25519_mlkem512",    "X25519", NULL,            0,    \
+      "MLKEM512",  0, 0x2fb6, "X25519+ML-KEM-512")                            \
+  X(p256_mlkem512,     "p256_mlkem512",      "EC",     "P-256",         0,    \
+      "MLKEM512",  1, 0x2f4b, "P-256+ML-KEM-512")                            \
+  X(bp256_mlkem512,    "bp256_mlkem512",     "EC",   "brainpoolP256r1", 0,    \
+      "MLKEM512",  0, 0xfe20, "brainpoolP256r1+ML-KEM-512")                   \
+  X(p384_mlkem768,     "p384_mlkem768",      "EC",     "P-384",         0,    \
+      "MLKEM768",  1, 0x2f4c, "P-384+ML-KEM-768")                            \
+  X(x448_mlkem768,     "x448_mlkem768",      "X448",   NULL,            0,    \
+      "MLKEM768",  0, 0x2fb7, "X448+ML-KEM-768")                             \
+  X(bp384_mlkem768,    "bp384_mlkem768",     "EC",   "brainpoolP384r1", 0,    \
+      "MLKEM768",  0, 0xfe21, "brainpoolP384r1+ML-KEM-768")                   \
+  X(p521_mlkem1024,    "p521_mlkem1024",     "EC",     "P-521",         0,    \
+      "MLKEM1024", 1, 0x2f4d, "P-521+ML-KEM-1024")                           \
+  X(bp512_mlkem1024,   "bp512_mlkem1024",    "EC",   "brainpoolP512r1", 0,    \
+      "MLKEM1024", 0, 0xfe22, "brainpoolP512r1+ML-KEM-1024")                  \
+  /* --- oqsprovider FrodoKEM hybrids (PQ base from oqsprovider only) --- */   \
+  X(p256_frodo640aes,  "p256_frodo640aes",   "EC",     "P-256",         0,    \
+      "frodo640aes", 1, 0x0000, "P-256+FrodoKEM-640-AES")                     \
+  X(x25519_frodo640aes,"x25519_frodo640aes", "X25519", NULL,            0,    \
+      "frodo640aes", 1, 0x0000, "X25519+FrodoKEM-640-AES")                    \
+  X(p256_frodo640shake,"p256_frodo640shake", "EC",     "P-256",         0,    \
+      "frodo640shake", 1, 0x0000, "P-256+FrodoKEM-640-SHAKE")                 \
+  X(x25519_frodo640shake,"x25519_frodo640shake","X25519",NULL,          0,    \
+      "frodo640shake", 1, 0x0000, "X25519+FrodoKEM-640-SHAKE")                \
+  X(p384_frodo976aes,  "p384_frodo976aes",   "EC",     "P-384",         0,    \
+      "frodo976aes", 1, 0x0000, "P-384+FrodoKEM-976-AES")                     \
+  X(x448_frodo976aes,  "x448_frodo976aes",   "X448",   NULL,            0,    \
+      "frodo976aes", 1, 0x0000, "X448+FrodoKEM-976-AES")                      \
+  X(p384_frodo976shake,"p384_frodo976shake", "EC",     "P-384",         0,    \
+      "frodo976shake", 1, 0x0000, "P-384+FrodoKEM-976-SHAKE")                 \
+  X(x448_frodo976shake,"x448_frodo976shake", "X448",   NULL,            0,    \
+      "frodo976shake", 1, 0x0000, "X448+FrodoKEM-976-SHAKE")                  \
+  X(p521_frodo1344aes, "p521_frodo1344aes",  "EC",     "P-521",         0,    \
+      "frodo1344aes", 1, 0x0000, "P-521+FrodoKEM-1344-AES")                   \
+  X(p521_frodo1344shake,"p521_frodo1344shake","EC",    "P-521",         0,    \
+      "frodo1344shake", 1, 0x0000, "P-521+FrodoKEM-1344-SHAKE")               \
+  /* --- oqsprovider BIKE hybrids --- */                                      \
+  X(p256_bikel1,       "p256_bikel1",        "EC",     "P-256",         0,    \
+      "bikel1", 1, 0x0000, "P-256+BIKE-L1")                                   \
+  X(x25519_bikel1,     "x25519_bikel1",      "X25519", NULL,            0,    \
+      "bikel1", 1, 0x0000, "X25519+BIKE-L1")                                  \
+  X(p384_bikel3,       "p384_bikel3",        "EC",     "P-384",         0,    \
+      "bikel3", 1, 0x0000, "P-384+BIKE-L3")                                   \
+  X(x448_bikel3,       "x448_bikel3",        "X448",   NULL,            0,    \
+      "bikel3", 1, 0x0000, "X448+BIKE-L3")                                    \
+  X(p521_bikel5,       "p521_bikel5",        "EC",     "P-521",         0,    \
+      "bikel5", 1, 0x0000, "P-521+BIKE-L5")                                   \
+  /* --- oqsprovider HQC hybrids --- */                                       \
+  X(p256_hqc1,         "p256_hqc1",          "EC",     "P-256",         0,    \
+      "hqc1", 1, 0x0000, "P-256+HQC-1")                                       \
+  X(x25519_hqc1,       "x25519_hqc1",        "X25519", NULL,            0,    \
+      "hqc1", 1, 0x0000, "X25519+HQC-1")                                      \
+  X(p384_hqc3,         "p384_hqc3",          "EC",     "P-384",         0,    \
+      "hqc3", 1, 0x0000, "P-384+HQC-3")                                       \
+  X(x448_hqc3,         "x448_hqc3",          "X448",   NULL,            0,    \
+      "hqc3", 1, 0x0000, "X448+HQC-3")                                        \
+  X(p521_hqc5,         "p521_hqc5",          "EC",     "P-521",         0,    \
+      "hqc5", 1, 0x0000, "P-521+HQC-5")
 
 /* Generate the info table from the master list. */
-#define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot,                        \
-                       a1p, a1v, a1s, a2p, a2v, a2s, a2c, cp, ds)             \
-    { nm, a1, grp, a1k, a2, NULL, 1, slot,                                    \
-      a1p, a1v, a1s, a2p, a2v, a2s, a2c, cp },
+#define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, ds)               \
+    { nm, a1, grp, a1k, a2, NULL, 1, slot, cp },
 static const HYBRID_KEM_INFO hybrid_kem_table[] = {
     HYBRID_KEM_LIST(HYBRID_KEM_ROW)
 };
@@ -232,40 +271,33 @@ static const HYBRID_SIG_INFO hybrid_sig_table[] = {
 #define HYBRID_KEY_ALG2_NAME(k) \
     ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_name \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_name)
+/*
+ * KEM size accessors read the runtime-discovered cache (key->sizes); SIG size
+ * accessors read the static signature table. Callers must have populated the
+ * KEM cache via hybrid_kem_ensure_sizes() before using the KEM branch.
+ */
 #define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_pubkey_bytes \
+    ((k)->is_kem ? (k)->sizes.a1_pub \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_pubkey_bytes)
 #define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_pubkey_bytes \
+    ((k)->is_kem ? (k)->sizes.a2_pub \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_pubkey_bytes)
 #define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_prvkey_bytes \
+    ((k)->is_kem ? (k)->sizes.a1_prv \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_prvkey_bytes)
 #define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_prvkey_bytes \
+    ((k)->is_kem ? (k)->sizes.a2_prv \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_prvkey_bytes)
 
-/* Total sizes for KEM algorithms */
-static inline size_t hybrid_kem_pubkey_bytes(const HYBRID_KEM_INFO *info)
+/* Total ciphertext / shared-secret sizes for a KEM key (from the cache). */
+static inline size_t hybrid_kem_ctext_bytes(const HYBRID_KEY *key)
 {
-    return info->alg1_pubkey_bytes + info->alg2_pubkey_bytes;
+    return key->sizes.a1_ct + key->sizes.a2_ct;
 }
 
-static inline size_t hybrid_kem_prvkey_bytes(const HYBRID_KEM_INFO *info)
+static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 {
-    return info->alg1_prvkey_bytes + info->alg2_prvkey_bytes;
-}
-
-static inline size_t hybrid_kem_ctext_bytes(const HYBRID_KEM_INFO *info)
-{
-    /* For key-exchange alg, "ciphertext" is the ephemeral public key */
-    size_t alg1_ct = info->alg1_is_kem ? 0 : info->alg1_pubkey_bytes;
-    return alg1_ct + info->alg2_ctext_bytes;
-}
-
-static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEM_INFO *info)
-{
-    return info->alg1_shsec_bytes + info->alg2_shsec_bytes;
+    return key->sizes.a1_ss + key->sizes.a2_ss;
 }
 
 /* Total sizes for signature algorithms */
@@ -288,20 +320,28 @@ static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_SIG_INFO *info)
 static inline size_t hybrid_key_pubkey_bytes(const HYBRID_KEY *key)
 {
     if (key->is_kem)
-        return hybrid_kem_pubkey_bytes((const HYBRID_KEM_INFO *)key->info);
+        return key->sizes.a1_pub + key->sizes.a2_pub;
     return hybrid_sig_pubkey_bytes((const HYBRID_SIG_INFO *)key->info);
 }
 
 static inline size_t hybrid_key_prvkey_bytes(const HYBRID_KEY *key)
 {
     if (key->is_kem)
-        return hybrid_kem_prvkey_bytes((const HYBRID_KEM_INFO *)key->info);
+        return key->sizes.a1_prv + key->sizes.a2_prv;
     return hybrid_sig_prvkey_bytes((const HYBRID_SIG_INFO *)key->info);
 }
 
 /* Extern declarations for dispatch tables */
 extern const OSSL_DISPATCH hybrid_kem_functions[];
 extern const OSSL_DISPATCH hybrid_sig_functions[];
+
+/*
+ * Populate key->sizes for a KEM hybrid by querying the component algorithms
+ * (using existing components when present, otherwise throwaway keygens). Safe to
+ * call repeatedly; a no-op once the cache is valid. Returns 1 on success.
+ * Implemented in hybrid_keymgmt.c.
+ */
+int hybrid_kem_ensure_sizes(HYBRID_KEY *key);
 
 /* TLS-GROUP capability advertising (hybrid_caps.c) */
 int hybrid_get_capabilities(void *provctx, const char *capability,
