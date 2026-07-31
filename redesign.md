@@ -207,6 +207,16 @@ oqsprovider): `p256_mlkem512`, `x25519_mlkem512`, `p384_mlkem768`,
 `x448_mlkem768`, `p521_mlkem1024`, then brainpool `bp256/bp384/bp512` variants.
 Uses `reverse_share` + length-prefixed format + OQS code points.
 
+> **DONE (2026-07-31).** All eight ML-KEM legacy hybrids implemented via the new
+> `HYBRID_KEM_LIST` X-macro (one row each; generates info table + keymgmt thunks +
+> registration). `alg2_slot = 1 - reverse_share` from oqsprovider's nid table.
+> Bidirectional cross-provider interop vs oqsprovider main passes 16/16
+> (`test/hybrid_oqs_test.c`, wired into ctest). The runtime path needed no new
+> wire-format code (raw concat already matched). NOT yet done: full key-material
+> byte-for-byte round-trip via the prefixed `PUB_KEY`/`PRIV_KEY` param + key-file
+> (SPKI/PKCS8) interop — that is the M2 encoder/decoder work. TLS-group
+> capability advertisement for these code points also still pending (M7).
+
 **M4 — ML-DSA legacy hybrid sigs, realigned to oqsprovider.** Switch to oqs
 names/format/OIDs: `p256_mldsa44` (1.3.9999.7.5), `rsa3072_mldsa44` (.6),
 `p384_mldsa65` (.7), `p521_mldsa87` (.8); add RSA-3072 classical support.
