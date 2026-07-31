@@ -421,6 +421,19 @@ hybrid can't be faster than the EVP path it's handed. `test/hybrid_bench.c` runs
 the comparison; note only the Falcon/MAYO/SNOVA rows are apples-to-apples (the
 ML-DSA rows compare portable-C vs AVX2, per effect 1 above).
 
+**UNFAIR is a 3.5+ artifact — under OpenSSL 3.4 the tags flip to FAIR.** Effect 1
+exists only because 3.5's default provider added ML-KEM/ML-DSA, which oqsprovider
+then cedes. On 3.4 the default provider has no PQ primitives to cede, so
+oqsprovider registers them all standalone; `?provider=oqsprovider` always reaches
+liboqs, matching native, so every OQS-legacy KEM and SIG row is FAIR. `hybrid_bench`
+decides the tag at runtime (`pq_from_oqs_{kem,sig}` probes), so this flips
+automatically with no code change. Caveat: the MLX-vs-default rows can't run on
+3.4 at all (default lacks MLX/standalone ML-KEM pre-3.5) — they SKIP rather than
+becoming meaningful. A useful side effect: on 3.4 the ML-DSA rows become a genuine
+FAIR comparison and would then expose the same standalone-EVP per-op tax (effect 2)
+that 3.5 masks as an implementation difference — i.e. 3.4 is the better place to
+measure the M8 prerequisite for ML-DSA.
+
 ---
 
 ## Phase 2 — Composite (LAMPS), later
