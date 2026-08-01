@@ -1,0 +1,112 @@
+name: CI
+
+# Builds the provider and runs the test suite against three OpenSSL points that
+# together cover both behaviour regimes (split at 3.5.0, where the default
+# provider gained ML-KEM/ML-DSA and oqsprovider began ceding them + disabling
+# its method cache):
+#   - 3.4            : pinned lower bound; the pre-PQ-in-default regime.
+#   - latest release : current stable line, resolved dynamically (3.5.x today,
+#                      auto-advances). Tests exactly what users deploy.
+#   - main (master)  : forward-looking canary for upcoming OpenSSL changes.
+# liboqs + oqs-provider are always built fresh from main (the interop target).
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: OpenSSL ${{ matrix.openssl.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        openssl:
+          - { name: "3.4",    series: "3.4" }
+          - { name: "latest", series: ""    }   # highest stable openssl-X.Y.Z tag
+          - { name: "main",   branch: "master" }
+    env:
+      PREFIX: ${{ github.workspace }}/.local
+      OSSL_INSTALL: ${{ runner.temp }}/ossl-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Resolve OpenSSL ref
+        id: ossl
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.openssl.branch || '' }}" ]; then
+            REF="${{ matrix.openssl.branch }}"
+            SHA=$(git ls-remote https://github.com/openssl/openssl "refs/heads/$REF" | cut -f1)
+          else
+            S='${{ matrix.openssl.series }}'
+            if [ -n "$S" ]; then
+              GLOB="openssl-$S.*"; RE="^openssl-${S//./\\.}\\.[0-9]+$"
+            else
+              GLOB="openssl-*"; RE="^openssl-[0-9]+\\.[0-9]+\\.[0-9]+$"
+            fi
+            REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl "$GLOB" \
+                  | awk -F/ '{print $NF}' | grep -E "$RE" | sort -V | tail -1)
+            SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Resolved OpenSSL: $REF ($SHA)"
+
+      # Cache the pure OpenSSL install (keyed on the resolved commit; main busts
+      # itself when master moves). liboqs is installed into $PREFIX (a copy), not
+      # here, so this cache stays OpenSSL-only.
+      - name: Cache OpenSSL
+        id: cache-ossl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.ref }}-${{ steps.ossl.outputs.sha }}
+
+      - name: Build OpenSSL
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Stage OpenSSL into .local
+        run: cp -a "$OSSL_INSTALL" "$PREFIX"
+
+      - name: Configure hybrid provider
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON
+
+      # Builds liboqs main + oqs-provider main (with OQS_KEM_ENCODERS=ON) against
+      # $PREFIX and symlinks oqsprovider.so into build/.
+      - name: Build liboqs + oqs-provider (main)
+        run: OPENSSL_PREFIX="$PREFIX" BUILD_DIR="$PWD/build" ./test/setup_oqs_interop.sh
+
+      - name: Build hybrid provider
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test — full suite (OpenSSL >= 3.5)
+        if: matrix.openssl.name != '3.4'
+        working-directory: build
+        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
+
+      # On 3.4 the default provider has no ML-KEM/ML-DSA, so the hybrid provider's
+      # MLX algorithms cannot be exercised against it; only oqsprovider-interop and
+      # version-agnostic tests apply.
+      - name: Test — oqs-interop subset (OpenSSL 3.4)
+        if: matrix.openssl.name == '3.4'
+        working-directory: build
+        run: |
+          LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
+            -R 'hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench'
