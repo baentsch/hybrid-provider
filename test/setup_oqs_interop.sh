@@ -25,6 +25,19 @@ LIBOQS_SRC="$INTEROP/liboqs"
 OQSPROV_SRC="$INTEROP/oqs-provider"
 OQSPROV_BUILD="$OQSPROV_SRC/_build"
 
+# Which liboqs / oqs-provider to build (branch, tag or commit). Default is main
+# for both (always mutually compatible). CI pins release/known-good refs for the
+# regular jobs and uses main for the weekly bleeding-edge job.
+LIBOQS_REF="${LIBOQS_REF:-main}"
+OQSPROV_REF="${OQSPROV_REF:-main}"
+
+# Check out the requested ref (works for branch/tag/commit); clone if absent.
+checkout_ref() {  # <dir> <ref>
+    git -C "$1" fetch --tags --force origin
+    git -C "$1" checkout --quiet "$2"
+    git -C "$1" pull --ff-only --quiet 2>/dev/null || true   # no-op on tag/commit
+}
+
 echo ">> repo:           $REPO"
 echo ">> openssl prefix: $OPENSSL_PREFIX"
 echo ">> interop dir:    $INTEROP"
@@ -36,17 +49,18 @@ fi
 
 mkdir -p "$INTEROP"
 
-# --- liboqs (main) -----------------------------------------------------------
-# oqs-provider main tracks liboqs main. Rebuild liboqs into the OpenSSL prefix
-# unless a recent one (HQC level-naming: hqc_5) is already installed there.
-if grep -q "OQS_KEM_alg_hqc_5" "$OPENSSL_PREFIX/include/oqs/kem.h" 2>/dev/null; then
-    echo ">> liboqs already current in $OPENSSL_PREFIX (skipping rebuild)"
+# --- liboqs ------------------------------------------------------------------
+# Rebuild liboqs into the OpenSSL prefix unless already installed there (a cache
+# hit; the CI cache key includes LIBOQS_REF, so "installed" implies the right ref).
+echo ">> liboqs ref:      $LIBOQS_REF"
+echo ">> oqs-provider ref: $OQSPROV_REF"
+if [ -f "$OPENSSL_PREFIX/include/oqs/oqs.h" ]; then
+    echo ">> liboqs already installed in $OPENSSL_PREFIX (skipping rebuild)"
 else
     if [ ! -d "$LIBOQS_SRC/.git" ]; then
-        git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git "$LIBOQS_SRC"
-    else
-        git -C "$LIBOQS_SRC" pull --ff-only
+        git clone https://github.com/open-quantum-safe/liboqs.git "$LIBOQS_SRC"
     fi
+    checkout_ref "$LIBOQS_SRC" "$LIBOQS_REF"
     cmake -S "$LIBOQS_SRC" -B "$LIBOQS_SRC/_build" -GNinja \
         -DCMAKE_INSTALL_PREFIX="$OPENSSL_PREFIX" \
         -DBUILD_SHARED_LIBS=ON -DOQS_BUILD_ONLY_LIB=ON -DCMAKE_BUILD_TYPE=Release
@@ -54,12 +68,11 @@ else
     cmake --install "$LIBOQS_SRC/_build"
 fi
 
-# --- oqs-provider (main) -----------------------------------------------------
+# --- oqs-provider ------------------------------------------------------------
 if [ ! -d "$OQSPROV_SRC/.git" ]; then
-    git clone --depth 1 https://github.com/open-quantum-safe/oqs-provider.git "$OQSPROV_SRC"
-else
-    git -C "$OQSPROV_SRC" pull --ff-only
+    git clone https://github.com/open-quantum-safe/oqs-provider.git "$OQSPROV_SRC"
 fi
+checkout_ref "$OQSPROV_SRC" "$OQSPROV_REF"
 cmake -S "$OQSPROV_SRC" -B "$OQSPROV_BUILD" -GNinja \
     -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
     -DCMAKE_PREFIX_PATH="$OPENSSL_PREFIX" \
