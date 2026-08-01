@@ -18,12 +18,48 @@
 #include <openssl/pem.h>
 #include <openssl/encoder.h>
 
-/* OID string for a key (signature hybrids carry it in their info table). */
+/* OID string for a key; NULL when the algorithm has no assigned OID (most
+ * hybrid KEMs) and is therefore not key-file encodable. */
 static const char *hybrid_key_oid(const HYBRID_KEY *key)
 {
-    if (key->is_kem)
-        return NULL;    /* KEM OIDs added in a later slice */
-    return ((const HYBRID_SIG_INFO *)key->info)->oid;
+    return key->is_kem ? ((const HYBRID_KEM_INFO *)key->info)->oid
+                       : ((const HYBRID_SIG_INFO *)key->info)->oid;
+}
+
+/* Is this a reverse-share KEM (PQ component stored first)? */
+static int hybrid_key_reverse(const HYBRID_KEY *key)
+{
+    return key->is_kem && ((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0;
+}
+
+/*
+ * A classical component's private key in oqsprovider's on-wire form: the raw
+ * private key for raw-key types (X25519/X448), or i2d_PrivateKey DER otherwise
+ * (EC/RSA). Mirrors oqsprovider's raw_key_support branch. Caller frees *buf
+ * with OPENSSL_clear_free.
+ */
+static int get_component_priv(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
+{
+    size_t n = 0;
+    unsigned char *der = NULL;
+    int dlen;
+
+    if (EVP_PKEY_get_raw_private_key(pkey, NULL, &n) > 0 && n > 0) {
+        if ((*buf = OPENSSL_malloc(n)) == NULL
+            || EVP_PKEY_get_raw_private_key(pkey, *buf, &n) <= 0) {
+            OPENSSL_clear_free(*buf, n);
+            *buf = NULL;
+            return 0;
+        }
+        *len = n;
+        return 1;
+    }
+    ERR_clear_error();
+    if ((dlen = i2d_PrivateKey(pkey, &der)) <= 0)
+        return 0;
+    *buf = der;
+    *len = (size_t)dlen;
+    return 1;
 }
 
 /*
@@ -86,8 +122,7 @@ int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
     buf[3] = (unsigned char)(clen);
 
     /* Reverse-share KEMs (alg2_slot == 0) place the PQ share first. */
-    pq_first = key->is_kem
-            && ((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0;
+    pq_first = hybrid_key_reverse(key);
     if (pq_first) {
         memcpy(buf + sizeof(uint32_t), pqbuf, pqlen);
         memcpy(buf + sizeof(uint32_t) + pqlen, cbuf, clen);
@@ -115,42 +150,55 @@ end:
  */
 int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
-    unsigned char *cder = NULL, *buf = NULL;
-    int cderlen;
-    size_t a2v, a2p, total, got;
+    unsigned char *cbuf = NULL, *buf = NULL, *cdst, *pqdst;
+    size_t clen = 0, a2v, a2p, total = 0, got;
+    int ret = 0;
 
     if (!hybrid_ensure_sizes(key) || !hybrid_have_prvkey(key))
         return 0;
     a2v = key->sizes.a2_prv;
     a2p = key->sizes.a2_pub;
 
-    cderlen = i2d_PrivateKey(key->key1, &cder);
-    if (cderlen <= 0)
+    if (!get_component_priv(key->key1, &cbuf, &clen))
         return 0;
 
-    total = sizeof(uint32_t) + (size_t)cderlen + a2v + a2p;
+    total = sizeof(uint32_t) + clen + a2v + a2p;
     if ((buf = OPENSSL_secure_malloc(total)) == NULL)
         goto err;
 
-    buf[0] = (unsigned char)((unsigned)cderlen >> 24);
-    buf[1] = (unsigned char)((unsigned)cderlen >> 16);
-    buf[2] = (unsigned char)((unsigned)cderlen >> 8);
-    buf[3] = (unsigned char)((unsigned)cderlen);
-    memcpy(buf + sizeof(uint32_t), cder, cderlen);
+    /* UINT32 big-endian classical private-key length */
+    buf[0] = (unsigned char)(clen >> 24);
+    buf[1] = (unsigned char)(clen >> 16);
+    buf[2] = (unsigned char)(clen >> 8);
+    buf[3] = (unsigned char)(clen);
+
+    /*
+     * Reverse-share KEMs (alg2_slot == 0) store PQ private first, then
+     * classical; others classical first. The PQ public key is always the
+     * trailing block, at offset 4 + clen + a2v in both cases.
+     */
+    if (hybrid_key_reverse(key)) {
+        pqdst = buf + sizeof(uint32_t);
+        cdst  = buf + sizeof(uint32_t) + a2v;
+    } else {
+        cdst  = buf + sizeof(uint32_t);
+        pqdst = buf + sizeof(uint32_t) + clen;
+    }
+    memcpy(cdst, cbuf, clen);
     if (EVP_PKEY_get_octet_string_param(key->key2, OSSL_PKEY_PARAM_PRIV_KEY,
-            buf + sizeof(uint32_t) + cderlen, a2v, &got) <= 0 || got != a2v
+            pqdst, a2v, &got) <= 0 || got != a2v
         || EVP_PKEY_get_octet_string_param(key->key2, OSSL_PKEY_PARAM_PUB_KEY,
-            buf + sizeof(uint32_t) + cderlen + a2v, a2p, &got) <= 0 || got != a2p)
+            buf + sizeof(uint32_t) + clen + a2v, a2p, &got) <= 0 || got != a2p)
         goto err;
 
-    OPENSSL_clear_free(cder, cderlen);
     *out = buf;
     *outlen = total;
-    return 1;
+    buf = NULL;
+    ret = 1;
 err:
-    OPENSSL_clear_free(cder, cderlen > 0 ? cderlen : 0);
+    OPENSSL_clear_free(cbuf, clen);
     OPENSSL_secure_clear_free(buf, total);
-    return 0;
+    return ret;
 }
 
 /* Build a PKCS8_PRIV_KEY_INFO (AlgId(OID) + OCTET STRING(inner OCTET STRING)). */

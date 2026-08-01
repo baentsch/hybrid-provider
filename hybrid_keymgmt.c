@@ -221,10 +221,18 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
 {
     int sel = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
             | OSSL_KEYMGMT_SELECT_PRIVATE_KEY;
-    const unsigned char *p = cder;
+    const char *a1 = HYBRID_KEY_ALG1_NAME(key);
 
-    key->key1 = d2i_AutoPrivateKey_ex(NULL, &p, (long)cderlen, key->libctx,
-                                      HYBRID_KEY_CLASSIC_PROPQ(key));
+    /* Raw-key classical types (X25519/X448) are stored raw, not DER. */
+    if (strcmp(a1, "X25519") == 0 || strcmp(a1, "X448") == 0) {
+        key->key1 = EVP_PKEY_new_raw_private_key_ex(key->libctx, a1,
+                        HYBRID_KEY_CLASSIC_PROPQ(key), cder, cderlen);
+    } else {
+        const unsigned char *p = cder;
+
+        key->key1 = d2i_AutoPrivateKey_ex(NULL, &p, (long)cderlen, key->libctx,
+                                          HYBRID_KEY_CLASSIC_PROPQ(key));
+    }
     if (key->key1 == NULL)
         return 0;
     if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),

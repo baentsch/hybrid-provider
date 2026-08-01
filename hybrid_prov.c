@@ -98,7 +98,7 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
 /* --- Algorithm tables --- */
 
 /* KEM keymgmt registration rows, generated from the master list. */
-#define HYBRID_KEM_KMGMT_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)     \
+#define HYBRID_KEM_KMGMT_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid) \
     { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
       ds " hybrid key management" },
 
@@ -118,7 +118,7 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
 #undef HYBRID_KEM_KMGMT_REG
 
 /* KEM operation registration rows, generated from the master list. */
-#define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)        \
+#define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)   \
     { nm, "provider=hybrid", hybrid_kem_functions, ds " hybrid KEM" },
 
 static const OSSL_ALGORITHM hybrid_kems[] = {
@@ -151,11 +151,35 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
     { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
       hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },
 
+/*
+ * KEM encoders. Gated by HYBRID_KEM_ENCODERS (off by default), mirroring
+ * oqsprovider's OQS_KEM_ENCODERS build option: KEM key files are rarely used
+ * and only a few hybrid KEMs have an assigned OID. The shared encoder code
+ * handles both families; NULL-OID KEMs registered here simply decline to encode.
+ */
+#ifdef HYBRID_KEM_ENCODERS
+# define HYBRID_KEM_ENC_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)  \
+    { nm, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo",       \
+      hybrid_spki_der_encoder_functions, ds " SPKI DER encoder" },           \
+    { nm, "provider=hybrid,output=pem,structure=SubjectPublicKeyInfo",       \
+      hybrid_spki_pem_encoder_functions, ds " SPKI PEM encoder" },           \
+    { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
+      hybrid_pkcs8_der_encoder_functions, ds " PKCS8 DER encoder" },         \
+    { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
+      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },
+#endif
+
 static const OSSL_ALGORITHM hybrid_encoders[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_ENC_REG)
+#ifdef HYBRID_KEM_ENCODERS
+    HYBRID_KEM_LIST(HYBRID_KEM_ENC_REG)
+#endif
     { NULL, NULL, NULL, NULL }
 };
 #undef HYBRID_SIG_ENC_REG
+#ifdef HYBRID_KEM_ENCODERS
+# undef HYBRID_KEM_ENC_REG
+#endif
 
 /* Decoders: DER SubjectPublicKeyInfo -> key, one per signature algorithm. */
 #define HYBRID_SIG_DEC_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                \
@@ -164,11 +188,25 @@ static const OSSL_ALGORITHM hybrid_encoders[] = {
     { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \
       hybrid_pkcs8_der_decoder_functions, ds " PKCS8 DER decoder" },
 
+#ifdef HYBRID_KEM_ENCODERS
+# define HYBRID_KEM_DEC_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)  \
+    { nm, "provider=hybrid,input=der,structure=SubjectPublicKeyInfo",        \
+      hybrid_spki_der_decoder_functions, ds " SPKI DER decoder" },           \
+    { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \
+      hybrid_pkcs8_der_decoder_functions, ds " PKCS8 DER decoder" },
+#endif
+
 static const OSSL_ALGORITHM hybrid_decoders[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_DEC_REG)
+#ifdef HYBRID_KEM_ENCODERS
+    HYBRID_KEM_LIST(HYBRID_KEM_DEC_REG)
+#endif
     { NULL, NULL, NULL, NULL }
 };
 #undef HYBRID_SIG_DEC_REG
+#ifdef HYBRID_KEM_ENCODERS
+# undef HYBRID_KEM_DEC_REG
+#endif
 
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)

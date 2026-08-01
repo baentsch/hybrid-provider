@@ -13,6 +13,11 @@ endif()
 find_package(OpenSSL 3.4 REQUIRED)
 message(STATUS "Using OpenSSL ${OPENSSL_VERSION} from ${OPENSSL_INCLUDE_DIR}")
 
+# KEM key-file encoders/decoders. Off by default, mirroring oqsprovider's
+# OQS_KEM_ENCODERS option: KEM keys are usually ephemeral, only a few hybrid
+# KEMs have an assigned OID, and the format uses OQS's private OID arc.
+option(HYBRID_KEM_ENCODERS "Build encoders/decoders for hybrid KEM key files" OFF)
+
 # Provider shared library
 add_library(hybrid-provider MODULE
     hybrid_prov.c
@@ -25,6 +30,9 @@ add_library(hybrid-provider MODULE
 )
 target_include_directories(hybrid-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(hybrid-provider PRIVATE OpenSSL::Crypto)
+if(HYBRID_KEM_ENCODERS)
+    target_compile_definitions(hybrid-provider PRIVATE HYBRID_KEM_ENCODERS)
+endif()
 set_target_properties(hybrid-provider PROPERTIES
     PREFIX ""
     OUTPUT_NAME "hybrid"
@@ -89,6 +97,17 @@ target_include_directories(hybrid_encode_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${C
 target_link_libraries(hybrid_encode_test PRIVATE OpenSSL::Crypto)
 add_test(NAME hybrid_encode_test COMMAND hybrid_encode_test)
 set_tests_properties(hybrid_encode_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# KEM key-file interop test (SPKI + PKCS8 round-trip vs oqsprovider). Self-skips
+# unless both providers were built with KEM encoders on (HYBRID_KEM_ENCODERS /
+# OQS_KEM_ENCODERS).
+add_executable(hybrid_kem_encode_test test/hybrid_kem_encode_test.c)
+target_include_directories(hybrid_kem_encode_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_kem_encode_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_kem_encode_test COMMAND hybrid_kem_encode_test)
+set_tests_properties(hybrid_kem_encode_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 

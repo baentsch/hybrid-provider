@@ -42,7 +42,7 @@ typedef struct {
  * that disablement is an arbitrary test artifact, not a security decision, so we
  * keep BIKE-L1 enabled here.
  */
-#define HYBRID_CAPS_CONST_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)    \
+#define HYBRID_CAPS_CONST_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid) \
     { (cp), (sb), TLS1_3_VERSION, 0, -1, -1, 1 },
 static const HYBRID_TLS_GROUP_CONSTANTS hybrid_group_list[] = {
     HYBRID_KEM_LIST(HYBRID_CAPS_CONST_ROW)
@@ -80,7 +80,7 @@ static const HYBRID_TLS_GROUP_CONSTANTS hybrid_group_list[] = {
         OSSL_PARAM_END                                                  \
     }
 
-#define HYBRID_CAPS_PARAM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)    \
+#define HYBRID_CAPS_PARAM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid) \
     HYBRID_TLS_GROUP_ENTRY(nm, HYBRID_KEM_IDX_##cf),
 static const OSSL_PARAM hybrid_param_group_list[][11] = {
     HYBRID_KEM_LIST(HYBRID_CAPS_PARAM_ROW)

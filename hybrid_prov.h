@@ -82,6 +82,8 @@ typedef struct {
     int         alg2_is_kem;    /* 1 = native KEM */
     int         alg2_slot;      /* position of alg2 in concatenation (0 or 1) */
     int         tls_codepoint;  /* TLS group code point, 0 if none */
+    const char *oid;            /* X.509 OID, or NULL if not key-file encodable
+                                 * (mirrors oqsprovider: most hybrid KEMs NULL) */
     /* Component sizes are discovered at runtime; see HYBRID_SIZES. */
 } HYBRID_KEM_INFO;
 
@@ -169,77 +171,77 @@ typedef struct hybrid_key_st {
 #define HYBRID_KEM_LIST(X)                                                    \
   /* --- default-provider MLX names (raw concat) --- */                       \
   X(x25519mlkem768,    "X25519MLKEM768",     "X25519", NULL,            0,    \
-      "MLKEM768",  0, 0x11ec, 192, "X25519+ML-KEM-768")                       \
+      "MLKEM768",  0, 0x11ec, 192, "X25519+ML-KEM-768", NULL)\
   X(x448mlkem1024,     "X448MLKEM1024",      "X448",   NULL,            0,    \
-      "MLKEM1024", 0, 0x0000, 256, "X448+ML-KEM-1024")                        \
+      "MLKEM1024", 0, 0x0000, 256, "X448+ML-KEM-1024", NULL)\
   X(secp256r1mlkem768, "SecP256r1MLKEM768",  "EC",     "P-256",         0,    \
-      "MLKEM768",  1, 0x11eb, 192, "P-256+ML-KEM-768")                        \
+      "MLKEM768",  1, 0x11eb, 192, "P-256+ML-KEM-768", NULL)\
   X(secp384r1mlkem1024,"SecP384r1MLKEM1024", "EC",     "P-384",         0,    \
-      "MLKEM1024", 1, 0x11ed, 256, "P-384+ML-KEM-1024")                       \
+      "MLKEM1024", 1, 0x11ed, 256, "P-384+ML-KEM-1024", "1.3.6.1.4.1.42235.6")\
   /* --- oqsprovider OQS-legacy ML-KEM hybrids --- */                         \
   X(x25519_mlkem512,   "x25519_mlkem512",    "X25519", NULL,            0,    \
-      "MLKEM512",  0, 0x2fb6, 128, "X25519+ML-KEM-512")                       \
+      "MLKEM512",  0, 0x2fb6, 128, "X25519+ML-KEM-512", "1.3.6.1.4.1.22554.5.8.1")\
   X(p256_mlkem512,     "p256_mlkem512",      "EC",     "P-256",         0,    \
-      "MLKEM512",  1, 0x2f4b, 128, "P-256+ML-KEM-512")                        \
+      "MLKEM512",  1, 0x2f4b, 128, "P-256+ML-KEM-512", "1.3.6.1.4.1.22554.5.7.1")\
   X(bp256_mlkem512,    "bp256_mlkem512",     "EC",   "brainpoolP256r1", 0,    \
-      "MLKEM512",  0, 0xfe20, 128, "brainpoolP256r1+ML-KEM-512")              \
+      "MLKEM512",  0, 0xfe20, 128, "brainpoolP256r1+ML-KEM-512", NULL)\
   X(p384_mlkem768,     "p384_mlkem768",      "EC",     "P-384",         0,    \
-      "MLKEM768",  1, 0x2f4c, 192, "P-384+ML-KEM-768")                        \
+      "MLKEM768",  1, 0x2f4c, 192, "P-384+ML-KEM-768", NULL)\
   X(x448_mlkem768,     "x448_mlkem768",      "X448",   NULL,            0,    \
-      "MLKEM768",  0, 0x2fb7, 192, "X448+ML-KEM-768")                         \
+      "MLKEM768",  0, 0x2fb7, 192, "X448+ML-KEM-768", NULL)\
   X(bp384_mlkem768,    "bp384_mlkem768",     "EC",   "brainpoolP384r1", 0,    \
-      "MLKEM768",  0, 0xfe21, 192, "brainpoolP384r1+ML-KEM-768")              \
+      "MLKEM768",  0, 0xfe21, 192, "brainpoolP384r1+ML-KEM-768", NULL)\
   X(p521_mlkem1024,    "p521_mlkem1024",     "EC",     "P-521",         0,    \
-      "MLKEM1024", 1, 0x2f4d, 256, "P-521+ML-KEM-1024")                       \
+      "MLKEM1024", 1, 0x2f4d, 256, "P-521+ML-KEM-1024", NULL)\
   X(bp512_mlkem1024,   "bp512_mlkem1024",    "EC",   "brainpoolP512r1", 0,    \
-      "MLKEM1024", 0, 0xfe22, 256, "brainpoolP512r1+ML-KEM-1024")             \
+      "MLKEM1024", 0, 0xfe22, 256, "brainpoolP512r1+ML-KEM-1024", NULL)\
   /* --- oqsprovider FrodoKEM hybrids (PQ base from oqsprovider only) --- */   \
   X(p256_frodo640aes,  "p256_frodo640aes",   "EC",     "P-256",         0,    \
-      "frodo640aes", 1, 0xfe24, 128, "P-256+FrodoKEM-640-AES")                \
+      "frodo640aes", 1, 0xfe24, 128, "P-256+FrodoKEM-640-AES", NULL)\
   X(x25519_frodo640aes,"x25519_frodo640aes", "X25519", NULL,            0,    \
-      "frodo640aes", 1, 0xfe25, 128, "X25519+FrodoKEM-640-AES")               \
+      "frodo640aes", 1, 0xfe25, 128, "X25519+FrodoKEM-640-AES", NULL)\
   X(p256_frodo640shake,"p256_frodo640shake", "EC",     "P-256",         0,    \
-      "frodo640shake", 1, 0xfe27, 128, "P-256+FrodoKEM-640-SHAKE")            \
+      "frodo640shake", 1, 0xfe27, 128, "P-256+FrodoKEM-640-SHAKE", NULL)\
   X(x25519_frodo640shake,"x25519_frodo640shake","X25519",NULL,          0,    \
-      "frodo640shake", 1, 0xfe28, 128, "X25519+FrodoKEM-640-SHAKE")           \
+      "frodo640shake", 1, 0xfe28, 128, "X25519+FrodoKEM-640-SHAKE", NULL)\
   X(p384_frodo976aes,  "p384_frodo976aes",   "EC",     "P-384",         0,    \
-      "frodo976aes", 1, 0xfe2a, 192, "P-384+FrodoKEM-976-AES")                \
+      "frodo976aes", 1, 0xfe2a, 192, "P-384+FrodoKEM-976-AES", NULL)\
   X(x448_frodo976aes,  "x448_frodo976aes",   "X448",   NULL,            0,    \
-      "frodo976aes", 1, 0xfe2b, 192, "X448+FrodoKEM-976-AES")                 \
+      "frodo976aes", 1, 0xfe2b, 192, "X448+FrodoKEM-976-AES", NULL)\
   X(p384_frodo976shake,"p384_frodo976shake", "EC",     "P-384",         0,    \
-      "frodo976shake", 1, 0xfe2d, 192, "P-384+FrodoKEM-976-SHAKE")            \
+      "frodo976shake", 1, 0xfe2d, 192, "P-384+FrodoKEM-976-SHAKE", NULL)\
   X(x448_frodo976shake,"x448_frodo976shake", "X448",   NULL,            0,    \
-      "frodo976shake", 1, 0xfe2e, 192, "X448+FrodoKEM-976-SHAKE")             \
+      "frodo976shake", 1, 0xfe2e, 192, "X448+FrodoKEM-976-SHAKE", NULL)\
   X(p521_frodo1344aes, "p521_frodo1344aes",  "EC",     "P-521",         0,    \
-      "frodo1344aes", 1, 0xfe30, 256, "P-521+FrodoKEM-1344-AES")              \
+      "frodo1344aes", 1, 0xfe30, 256, "P-521+FrodoKEM-1344-AES", NULL)\
   X(p521_frodo1344shake,"p521_frodo1344shake","EC",    "P-521",         0,    \
-      "frodo1344shake", 1, 0xfe32, 256, "P-521+FrodoKEM-1344-SHAKE")          \
+      "frodo1344shake", 1, 0xfe32, 256, "P-521+FrodoKEM-1344-SHAKE", NULL)\
   /* --- oqsprovider BIKE hybrids --- */                                      \
   X(p256_bikel1,       "p256_bikel1",        "EC",     "P-256",         0,    \
-      "bikel1", 1, 0xfe11, 128, "P-256+BIKE-L1")                              \
+      "bikel1", 1, 0xfe11, 128, "P-256+BIKE-L1", NULL)\
   X(x25519_bikel1,     "x25519_bikel1",      "X25519", NULL,            0,    \
-      "bikel1", 1, 0xfe12, 128, "X25519+BIKE-L1")                             \
+      "bikel1", 1, 0xfe12, 128, "X25519+BIKE-L1", NULL)\
   X(p384_bikel3,       "p384_bikel3",        "EC",     "P-384",         0,    \
-      "bikel3", 1, 0xfe14, 192, "P-384+BIKE-L3")                              \
+      "bikel3", 1, 0xfe14, 192, "P-384+BIKE-L3", NULL)\
   X(x448_bikel3,       "x448_bikel3",        "X448",   NULL,            0,    \
-      "bikel3", 1, 0xfe15, 192, "X448+BIKE-L3")                               \
+      "bikel3", 1, 0xfe15, 192, "X448+BIKE-L3", NULL)\
   X(p521_bikel5,       "p521_bikel5",        "EC",     "P-521",         0,    \
-      "bikel5", 1, 0xfe17, 256, "P-521+BIKE-L5")                              \
+      "bikel5", 1, 0xfe17, 256, "P-521+BIKE-L5", NULL)\
   /* --- oqsprovider HQC hybrids --- */                                       \
   X(p256_hqc1,         "p256_hqc1",          "EC",     "P-256",         0,    \
-      "hqc1", 1, 0xfe34, 128, "P-256+HQC-1")                                  \
+      "hqc1", 1, 0xfe34, 128, "P-256+HQC-1", NULL)\
   X(x25519_hqc1,       "x25519_hqc1",        "X25519", NULL,            0,    \
-      "hqc1", 1, 0xfe35, 128, "X25519+HQC-1")                                 \
+      "hqc1", 1, 0xfe35, 128, "X25519+HQC-1", NULL)\
   X(p384_hqc3,         "p384_hqc3",          "EC",     "P-384",         0,    \
-      "hqc3", 1, 0xfe37, 192, "P-384+HQC-3")                                  \
+      "hqc3", 1, 0xfe37, 192, "P-384+HQC-3", NULL)\
   X(x448_hqc3,         "x448_hqc3",          "X448",   NULL,            0,    \
-      "hqc3", 1, 0xfe38, 192, "X448+HQC-3")                                   \
+      "hqc3", 1, 0xfe38, 192, "X448+HQC-3", NULL)\
   X(p521_hqc5,         "p521_hqc5",          "EC",     "P-521",         0,    \
-      "hqc5", 1, 0xfe3a, 256, "P-521+HQC-5")
+      "hqc5", 1, 0xfe3a, 256, "P-521+HQC-5", NULL)
 
 /* Generate the info table from the master list. */
-#define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds)           \
-    { nm, a1, grp, a1k, a2, NULL, 1, slot, cp },
+#define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)       \
+    { nm, a1, grp, a1k, a2, NULL, 1, slot, cp, oid },
 static const HYBRID_KEM_INFO hybrid_kem_table[] = {
     HYBRID_KEM_LIST(HYBRID_KEM_ROW)
 };

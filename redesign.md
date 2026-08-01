@@ -246,15 +246,24 @@ oqsprovider and vice versa.
 > matching oqsprovider); decode uses `d2i_PublicKey` for RSA. All 19 sig algs
 > (EC + RSA) round-trip SPKI + PKCS8 both ways — `hybrid_encode_test` **76/76**.
 >
-> **KEM key files — N/A (not an interop target).** oqsprovider assigns NULL OIDs
-> to ~all hybrid KEMs (every Frodo/BIKE/HQC, every brainpool, `p384_mlkem768`,
-> `x448_mlkem768`, …; only `p256_mlkem512`/`x25519_mlkem512` have OIDs) AND builds
-> KEM encoders only under the off-by-default `OQS_KEM_ENCODERS`. So there is no
-> oqsprovider counterpart to interop against; a hybrid-provider KEM key file would
-> be self-contained, which the project rule forbids. KEM interop is via the live
-> KEM/TLS paths (already complete), not key files. **M2 is therefore complete for
-> its purpose (signature key files).** Only optional leftover: a `text` encoder
-> (human-readable dump; no interop role).
+> **KEM key files DONE (2026-08-01), gated by `HYBRID_KEM_ENCODERS`.** Mirrors
+> oqsprovider's off-by-default `OQS_KEM_ENCODERS`. The encode/decode code is
+> orthogonal-by-reuse: the SAME generic SPKI/PKCS8 path serves KEM and SIG, keyed
+> off `HYBRID_KEM_INFO.oid` (a uniform new column, NULL where oqsprovider leaves
+> it NULL — most hybrid KEMs); the KEM-specific bits are handled generically, not
+> per-algorithm: reverse-share ordering via `alg2_slot`, and raw-vs-DER classical
+> via try-`get_raw_private_key`-then-`i2d` (X25519/X448 raw, EC/RSA DER), matching
+> oqsprovider's `raw_key_support`. Private blob is
+> `UINT32(classical_len) || [pq_priv|classical (reverse) | classical|pq_priv] ||
+> pq_pub` (pq_pub always trailing; verified against real oqsprovider bytes).
+> Only `p256_mlkem512`, `x25519_mlkem512` (and `SecP384r1MLKEM1024` on
+> OpenSSL < 3.5) have OIDs and thus interop; the MLX KEMs are default-provider TLS
+> groups with **no** key-file encoders on either side (not serializable anywhere),
+> so NULL OID is correct, not self-contained. `hybrid_kem_encode_test` round-trips
+> SPKI + PKCS8 both ways vs oqsprovider (8/8; exercises both orderings and raw
+> classical), self-skipping per-alg when oqsprovider doesn't provide it (e.g.
+> SecP384r1MLKEM1024 ceded on 3.5). **M2 complete.** Only optional leftover: a
+> `text` encoder (human-readable dump; no interop role).
 
 **M3 — ML-KEM legacy hybrid KEMs** (base primitive available from default OR
 oqsprovider): `p256_mlkem512`, `x25519_mlkem512`, `p384_mlkem768`,
