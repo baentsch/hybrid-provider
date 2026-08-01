@@ -32,7 +32,7 @@ jobs:
           - { name: "main",   branch: "master" }
     env:
       PREFIX: ${{ github.workspace }}/.local
-      OSSL_INSTALL: ${{ runner.temp }}/ossl-install
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
     steps:
       - uses: actions/checkout@v4
 
