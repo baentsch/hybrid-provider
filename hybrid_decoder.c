@@ -175,6 +175,8 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
     PKCS8_PRIV_KEY_INFO *p8 = NULL;
     ASN1_OCTET_STRING *oct = NULL;
     const ASN1_OBJECT *alg_oid = NULL;
+    const unsigned char *octdata = NULL;
+    size_t octlen = 0;
     int innerlen = 0, variant, ret = 1;
     char oidbuf[128];
     HYBRID_KEY *key = NULL;
@@ -194,12 +196,15 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
     if (variant < 0)
         goto end;
 
-    /* Inner OCTET STRING wraps the raw blob. */
+    /* Inner OCTET STRING wraps the raw blob. Use ASN1_STRING accessors: the
+     * struct is opaque under OpenSSL 4.x. */
     if ((oct = d2i_ASN1_OCTET_STRING(NULL, &inner, innerlen)) == NULL
-        || oct->length < 4)
+        || ASN1_STRING_length(oct) < 4)
         goto end;
-    clen = ((uint32_t)oct->data[0] << 24) | ((uint32_t)oct->data[1] << 16)
-         | ((uint32_t)oct->data[2] << 8) | (uint32_t)oct->data[3];
+    octdata = ASN1_STRING_get0_data(oct);
+    octlen = (size_t)ASN1_STRING_length(oct);
+    clen = ((uint32_t)octdata[0] << 24) | ((uint32_t)octdata[1] << 16)
+         | ((uint32_t)octdata[2] << 8) | (uint32_t)octdata[3];
 
     key = hybrid_keymgmt_new_by_variant(ctx->provctx, 0, (unsigned)variant);
     if (key == NULL || !hybrid_ensure_sizes(key)) {
@@ -207,10 +212,10 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         goto end;
     }
     a2v = key->sizes.a2_prv;
-    if (sizeof(uint32_t) + (size_t)clen + a2v > (size_t)oct->length)
+    if (sizeof(uint32_t) + (size_t)clen + a2v > octlen)
         goto end;
-    if (!hybrid_key_load_prv_components(key, oct->data + 4, clen,
-                                       oct->data + 4 + clen, a2v)) {
+    if (!hybrid_key_load_prv_components(key, octdata + 4, clen,
+                                       octdata + 4 + clen, a2v)) {
         ret = 0;
         goto end;
     }
