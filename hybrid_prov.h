@@ -163,10 +163,21 @@ typedef struct hybrid_key_st {
  * component names, EC group and slot.
  *
  * X(cfield, name, alg1, alg1_group, alg1_is_kem, alg2, slot,
- *   tls_codepoint, secbits, desc)
+ *   tls_codepoint, secbits, desc, oid)
  *
- * tls_codepoint / secbits are the oqsprovider (and IETF, for MLX) defaults; a
- * 0 codepoint means "no TLS group" (KEM API only, e.g. X448MLKEM1024).
+ * PROVENANCE — the `tls_codepoint` and `oid` values are copied from their
+ * origins and must stay in sync with them:
+ *   - MLX names (X25519MLKEM768, …): code points are IETF
+ *     draft-ietf-tls-ecdhe-mlkem, implemented by OpenSSL's default provider.
+ *     These groups have no key-file encoders anywhere, hence oid = NULL.
+ *   - OQS-legacy names: code points and OIDs are oqsprovider's, defined in its
+ *     `oqs-template/generate.yml` (see ALGORITHMS.md). Most hybrid KEMs have
+ *     oid = NULL there too (not key-file encodable); only a few carry one.
+ * Drift is caught automatically: `hybrid_capability_test` compares every
+ * code point against the default/oqsprovider live TLS-GROUP capabilities, and
+ * the encode round-trip tests fail on any OID mismatch. `secbits` is the
+ * oqsprovider/IETF default; a 0 code point means "no TLS group" (KEM API only,
+ * e.g. X448MLKEM1024).
  */
 #define HYBRID_KEM_LIST(X)                                                    \
   /* --- default-provider MLX names (raw concat) --- */                       \
@@ -259,6 +270,11 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
  * Master hybrid-SIG list — single source of truth, mirroring HYBRID_KEM_LIST.
  * These are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ), matching
  * its names, OIDs and wire format. Component sizes are discovered at runtime.
+ *
+ * PROVENANCE: the `oid` values are oqsprovider's, from its
+ * `oqs-template/generate.yml` (see ALGORITHMS.md). Drift is caught automatically
+ * — a wrong OID breaks the cross-provider SPKI/PKCS8 round-trips in
+ * hybrid_encode_test (oqsprovider can't decode our key by that OID, or vice versa).
  *
  * X(cfield, name, alg1, alg1_group, alg2, nist_level, oid, desc)
  *   alg1        : "EC" or "RSA"

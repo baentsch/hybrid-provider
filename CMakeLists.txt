@@ -100,6 +100,16 @@ set_tests_properties(hybrid_encode_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# TLS-GROUP code-point parity: our tls_codepoint values vs the live capabilities
+# advertised by the default provider / oqsprovider (guards against drift).
+add_executable(hybrid_capability_test test/hybrid_capability_test.c)
+target_include_directories(hybrid_capability_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_capability_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_capability_test COMMAND hybrid_capability_test)
+set_tests_properties(hybrid_capability_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # KEM key-file interop test (SPKI + PKCS8 round-trip vs oqsprovider). Self-skips
 # unless both providers were built with KEM encoders on (HYBRID_KEM_ENCODERS /
 # OQS_KEM_ENCODERS).
