@@ -359,20 +359,24 @@ Decisions: (a) use oqsprovider canonical names as the primary registered names
 (required for true drop-in); (b) DROP the current non-oqs signature combos
 (decided 2026-07-31).
 
-> **Perf blocker to fix in oqsprovider BEFORE (or alongside) hybrid-logic
-> removal.** Delegating to this provider composes each PQ component via EVP. For
-> fast signatures (Falcon/MAYO/SNOVA) oqsprovider's *standalone* signature EVP
-> path is ~2× its *internal* direct-liboqs call — it re-loads the liboqs secret
-> key on every `DigestSignInit` (measured 2026-07-31: liboqs Falcon direct
-> ~0.18 ms vs via EVP ~0.36 ms; our composition glue itself is ~0). So a naive
-> "delete hybrid code, delegate to hybrid-provider" PR would **regress fast-sig
-> sign throughput ~1.8×**. The hybrid provider cannot beat the EVP path it is
-> handed and caching on our side recovers only ~14% (see the Performance
-> section). **Prerequisite:** trim oqsprovider's standalone-signature per-op
-> setup (cache the liboqs sig context in the key so `DigestSignInit` doesn't
-> reload it) — then delegation is perf-neutral for these algorithms. ML-DSA is
-> unaffected here (oqsprovider cedes it to default). Verify with the
-> FAIR-tagged rows in `test/hybrid_bench.c`.
+> **Perf blocker (OpenSSL, not oqsprovider) to be aware of before hybrid-logic
+> removal.** Delegating composes each PQ component via EVP. On **OpenSSL 3.5+ and
+> main (4.1-dev)**, every `EVP_DigestSignInit` on a provider signature runs an
+> *uncached* `ossl_method_construct` (via `evp_keymgmt_fetch_from_prov`'s
+> throwaway `tmp_store`), so fast-sig (Falcon/MAYO/SNOVA) sign is ~1.9× slower
+> than on 3.4 — see Performance effect 2 for the full proof (identical
+> liboqs/oqsprovider main built against both OpenSSL versions; only libcrypto
+> varied; callgrind pinpoints the construct). **This is an upstream OpenSSL
+> regression, NOT oqsprovider and NOT our composition** (earlier drafts wrongly
+> blamed an oqsprovider key-reload — corrected 2026-08-01). Implications for M8:
+> (a) a "delete hybrid code, delegate" PR keeps *native-name* rows looking flat
+> (the provider registers those names, warming the namemap) but any consumer
+> doing standalone PQ signs via EVP on 3.5+ eats the tax; (b) the real fix is
+> upstream (cache associated-method fetches, or make signing reuse an initialised
+> ctx); (c) we can't remove it from the provider — per-key ctx caching recovers
+> little and is thread-unsafe. File an OpenSSL issue. Verify with the FAIR-tagged
+> rows in `test/hybrid_bench.c` (reproduce by building the identical liboqs +
+> oqs-provider main against two OpenSSL prefixes and running the bench in each).
 
 ---
 
@@ -397,13 +401,27 @@ PQ signatures is slower than a provider's internal direct call.
      oqsprovider *cedes* them — so `?provider=oqsprovider` for the PQ part
      silently resolves to portable C (~0.48 ms/ML-DSA-44-sign) while native
      oqsprovider calls liboqs ML-DSA (AVX2, ~0.07 ms). Not apples-to-apples.
-  2. *Standalone-EVP tax (Falcon/MAYO/SNOVA rows — the fair comparison).* Here
-     both sides use the **same liboqs** primitive (oqsprovider owns these
-     standalone; default doesn't). Yet native oqsprovider does ECDSA+Falcon in
-     0.205 ms while calling that same liboqs Falcon **through EVP** costs 0.363 ms
-     — oqsprovider's *standalone-signature* EVP path carries ~0.15 ms per-op setup
-     (liboqs key re-load on each `DigestSignInit`) that its *internal* hybrid path
-     avoids. We inherit this by composing via EVP.
+  2. *OpenSSL 3.5+ signature-init regression (Falcon/MAYO/SNOVA rows).* Here both
+     sides use the **same liboqs** primitive. The fast-sig tax is **an OpenSSL
+     regression, not oqsprovider and not our composition** — proven by building
+     the *identical* liboqs+oqsprovider main against both OpenSSL 3.4 and OpenSSL
+     main (4.1-dev) and varying only libcrypto: a standalone `falcon512` sign via
+     `EVP_DigestSign` costs ~0.18 ms on 3.4 vs ~0.36 ms on main (~1.9×);
+     `hybrid_bench` fast-sig rows match. Root cause (callgrind: libcrypto work per
+     op jumps 15×, 12M→191M instr/150 ops): the 3.5 signature-init rework made
+     `do_sigver_init` call `evp_keymgmt_fetch_from_prov` **per `DigestSignInit`**,
+     and that helper (`crypto/evp/evp_fetch.c`) is *deliberately uncached* — it
+     builds the method in a throwaway `tmp_store` freed on every call
+     ("only returns methods from the given provider … when one method needs to
+     fetch an associated method"), so a full `ossl_method_construct` +
+     namemap rebuild runs on **every** sign. The hybrid provider pays this on each
+     sub-component `DigestSignInit`; oqsprovider's *internal* hybrid avoids it by
+     calling liboqs directly. (Caveat: the cost depends on namemap warmth — if a
+     loaded provider already registered the exact algorithm name, construct is
+     cheap. This makes native `p256_*` rows *look* flat in the bench because the
+     hybrid provider registers those names; the underlying standalone path
+     regresses regardless.) This is an upstream OpenSSL performance bug worth
+     reporting; we cannot fix it from the provider.
 
 **Not worth doing:** per-key caching of the component fetch/context. The libctx
 method store already caches implicit fetches (reuse-ctx == init-every-op, exactly:
@@ -414,12 +432,12 @@ load — not worth the added thread-safety complexity.
 **The performance lever is primitive sourcing.** `pq-propquery` /
 `classic-propquery` steer each component to the fastest provider exposing the
 standalone EVP algorithm; the hybrid then inherits that path's speed with no code
-change. **M8 caveat:** replacing oqsprovider's hybrid code with delegation to this
-provider would regress fast-sig (Falcon/MAYO/SNOVA) performance ~1.8× *until
-oqsprovider trims the per-op setup in its standalone signature EVP path* — the
-hybrid can't be faster than the EVP path it's handed. `test/hybrid_bench.c` runs
-the comparison; note only the Falcon/MAYO/SNOVA rows are apples-to-apples (the
-ML-DSA rows compare portable-C vs AVX2, per effect 1 above).
+change. **M8 caveat:** on OpenSSL 3.5+/main the fast-sig (Falcon/MAYO/SNOVA) path
+is ~1.9× slower than on 3.4 due to the **upstream OpenSSL** per-op method-construct
+regression (effect 2), which the hybrid can't fix from the provider side — file an
+OpenSSL issue. `test/hybrid_bench.c` runs the comparison; note only the
+Falcon/MAYO/SNOVA rows are apples-to-apples (the ML-DSA rows compare portable-C vs
+AVX2, per effect 1 above).
 
 **UNFAIR is a 3.5+ artifact — under OpenSSL 3.4 the tags flip to FAIR.** Effect 1
 exists only because 3.5's default provider added ML-KEM/ML-DSA, which oqsprovider
@@ -430,9 +448,9 @@ decides the tag at runtime (`pq_from_oqs_{kem,sig}` probes), so this flips
 automatically with no code change. Caveat: the MLX-vs-default rows can't run on
 3.4 at all (default lacks MLX/standalone ML-KEM pre-3.5) — they SKIP rather than
 becoming meaningful. A useful side effect: on 3.4 the ML-DSA rows become a genuine
-FAIR comparison and would then expose the same standalone-EVP per-op tax (effect 2)
-that 3.5 masks as an implementation difference — i.e. 3.4 is the better place to
-measure the M8 prerequisite for ML-DSA.
+FAIR comparison and show **parity** (hybrid == native), since 3.4 lacks the effect-2
+regression entirely — confirming both that our composition is free and that the
+fast-sig tax is purely the OpenSSL 3.5+ change, not oqsprovider or us.
 
 ---
 
