@@ -359,24 +359,22 @@ Decisions: (a) use oqsprovider canonical names as the primary registered names
 (required for true drop-in); (b) DROP the current non-oqs signature combos
 (decided 2026-07-31).
 
-> **Perf blocker (OpenSSL, not oqsprovider) to be aware of before hybrid-logic
-> removal.** Delegating composes each PQ component via EVP. On **OpenSSL 3.5+ and
-> main (4.1-dev)**, every `EVP_DigestSignInit` on a provider signature runs an
-> *uncached* `ossl_method_construct` (via `evp_keymgmt_fetch_from_prov`'s
-> throwaway `tmp_store`), so fast-sig (Falcon/MAYO/SNOVA) sign is ~1.9× slower
-> than on 3.4 — see Performance effect 2 for the full proof (identical
-> liboqs/oqsprovider main built against both OpenSSL versions; only libcrypto
-> varied; callgrind pinpoints the construct). **This is an upstream OpenSSL
-> regression, NOT oqsprovider and NOT our composition** (earlier drafts wrongly
-> blamed an oqsprovider key-reload — corrected 2026-08-01). Implications for M8:
-> (a) a "delete hybrid code, delegate" PR keeps *native-name* rows looking flat
-> (the provider registers those names, warming the namemap) but any consumer
-> doing standalone PQ signs via EVP on 3.5+ eats the tax; (b) the real fix is
-> upstream (cache associated-method fetches, or make signing reuse an initialised
-> ctx); (c) we can't remove it from the provider — per-key ctx caching recovers
-> little and is thread-unsafe. File an OpenSSL issue. Verify with the FAIR-tagged
-> rows in `test/hybrid_bench.c` (reproduce by building the identical liboqs +
-> oqs-provider main against two OpenSSL prefixes and running the bench in each).
+> **Hybrid-logic removal is performance-neutral — it needs no further work to
+> avoid a regression.** On OpenSSL ≥ 3.5 oqsprovider's *own native* hybrid
+> signatures are already ~1.9× slower than on 3.4 (measured: native
+> `p256_falcon512` ~0.38 ms/op in a real oqsprovider-only deployment on main),
+> because oqsprovider sets `*no_cache = 1` for the whole provider once its ≥3.5
+> algorithm filter turns on (see Performance effect 2). Delegating the same hybrid
+> to this provider composes the standalone components via EVP and reproduces the
+> **same** ~0.38 ms/op — no *new* regression. So M8 introduces no perf
+> prerequisite: the fast-sig cost pre-exists equally in the current native code
+> and the delegated path.
+>
+> The `no_cache` behaviour itself is a **separate, pre-existing oqsprovider
+> performance bug** (blanket `no_cache=1` from a static algorithm filter; see
+> `docs/oqsprovider-no-cache-issue.md`). Fixing it speeds up *both* the current
+> native hybrids and any future delegated path equally — tracked for a later
+> oqsprovider code review, not a blocker for M8.
 
 ---
 
@@ -401,27 +399,27 @@ PQ signatures is slower than a provider's internal direct call.
      oqsprovider *cedes* them — so `?provider=oqsprovider` for the PQ part
      silently resolves to portable C (~0.48 ms/ML-DSA-44-sign) while native
      oqsprovider calls liboqs ML-DSA (AVX2, ~0.07 ms). Not apples-to-apples.
-  2. *OpenSSL 3.5+ signature-init regression (Falcon/MAYO/SNOVA rows).* Here both
-     sides use the **same liboqs** primitive. The fast-sig tax is **an OpenSSL
-     regression, not oqsprovider and not our composition** — proven by building
-     the *identical* liboqs+oqsprovider main against both OpenSSL 3.4 and OpenSSL
-     main (4.1-dev) and varying only libcrypto: a standalone `falcon512` sign via
-     `EVP_DigestSign` costs ~0.18 ms on 3.4 vs ~0.36 ms on main (~1.9×);
-     `hybrid_bench` fast-sig rows match. Root cause (callgrind: libcrypto work per
-     op jumps 15×, 12M→191M instr/150 ops): the 3.5 signature-init rework made
-     `do_sigver_init` call `evp_keymgmt_fetch_from_prov` **per `DigestSignInit`**,
-     and that helper (`crypto/evp/evp_fetch.c`) is *deliberately uncached* — it
-     builds the method in a throwaway `tmp_store` freed on every call
-     ("only returns methods from the given provider … when one method needs to
-     fetch an associated method"), so a full `ossl_method_construct` +
-     namemap rebuild runs on **every** sign. The hybrid provider pays this on each
-     sub-component `DigestSignInit`; oqsprovider's *internal* hybrid avoids it by
-     calling liboqs directly. (Caveat: the cost depends on namemap warmth — if a
-     loaded provider already registered the exact algorithm name, construct is
-     cheap. This makes native `p256_*` rows *look* flat in the bench because the
-     hybrid provider registers those names; the underlying standalone path
-     regresses regardless.) This is an upstream OpenSSL performance bug worth
-     reporting; we cannot fix it from the provider.
+  2. *oqsprovider `no_cache` policy on OpenSSL ≥ 3.5 (Falcon/MAYO/SNOVA rows).*
+     Here both sides use the **same liboqs** primitive, and the fast-sig tax is
+     **oqsprovider's, not OpenSSL's and not our composition.** Root cause:
+     `do_sigver_init` fetches the key's keymgmt from its provider on every
+     `EVP_DigestSignInit` (`evp_keymgmt_fetch_from_prov`); OpenSSL caches that
+     method **unless the provider sets `*no_cache = 1`** in its
+     `query_operation`. oqsprovider does exactly that — on **OpenSSL ≥ 3.5.0** it
+     sets `rt_algo_filter_enabled = 1` (to runtime-hide ML-DSA/SLH-DSA now
+     provided natively) and returns `*no_cache = rt_algo_filter_enabled` for the
+     **whole provider**, so *no* method is cached and every sign reconstructs the
+     full method table (`ossl_method_construct`, O(provider algorithm count)). On
+     3.4 the filter is off → `no_cache = 0` → cached → fast. Proven independent of
+     oqs/OpenSSL-version by a ~200-algorithm stub provider toggling only the flag
+     (same binary): `no_cache=0` ≈ 0.0008 ms/op vs `no_cache=1` ≈ 0.5 ms/op on
+     **both** 3.4 and main — OpenSSL's behaviour is identical across versions; only
+     oqsprovider's flag flips. The disabled-algorithm list is static after init, so
+     the query result is deterministic and there is no reason to disable caching —
+     **an oqsprovider bug, fixable there** (`oqsprov/oqsprov.c`
+     `oqsprovider_query`). (Secondary: OpenSSL reconstructing *all* of a provider's
+     algorithms to fetch *one* under `no_cache` is arguably wasteful — an optional
+     upstream enhancement, not the cause.)
 
 **Not worth doing:** per-key caching of the component fetch/context. The libctx
 method store already caches implicit fetches (reuse-ctx == init-every-op, exactly:
@@ -432,12 +430,12 @@ load — not worth the added thread-safety complexity.
 **The performance lever is primitive sourcing.** `pq-propquery` /
 `classic-propquery` steer each component to the fastest provider exposing the
 standalone EVP algorithm; the hybrid then inherits that path's speed with no code
-change. **M8 caveat:** on OpenSSL 3.5+/main the fast-sig (Falcon/MAYO/SNOVA) path
-is ~1.9× slower than on 3.4 due to the **upstream OpenSSL** per-op method-construct
-regression (effect 2), which the hybrid can't fix from the provider side — file an
-OpenSSL issue. `test/hybrid_bench.c` runs the comparison; note only the
-Falcon/MAYO/SNOVA rows are apples-to-apples (the ML-DSA rows compare portable-C vs
-AVX2, per effect 1 above).
+change. **On M8:** delegating oqsprovider's hybrid logic here is **perf-neutral** —
+oqsprovider's own native hybrids already pay the ≥3.5 `no_cache` cost (effect 2), so
+the delegated path reproduces the same number, no new regression. Fixing that
+`no_cache` bug in oqsprovider (separate, pre-existing) speeds up both equally.
+`test/hybrid_bench.c` runs the comparison; note only the Falcon/MAYO/SNOVA rows are
+apples-to-apples (the ML-DSA rows compare portable-C vs AVX2, per effect 1 above).
 
 **UNFAIR is a 3.5+ artifact — under OpenSSL 3.4 the tags flip to FAIR.** Effect 1
 exists only because 3.5's default provider added ML-KEM/ML-DSA, which oqsprovider
@@ -448,9 +446,10 @@ decides the tag at runtime (`pq_from_oqs_{kem,sig}` probes), so this flips
 automatically with no code change. Caveat: the MLX-vs-default rows can't run on
 3.4 at all (default lacks MLX/standalone ML-KEM pre-3.5) — they SKIP rather than
 becoming meaningful. A useful side effect: on 3.4 the ML-DSA rows become a genuine
-FAIR comparison and show **parity** (hybrid == native), since 3.4 lacks the effect-2
-regression entirely — confirming both that our composition is free and that the
-fast-sig tax is purely the OpenSSL 3.5+ change, not oqsprovider or us.
+FAIR comparison and show **parity** (hybrid == native), since on 3.4 oqsprovider's
+algorithm filter is off (`no_cache=0`), so effect 2 does not occur — confirming both
+that our composition is free and that the
+fast-sig tax is purely oqsprovider's ≥3.5 `no_cache` policy, not OpenSSL or us.
 
 ---
 
