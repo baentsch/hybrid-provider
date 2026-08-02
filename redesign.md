@@ -476,6 +476,9 @@ fast-sig tax is purely oqsprovider's ≥3.5 `no_cache` policy, not OpenSSL or us
 
 ## Phase 2 — Composite (LAMPS), later
 
+*Tracked as epic **issue #6** (deferred until the LAMPS drafts / BC interop target
+are pinned).*
+
 Separate **`composite_*`** family alongside `hybrid_*` (no shared combiner
 abstraction — duplication accepted for clarity). Full LAMPS matrix:
 
