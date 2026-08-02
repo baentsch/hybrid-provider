@@ -103,7 +103,7 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
       ds " hybrid key management" },
 
 /* SIG keymgmt registration rows, generated from the master list. */
-#define HYBRID_SIG_KMGMT_REG(cf, nm, a1, grp, a2, lvl, oid, ds)              \
+#define HYBRID_SIG_KMGMT_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)              \
     { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
       ds " hybrid key management" },
 
@@ -128,7 +128,7 @@ static const OSSL_ALGORITHM hybrid_kems[] = {
 #undef HYBRID_KEM_OP_REG
 
 /* SIG operation registration rows, generated from the master list. */
-#define HYBRID_SIG_OP_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                 \
+#define HYBRID_SIG_OP_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                 \
     { nm, "provider=hybrid", hybrid_sig_functions, ds " hybrid signature" },
 
 static const OSSL_ALGORITHM hybrid_signatures[] = {
@@ -141,7 +141,7 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
  * Encoders: SubjectPublicKeyInfo in DER and PEM, one pair per signature
  * algorithm (matched by key-type name + output/structure properties).
  */
-#define HYBRID_SIG_ENC_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                \
+#define HYBRID_SIG_ENC_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                \
     { nm, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo",       \
       hybrid_spki_der_encoder_functions, ds " SPKI DER encoder" },           \
     { nm, "provider=hybrid,output=pem,structure=SubjectPublicKeyInfo",       \
@@ -182,7 +182,7 @@ static const OSSL_ALGORITHM hybrid_encoders[] = {
 #endif
 
 /* Decoders: DER SubjectPublicKeyInfo -> key, one per signature algorithm. */
-#define HYBRID_SIG_DEC_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                \
+#define HYBRID_SIG_DEC_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                \
     { nm, "provider=hybrid,input=der,structure=SubjectPublicKeyInfo",        \
       hybrid_spki_der_decoder_functions, ds " SPKI DER decoder" },           \
     { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \

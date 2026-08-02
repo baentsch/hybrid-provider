@@ -103,6 +103,7 @@ typedef struct {
     const char *alg2_name;      /* PQ, e.g. "MLDSA44" */
     int         nist_level;     /* PQ NIST level -> classical digest choice */
     const char *oid;            /* X.509 OID (used by M2 encoders/decoders) */
+    int         tls_codepoint;  /* TLS SignatureScheme code point (0 if none) */
 } HYBRID_SIG_INFO;
 
 /*
@@ -271,80 +272,82 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
  * These are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ), matching
  * its names, OIDs and wire format. Component sizes are discovered at runtime.
  *
- * PROVENANCE: the `oid` values are oqsprovider's, from its
+ * PROVENANCE: the `oid` and `tls_codepoint` values are oqsprovider's, from its
  * `oqs-template/generate.yml` (see ALGORITHMS.md). Drift is caught automatically
  * — a wrong OID breaks the cross-provider SPKI/PKCS8 round-trips in
- * hybrid_encode_test (oqsprovider can't decode our key by that OID, or vice versa).
+ * hybrid_encode_test, and a wrong code point is caught by hybrid_capability_test
+ * (which compares against oqsprovider's advertised TLS-SIGALG capabilities).
  *
- * X(cfield, name, alg1, alg1_group, alg2, nist_level, oid, desc)
- *   alg1        : "EC" or "RSA"
- *   alg1_group  : EC group, or NULL for RSA (3072-bit)
- *   nist_level  : PQ NIST level -> classical digest (1:SHA256 2/3:SHA384 4/5:SHA512)
+ * X(cfield, name, alg1, alg1_group, alg2, nist_level, oid, desc, tls_codepoint)
+ *   alg1          : "EC" or "RSA"
+ *   alg1_group    : EC group, or NULL for RSA (3072-bit)
+ *   nist_level    : PQ NIST level -> classical digest (1:SHA256 2/3:SHA384 4/5:SHA512)
+ *   tls_codepoint : TLS SignatureScheme code point (advertised via hybrid_caps.c)
  */
 #define HYBRID_SIG_LIST(X)                                                    \
   /* --- ML-DSA hybrids --- */                                                \
   X(p256_mldsa44,   "p256_mldsa44",   "EC",  "P-256", "MLDSA44", 2,           \
-      "1.3.9999.7.5", "P-256+ML-DSA-44")                                      \
+      "1.3.9999.7.5", "P-256+ML-DSA-44", 0xff06)                                      \
   X(rsa3072_mldsa44,"rsa3072_mldsa44","RSA", NULL,    "MLDSA44", 2,           \
-      "1.3.9999.7.6", "RSA3072+ML-DSA-44")                                    \
+      "1.3.9999.7.6", "RSA3072+ML-DSA-44", 0xff07)                                    \
   X(p384_mldsa65,   "p384_mldsa65",   "EC",  "P-384", "MLDSA65", 3,           \
-      "1.3.9999.7.7", "P-384+ML-DSA-65")                                      \
+      "1.3.9999.7.7", "P-384+ML-DSA-65", 0xff08)                                      \
   X(p521_mldsa87,   "p521_mldsa87",   "EC",  "P-521", "MLDSA87", 5,           \
-      "1.3.9999.7.8", "P-521+ML-DSA-87")                                      \
+      "1.3.9999.7.8", "P-521+ML-DSA-87", 0xff09)                                      \
   /* --- Falcon hybrids (PQ base from oqsprovider only) --- */                \
   X(p256_falcon512, "p256_falcon512", "EC",  "P-256", "falcon512", 1,         \
-      "1.3.9999.3.12", "P-256+Falcon-512")                                    \
+      "1.3.9999.3.12", "P-256+Falcon-512", 0xfed8)                                    \
   X(rsa3072_falcon512,"rsa3072_falcon512","RSA",NULL, "falcon512", 1,         \
-      "1.3.9999.3.13", "RSA3072+Falcon-512")                                  \
+      "1.3.9999.3.13", "RSA3072+Falcon-512", 0xfed9)                                  \
   X(p521_falcon1024,"p521_falcon1024","EC",  "P-521", "falcon1024", 5,        \
-      "1.3.9999.3.15", "P-521+Falcon-1024")                                   \
+      "1.3.9999.3.15", "P-521+Falcon-1024", 0xfedb)                                   \
   /* --- Falcon-padded hybrids --- */                                         \
   X(p256_falconpadded512,"p256_falconpadded512","EC","P-256",                 \
-      "falconpadded512", 1, "1.3.9999.3.17", "P-256+Falcon-padded-512")       \
+      "falconpadded512", 1, "1.3.9999.3.17", "P-256+Falcon-padded-512", 0xfedd)       \
   X(rsa3072_falconpadded512,"rsa3072_falconpadded512","RSA",NULL,             \
-      "falconpadded512", 1, "1.3.9999.3.18", "RSA3072+Falcon-padded-512")     \
+      "falconpadded512", 1, "1.3.9999.3.18", "RSA3072+Falcon-padded-512", 0xfede)     \
   X(p521_falconpadded1024,"p521_falconpadded1024","EC","P-521",               \
-      "falconpadded1024", 5, "1.3.9999.3.20", "P-521+Falcon-padded-1024")     \
+      "falconpadded1024", 5, "1.3.9999.3.20", "P-521+Falcon-padded-1024", 0xfee0)     \
   /* --- MAYO hybrids --- */                                                  \
   X(p256_mayo1,     "p256_mayo1",     "EC",  "P-256", "mayo1", 1,             \
-      "1.3.9999.8.1.4", "P-256+MAYO-1")                                       \
+      "1.3.9999.8.1.4", "P-256+MAYO-1", 0xff36)                                       \
   X(p256_mayo2,     "p256_mayo2",     "EC",  "P-256", "mayo2", 1,             \
-      "1.3.9999.8.2.4", "P-256+MAYO-2")                                       \
+      "1.3.9999.8.2.4", "P-256+MAYO-2", 0xff37)                                       \
   X(p384_mayo3,     "p384_mayo3",     "EC",  "P-384", "mayo3", 3,             \
-      "1.3.9999.8.3.4", "P-384+MAYO-3")                                       \
+      "1.3.9999.8.3.4", "P-384+MAYO-3", 0xff38)                                       \
   X(p521_mayo5,     "p521_mayo5",     "EC",  "P-521", "mayo5", 5,             \
-      "1.3.9999.8.5.4", "P-521+MAYO-5")                                       \
+      "1.3.9999.8.5.4", "P-521+MAYO-5", 0xff39)                                       \
   /* --- OV (UOV) hybrids; all NIST level 1 --- */                            \
   X(p256_OV_Is_pkc, "p256_OV_Is_pkc", "EC",  "P-256", "OV_Is_pkc", 1,         \
-      "1.3.9999.9.5.2", "P-256+OV-Is-pkc")                                    \
+      "1.3.9999.9.5.2", "P-256+OV-Is-pkc", 0xff1a)                                    \
   X(p256_OV_Ip_pkc, "p256_OV_Ip_pkc", "EC",  "P-256", "OV_Ip_pkc", 1,         \
-      "1.3.9999.9.6.2", "P-256+OV-Ip-pkc")                                    \
+      "1.3.9999.9.6.2", "P-256+OV-Ip-pkc", 0xff1b)                                    \
   X(p256_OV_Is_pkc_skc,"p256_OV_Is_pkc_skc","EC","P-256","OV_Is_pkc_skc", 1,  \
-      "1.3.9999.9.9.2", "P-256+OV-Is-pkc-skc")                                \
+      "1.3.9999.9.9.2", "P-256+OV-Is-pkc-skc", 0xff1e)                                \
   X(p256_OV_Ip_pkc_skc,"p256_OV_Ip_pkc_skc","EC","P-256","OV_Ip_pkc_skc", 1,  \
-      "1.3.9999.9.10.2", "P-256+OV-Ip-pkc-skc")                               \
+      "1.3.9999.9.10.2", "P-256+OV-Ip-pkc-skc", 0xff1f)                               \
   /* --- SNOVA hybrids --- */                                                 \
   X(p256_snova2454, "p256_snova2454", "EC",  "P-256", "snova2454", 1,         \
-      "1.3.9999.10.1.2", "P-256+SNOVA-24-5-4")                                \
+      "1.3.9999.10.1.2", "P-256+SNOVA-24-5-4", 0xff3b)                                \
   X(p256_snova2454esk,"p256_snova2454esk","EC","P-256","snova2454esk", 1,     \
-      "1.3.9999.10.3.2", "P-256+SNOVA-24-5-4-esk")                            \
+      "1.3.9999.10.3.2", "P-256+SNOVA-24-5-4-esk", 0xff3f)                            \
   X(p256_snova37172,"p256_snova37172","EC",  "P-256", "snova37172", 1,        \
-      "1.3.9999.10.5.2", "P-256+SNOVA-37-17-2")                               \
+      "1.3.9999.10.5.2", "P-256+SNOVA-37-17-2", 0xff43)                               \
   X(p384_snova2455, "p384_snova2455", "EC",  "P-384", "snova2455", 3,         \
-      "1.3.9999.10.10.2", "P-384+SNOVA-24-5-5")                               \
+      "1.3.9999.10.10.2", "P-384+SNOVA-24-5-5", 0xff4d)                               \
   X(p521_snova2965, "p521_snova2965", "EC",  "P-521", "snova2965", 5,         \
-      "1.3.9999.10.12.2", "P-521+SNOVA-29-6-5")                               \
+      "1.3.9999.10.12.2", "P-521+SNOVA-29-6-5", 0xff52)                               \
   /* --- MQOM2 hybrids (GF16 fast r5) --- */                                  \
   X(p256_mqom2cat1gf16fastr5,"p256_mqom2cat1gf16fastr5","EC","P-256",         \
-      "mqom2cat1gf16fastr5", 1, "1.3.9999.11.1.2", "P-256+MQOM2-cat1")        \
+      "mqom2cat1gf16fastr5", 1, "1.3.9999.11.1.2", "P-256+MQOM2-cat1", 0xff64)        \
   X(p384_mqom2cat3gf16fastr5,"p384_mqom2cat3gf16fastr5","EC","P-384",         \
-      "mqom2cat3gf16fastr5", 3, "1.3.9999.11.3.2", "P-384+MQOM2-cat3")        \
+      "mqom2cat3gf16fastr5", 3, "1.3.9999.11.3.2", "P-384+MQOM2-cat3", 0xff6c)        \
   X(p521_mqom2cat5gf16fastr5,"p521_mqom2cat5gf16fastr5","EC","P-521",         \
-      "mqom2cat5gf16fastr5", 5, "1.3.9999.11.5.2", "P-521+MQOM2-cat5")
+      "mqom2cat5gf16fastr5", 5, "1.3.9999.11.5.2", "P-521+MQOM2-cat5", 0xff74)
 
 /* Generate the info table from the master list. */
-#define HYBRID_SIG_ROW(cf, nm, a1, grp, a2, lvl, oid, ds)                     \
-    { nm, a1, grp, a2, lvl, oid },
+#define HYBRID_SIG_ROW(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                 \
+    { nm, a1, grp, a2, lvl, oid, cp },
 static const HYBRID_SIG_INFO hybrid_sig_table[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_ROW)
 };

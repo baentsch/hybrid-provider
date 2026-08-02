@@ -97,20 +97,89 @@ static const OSSL_PARAM hybrid_param_group_list[][11] = {
 #define HYBRID_TLS_GROUP_COUNT \
     (sizeof(hybrid_param_group_list) / sizeof(hybrid_param_group_list[0]))
 
+/*
+ * TLS signature-algorithm capabilities for the hybrid signatures — the
+ * signature-side analogue of the TLS groups above, so hybrid signatures can be
+ * negotiated for certificate authentication in a TLS 1.3 handshake. Generated
+ * from HYBRID_SIG_LIST: each signature becomes a TLS SignatureScheme with its
+ * code point (oqsprovider's, from `oqs-template/generate.yml`) and the same OID
+ * the encoders use. Security bits derive from the PQ NIST level (1/2 -> 128,
+ * 3/4 -> 192, 5 -> 256). Drift is caught by hybrid_capability_test.
+ */
+typedef struct {
+    unsigned int code_point;
+    unsigned int secbits;
+    int mintls;
+    int maxtls;
+} HYBRID_TLS_SIGALG_CONSTANTS;
+
+#define HYBRID_SIGALG_SECBITS(lvl) ((lvl) <= 2 ? 128u : (lvl) <= 4 ? 192u : 256u)
+
+#define HYBRID_CAPS_SIG_CONST_ROW(cf, nm, a1, grp, a2, lvl, oid, ds, cp)      \
+    { (unsigned int)(cp), HYBRID_SIGALG_SECBITS(lvl), TLS1_3_VERSION, 0 },
+static const HYBRID_TLS_SIGALG_CONSTANTS hybrid_sigalg_list[] = {
+    HYBRID_SIG_LIST(HYBRID_CAPS_SIG_CONST_ROW)
+};
+#undef HYBRID_CAPS_SIG_CONST_ROW
+
+/* One OSSL_PARAM array per signature. NAME is the algorithm the TLS layer
+ * fetches to build the signature context; OID matches the SPKI/PKCS8 encoders. */
+#define HYBRID_TLS_SIGALG_ENTRY(signame, sigoid, idx)                         \
+    {                                                                         \
+        OSSL_PARAM_utf8_string(OSSL_CAPABILITY_TLS_SIGALG_IANA_NAME,          \
+            signame, sizeof(signame)),                                        \
+        OSSL_PARAM_utf8_string(OSSL_CAPABILITY_TLS_SIGALG_NAME,               \
+            signame, sizeof(signame)),                                        \
+        OSSL_PARAM_utf8_string(OSSL_CAPABILITY_TLS_SIGALG_OID,                \
+            sigoid, sizeof(sigoid)),                                          \
+        OSSL_PARAM_uint(OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT,                \
+            (unsigned int *)&hybrid_sigalg_list[idx].code_point),            \
+        OSSL_PARAM_uint(OSSL_CAPABILITY_TLS_SIGALG_SECURITY_BITS,             \
+            (unsigned int *)&hybrid_sigalg_list[idx].secbits),               \
+        OSSL_PARAM_int(OSSL_CAPABILITY_TLS_SIGALG_MIN_TLS,                    \
+            (int *)&hybrid_sigalg_list[idx].mintls),                         \
+        OSSL_PARAM_int(OSSL_CAPABILITY_TLS_SIGALG_MAX_TLS,                    \
+            (int *)&hybrid_sigalg_list[idx].maxtls),                         \
+        OSSL_PARAM_END                                                        \
+    }
+
+#define HYBRID_CAPS_SIG_PARAM_ROW(cf, nm, a1, grp, a2, lvl, oid, ds, cp)      \
+    HYBRID_TLS_SIGALG_ENTRY(nm, oid, HYBRID_SIG_IDX_##cf),
+static const OSSL_PARAM hybrid_param_sigalg_list[][8] = {
+    HYBRID_SIG_LIST(HYBRID_CAPS_SIG_PARAM_ROW)
+};
+#undef HYBRID_CAPS_SIG_PARAM_ROW
+
+#define HYBRID_TLS_SIGALG_COUNT \
+    (sizeof(hybrid_param_sigalg_list) / sizeof(hybrid_param_sigalg_list[0]))
+
 int hybrid_get_capabilities(void *provctx, const char *capability,
                             OSSL_CALLBACK *cb, void *arg)
 {
     size_t i;
 
-    if (capability == NULL
-            || OPENSSL_strcasecmp(capability, "TLS-GROUP") != 0)
+    if (capability == NULL)
         return 0;
 
-    for (i = 0; i < HYBRID_TLS_GROUP_COUNT; i++) {
-        if (hybrid_group_list[i].group_id == 0)
-            continue;   /* no registered TLS code point */
-        if (!cb(hybrid_param_group_list[i], arg))
-            return 0;
+    if (OPENSSL_strcasecmp(capability, "TLS-GROUP") == 0) {
+        for (i = 0; i < HYBRID_TLS_GROUP_COUNT; i++) {
+            if (hybrid_group_list[i].group_id == 0)
+                continue;   /* no registered TLS code point */
+            if (!cb(hybrid_param_group_list[i], arg))
+                return 0;
+        }
+        return 1;
     }
-    return 1;
+
+    if (OPENSSL_strcasecmp(capability, "TLS-SIGALG") == 0) {
+        for (i = 0; i < HYBRID_TLS_SIGALG_COUNT; i++) {
+            if (hybrid_sigalg_list[i].code_point == 0)
+                continue;
+            if (!cb(hybrid_param_sigalg_list[i], arg))
+                return 0;
+        }
+        return 1;
+    }
+
+    return 0;
 }

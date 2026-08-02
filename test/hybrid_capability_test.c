@@ -29,7 +29,8 @@
 static struct { char name[80]; unsigned int id; } adv[MAXG];
 static int nadv;
 
-/* Capability callback: record each advertised (group name -> code point). */
+/* Capability callback: record each advertised (name -> code point), for both
+ * TLS-GROUP and TLS-SIGALG entries (different param keys, disjoint names). */
 static int collect(const OSSL_PARAM params[], void *arg)
 {
     const OSSL_PARAM *pn =
@@ -40,6 +41,10 @@ static int collect(const OSSL_PARAM params[], void *arg)
     unsigned int id = 0;
 
     (void)arg;
+    if (pn == NULL || pi == NULL) {          /* not a group -> try a sigalg */
+        pn = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_SIGALG_IANA_NAME);
+        pi = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT);
+    }
     if (pn != NULL && pi != NULL && nadv < MAXG
         && OSSL_PARAM_get_utf8_string_ptr(pn, &name)
         && OSSL_PARAM_get_uint(pi, &id)) {
@@ -62,6 +67,14 @@ static int origin_id(const char *name, unsigned int *id)
     return 0;
 }
 
+/* Count how many capabilities a provider advertises (arg is an int counter). */
+static int count_cb(const OSSL_PARAM params[], void *arg)
+{
+    (void)params;
+    ++*(int *)arg;
+    return 1;
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -79,10 +92,13 @@ int main(void)
         return 1;
     }
 
-    /* Collect the authoritative code points from the origin providers. */
+    /* Collect the authoritative code points from the origin providers:
+     * TLS groups from default + oqsprovider, TLS sigalgs from oqsprovider. */
     OSSL_PROVIDER_get_capabilities(dflt, "TLS-GROUP", collect, NULL);
-    if (oqs != NULL)
+    if (oqs != NULL) {
         OSSL_PROVIDER_get_capabilities(oqs, "TLS-GROUP", collect, NULL);
+        OSSL_PROVIDER_get_capabilities(oqs, "TLS-SIGALG", collect, NULL);
+    }
 
     printf("TLS-GROUP code-point parity vs default/oqsprovider\n");
     printf("==================================================\n");
@@ -93,22 +109,72 @@ int main(void)
         if (info->tls_codepoint == 0)
             continue;                       /* KEM-only, no TLS group */
         if (!origin_id(info->hybrid_name, &oid_cp)) {
-            printf("  %-22s 0x%04x  SKIP (no origin advertises it)\n",
+            printf("  %-24s 0x%04x  SKIP (no origin advertises it)\n",
                    info->hybrid_name, info->tls_codepoint);
             skipped++;
             continue;
         }
         tests++;
         if ((unsigned int)info->tls_codepoint == oid_cp) {
-            printf("  %-22s 0x%04x  == origin  PASS\n",
+            printf("  %-24s 0x%04x  == origin  PASS\n",
                    info->hybrid_name, oid_cp);
             passed++;
         } else {
-            printf("  %-22s 0x%04x  != origin 0x%04x  FAIL\n",
+            printf("  %-24s 0x%04x  != origin 0x%04x  FAIL\n",
                    info->hybrid_name, info->tls_codepoint, oid_cp);
             failed++;
         }
     }
+
+    printf("\nTLS-SIGALG code-point parity vs oqsprovider\n");
+    printf("===========================================\n");
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+        const HYBRID_SIG_INFO *info = &hybrid_sig_table[i];
+        unsigned int oid_cp;
+
+        if (info->tls_codepoint == 0)
+            continue;
+        if (!origin_id(info->hybrid_name, &oid_cp)) {
+            printf("  %-24s 0x%04x  SKIP (no origin advertises it)\n",
+                   info->hybrid_name, info->tls_codepoint);
+            skipped++;
+            continue;
+        }
+        tests++;
+        if ((unsigned int)info->tls_codepoint == oid_cp) {
+            printf("  %-24s 0x%04x  == origin  PASS\n",
+                   info->hybrid_name, oid_cp);
+            passed++;
+        } else {
+            printf("  %-24s 0x%04x  != origin 0x%04x  FAIL\n",
+                   info->hybrid_name, info->tls_codepoint, oid_cp);
+            failed++;
+        }
+    }
+    /* Self-check: the hybrid provider actually advertises the sigalgs. Use a
+     * fresh libctx (default + hybrid only) so this doesn't perturb `adv`. */
+    {
+        OSSL_LIB_CTX *hctx = OSSL_LIB_CTX_new();
+        OSSL_PROVIDER *h;
+        int n = 0;
+
+        if (mods != NULL)
+            OSSL_PROVIDER_set_default_search_path(hctx, mods);
+        OSSL_PROVIDER_load(hctx, "default");
+        h = OSSL_PROVIDER_load(hctx, "hybrid");
+        if (h != NULL)
+            OSSL_PROVIDER_get_capabilities(h, "TLS-SIGALG", count_cb, &n);
+        tests++;
+        printf("\nhybrid provider advertises %d TLS-SIGALGs (expect %d) ... %s\n",
+               n, (int)HYBRID_SIG_ALG_COUNT,
+               n == (int)HYBRID_SIG_ALG_COUNT ? "PASS" : "FAIL");
+        if (n == (int)HYBRID_SIG_ALG_COUNT)
+            passed++;
+        else
+            failed++;
+        OSSL_LIB_CTX_free(hctx);
+    }
+
     printf("\nResults: %d/%d matched, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
