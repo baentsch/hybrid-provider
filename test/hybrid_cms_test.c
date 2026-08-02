@@ -122,9 +122,14 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg)
     }
 
     /* Sign: SignedData with SHA-512 message digest + signed attributes, signed
-     * with the hybrid key (mirrors `openssl cms -sign ... -md sha512`). */
+     * with the hybrid key (mirrors `openssl cms -sign ... -md sha512`).
+     * The propq is left NULL, not "provider=hybrid": CMS applies it to *every*
+     * fetch, including the generic SHA-512 message digest, which the hybrid
+     * provider does not implement (it would fail "unknown digest algorithm").
+     * The signature is bound to the hybrid key via `pkey`, so it stays hybrid
+     * regardless; only the digest needs to resolve from the default provider. */
     in = BIO_new_mem_buf(content, sizeof(content) - 1);
-    cms = CMS_sign_ex(NULL, NULL, NULL, in, flags, libctx, "provider=hybrid");
+    cms = CMS_sign_ex(NULL, NULL, NULL, in, flags, libctx, NULL);
     if (cms == NULL
             || CMS_add1_signer(cms, cert, pkey, EVP_sha512(), CMS_BINARY) == NULL
             || CMS_final(cms, in, NULL, flags) <= 0)
