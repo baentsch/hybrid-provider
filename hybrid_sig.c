@@ -16,6 +16,7 @@
 
 #include "hybrid_prov.h"
 #include <openssl/rsa.h>
+#include <openssl/x509.h>
 
 typedef struct {
     OSSL_LIB_CTX *libctx;
@@ -262,12 +263,50 @@ static int hybrid_sig_set_ctx_params(void *vctx, const OSSL_PARAM params[])
 static const OSSL_PARAM *hybrid_sig_gettable_ctx_params(void *vctx,
                                                           void *provctx)
 {
-    static const OSSL_PARAM params[] = { OSSL_PARAM_END };
+    static const OSSL_PARAM params[] = {
+        OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_ALGORITHM_ID, NULL, 0),
+        OSSL_PARAM_END
+    };
     return params;
 }
 
+/*
+ * Provide the X.509 AlgorithmIdentifier (DER) for the hybrid signature so that
+ * X509_sign()/X509_verify() and the TLS CertificateVerify message can label the
+ * signature. It is SEQUENCE { OID } with absent parameters — the hybrid OID from
+ * the info table, matching oqsprovider.
+ */
 static int hybrid_sig_get_ctx_params(void *vctx, OSSL_PARAM params[])
 {
+    HYBRID_SIG_CTX *ctx = vctx;
+    OSSL_PARAM *p = OSSL_PARAM_locate(params, OSSL_SIGNATURE_PARAM_ALGORITHM_ID);
+
+    if (p != NULL) {
+        const HYBRID_SIG_INFO *info;
+        X509_ALGOR *alg = NULL;
+        ASN1_OBJECT *oid = NULL;
+        unsigned char *der = NULL;
+        int derlen, ok = 0;
+
+        if (ctx == NULL || ctx->key == NULL)
+            return 0;
+        info = (const HYBRID_SIG_INFO *)ctx->key->info;
+        if (info->oid == NULL || (oid = OBJ_txt2obj(info->oid, 1)) == NULL
+                || (alg = X509_ALGOR_new()) == NULL
+                || !X509_ALGOR_set0(alg, oid, V_ASN1_UNDEF, NULL))
+            goto end;
+        oid = NULL;             /* ownership transferred to alg */
+        if ((derlen = i2d_X509_ALGOR(alg, &der)) <= 0
+                || !OSSL_PARAM_set_octet_string(p, der, (size_t)derlen))
+            goto end;
+        ok = 1;
+    end:
+        OPENSSL_free(der);
+        ASN1_OBJECT_free(oid);
+        X509_ALGOR_free(alg);
+        if (!ok)
+            return 0;
+    }
     return 1;
 }
 
