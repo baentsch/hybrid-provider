@@ -37,6 +37,7 @@
 #define HYBRID_COMPOSITE_PROV_H
 
 #include <openssl/types.h>
+#include <openssl/core.h>
 #include <stddef.h>
 
 /* Whole-scheme domain separator (fixed ASCII, draft-19). Shared by every combo,
@@ -69,6 +70,9 @@ typedef struct {
     const char *oid;         /* composite OID; NULL until filled (see header)   */
     const char *label;       /* domain-sep label bytes (ASCII), per draft-19    */
     const char *prehash;     /* PH(M) digest name ("SHA256"/"SHA512"/"SHAKE256")*/
+    const char *trad_md;     /* traditional component's OWN hash — distinct from */
+                             /* prehash (e.g. RSA3072-PSS uses SHA256 here even  */
+                             /* though the label says SHA512); NULL = pure (Ed)  */
     int         pq_priv_seed;/* 1: PQ priv serialized as seed (ML-DSA 32B); 0 raw*/
     int         tier;        /* COMPOSITE_TIER_STANDARD | _EXPERIMENTAL         */
 } COMPOSITE_SIG_INFO;
@@ -95,42 +99,49 @@ typedef struct composite_key_st {
  * HYBRID_SIG_LIST). One row per combination drives the info table, the keymgmt
  * thunks and provider registration. To add a combo, add exactly one row.
  *
- * X(cfield, name, pq_alg, trad_alg, trad_group, oid, label, prehash,
+ * X(cfield, name, pq_alg, trad_alg, trad_group, oid, label, prehash, trad_md,
  *   pq_priv_seed, tier)
  *
- * Labels/prehash for the standardized rows are the draft-19 normative constants;
- * OIDs are NULL pending the registry (see header). This is a representative
- * starter set — the full standardized matrix (ML-DSA x {RSA-PSS, RSA-PKCS1.5,
- * ECDSA-P256/P384/P521/brainpool, Ed25519, Ed448}) is filled alongside the OIDs.
+ * Labels/prehash/trad_md for the standardized rows are the draft-19 normative
+ * constants (§ Table 2 for the RSA-PSS params); OIDs are the draft-19 §6 values
+ * but left NULL until re-verified verbatim (they are only needed by the
+ * encoders/AlgorithmIdentifier, not by keygen/sign/verify). This is a
+ * representative starter set — the full standardized matrix (ML-DSA x {RSA-PSS,
+ * RSA-PKCS1.5, ECDSA-P256/P384/P521/brainpool, Ed25519, Ed448}) is filled
+ * alongside the OIDs.
+ *
+ * NB the domain-separator content in `label` (ASCII string vs the OID's DER) and
+ * the ML-DSA context value MUST be confirmed against draft-19 before claiming
+ * interop; self-consistent sign/verify does not exercise that choice.
  */
 #define COMPOSITE_SIG_LIST(X)                                                  \
   /* --- standardized (LAMPS Composite ML-DSA) --- */                         \
   X(mldsa44_ecdsa_p256, "mldsa44_ecdsa_p256", "ML-DSA-44", "EC", "P-256",     \
-      NULL, "COMPSIG-MLDSA44-ECDSA-P256-SHA256", "SHA256", 1,                 \
+      NULL, "COMPSIG-MLDSA44-ECDSA-P256-SHA256", "SHA256", "SHA256", 1,       \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa65_rsa3072_pss, "mldsa65_rsa3072_pss", "ML-DSA-65", "RSA-PSS", NULL, \
-      NULL, "COMPSIG-MLDSA65-RSA3072-PSS-SHA512", "SHA512", 1,                \
+      NULL, "COMPSIG-MLDSA65-RSA3072-PSS-SHA512", "SHA512", "SHA256", 1,      \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa65_ed25519, "mldsa65_ed25519", "ML-DSA-65", "ED25519", NULL,         \
-      NULL, "COMPSIG-MLDSA65-Ed25519-SHA512", "SHA512", 1,                    \
+      NULL, "COMPSIG-MLDSA65-Ed25519-SHA512", "SHA512", NULL, 1,              \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa87_ecdsa_p384, "mldsa87_ecdsa_p384", "ML-DSA-87", "EC", "P-384",     \
-      NULL, "COMPSIG-MLDSA87-ECDSA-P384-SHA512", "SHA512", 1,                 \
+      NULL, "COMPSIG-MLDSA87-ECDSA-P384-SHA512", "SHA512", "SHA512", 1,       \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa87_ed448, "mldsa87_ed448", "ML-DSA-87", "ED448", NULL,               \
-      NULL, "COMPSIG-MLDSA87-Ed448-SHAKE256", "SHAKE256", 1,                  \
+      NULL, "COMPSIG-MLDSA87-Ed448-SHAKE256", "SHAKE256", NULL, 1,            \
       COMPOSITE_TIER_STANDARD)                                                 \
   /* --- experimental (non-ML-DSA PQ; DISJOINT arc; non-normative label) ---  \
    * Illustrative single row — proves the family is generic over the PQ        \
    * component. Extend with research sigs (Falcon/MAYO/SLH-DSA/on-ramp) as     \
    * needed; sourced from oqsprovider via pq_propq. */                        \
   X(exp_mayo2_ecdsa_p256, "exp_mayo2_ecdsa_p256", "mayo2", "EC", "P-256",     \
-      NULL, "COMPSIG-EXP-MAYO2-ECDSA-P256-SHA256", "SHA256", 0,               \
+      NULL, "COMPSIG-EXP-MAYO2-ECDSA-P256-SHA256", "SHA256", "SHA256", 0,     \
       COMPOSITE_TIER_EXPERIMENTAL)
 
 /* Generate the info table from the master list. */
-#define COMPOSITE_SIG_ROW(cf, nm, pq, tr, grp, oid, lbl, ph, seed, tier)      \
-    { nm, pq, tr, grp, oid, lbl, ph, seed, tier },
+#define COMPOSITE_SIG_ROW(cf, nm, pq, tr, grp, oid, lbl, ph, tmd, seed, tier) \
+    { nm, pq, tr, grp, oid, lbl, ph, tmd, seed, tier },
 static const COMPOSITE_SIG_INFO composite_sig_table[] = {
     COMPOSITE_SIG_LIST(COMPOSITE_SIG_ROW)
 };
@@ -143,5 +154,22 @@ enum { COMPOSITE_SIG_LIST(COMPOSITE_SIG_IDX_ROW) COMPOSITE_SIG_ALG_COUNT_ENUM };
 
 #define COMPOSITE_SIG_ALG_COUNT \
     (sizeof(composite_sig_table) / sizeof(composite_sig_table[0]))
+
+/* --- Combiner (composite_sig.c) ---
+ *
+ * The cryptographic core, independent of the provider plumbing so it can be
+ * unit-tested directly with EVP-generated component keys. Builds the draft-19
+ * message representative M' = PREFIX || label || len(ctx) || ctx || PH(M) (empty
+ * ctx), signs it with each component (PQ one-shot with context = label; classic
+ * with trad_md, or pure for Ed), and concatenates PQ-sig || trad-sig. Verify
+ * splits at the fixed ML-DSA signature length. *sig is malloc'd; caller frees. */
+int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
+                   OSSL_LIB_CTX *libctx, const char *pq_propq,
+                   const char *trad_propq, const unsigned char *msg,
+                   size_t msglen, unsigned char **sig, size_t *siglen);
+int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
+                     OSSL_LIB_CTX *libctx, const char *pq_propq,
+                     const char *trad_propq, const unsigned char *msg,
+                     size_t msglen, const unsigned char *sig, size_t siglen);
 
 #endif /* HYBRID_COMPOSITE_PROV_H */

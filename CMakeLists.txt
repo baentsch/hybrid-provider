@@ -187,6 +187,21 @@ set_tests_properties(hybrid_matrix_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Composite (LAMPS) signature family — issue #6. Per the packaging decision
+# (redesign.md Phase 2) composite is a build-flag-gated capability in this
+# provider, default OFF. First slice: the generic combiner (composite_sig.c) and
+# its self-consistency test; the provider module (keymgmt/registration) follows.
+option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" OFF)
+if(HYBRID_COMPOSITE)
+    add_executable(composite_sig_test test/composite_sig_test.c composite_sig.c)
+    target_include_directories(composite_sig_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_sig_test PRIVATE OpenSSL::Crypto)
+    add_test(NAME composite_sig_test COMMAND composite_sig_test)
+    set_tests_properties(composite_sig_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+endif()
+
 # Separate-process CLI TLS interop for Frodo/BIKE/HQC hybrids: the hybrid
 # provider (configured via cnf with component-providers/component-path) drives
 # real openssl s_server/s_client handshakes against a pure-oqsprovider peer,
