@@ -174,6 +174,24 @@ Application code selects the provider by property query (`?provider=hybrid`) onc
 the cnf has activated it; the CLI harness always drives the hybrid side via
 `OPENSSL_CONF` and passes no `-provider` flags for it.
 
+Two distinct limitations sit behind this, with different lifespans:
+
+- **The private component context** (`component-providers` / `component-path`,
+  below) is cnf-only and is what forces the Frodo/BIKE/HQC tests through a cnf.
+  It exists solely because oqsprovider advertises the *same* TLS group names as
+  this provider, so the two can't coexist in one application context. **Once
+  oqsprovider drops its hybrid combinations (redesign.md M8), leaving it to
+  supply only the base FrodoKEM/BIKE/HQC KEMs, that collision — and this
+  requirement — disappears:** all three providers can then be loaded on the
+  command line and those groups become ordinary CLI-usable groups.
+- **Independent per-component steering** (`pq-propquery` / `classic-propquery`,
+  below) stays cnf-only, but that is an OpenSSL TLS-plumbing constraint (only a
+  single `-propquery` is exposed on the TLS path), not an oqsprovider one, and
+  M8 does not change it. It only matters when you need to source the PQ and
+  classic halves from *different* providers; the common case (let each component
+  resolve normally, or force one provider globally with `-propquery`) needs no
+  cnf.
+
 ### Selecting component providers (`pq-propquery` / `classic-propquery`)
 
 The hybrid provider reads two optional keys from its config section to steer

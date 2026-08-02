@@ -37,6 +37,16 @@
 # cnf and passes NO -provider flags. Only the pure-default / pure-oqsprovider
 # peers use -provider flags.
 #
+# NOTE: the component-providers/component-path half of this is only cnf-only
+# because oqsprovider currently registers TLS groups under the SAME names as
+# this provider (hence the private context to dodge the collision). Once
+# oqsprovider drops its hybrid combinations (redesign.md M8) and supplies only
+# the base FrodoKEM/BIKE/HQC KEMs, that collision goes away and these groups
+# become ordinary command-line-usable groups. The pq-propquery/classic-propquery
+# steering keys stay cnf-only, but that is an OpenSSL limitation (single
+# -propquery on the TLS path), not oqsprovider's, and only matters when the PQ
+# and classic components must come from different providers.
+#
 # What IS reproducible on the CLI is the TLS 1.3 handshake: there the KEM keys
 # live only in memory inside the handshake and are never serialized. This
 # script therefore focuses on:
@@ -102,7 +112,7 @@ note() { echo "  ${C_SK}SKIP${C_Z}  $*"; skip=$((skip+1)); }
 hdr()  { echo; echo "== $* =="; }
 
 usage() {
-    sed -n '3,65p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,75p' "$0" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Usage: $(basename "$0") [options] <command>
