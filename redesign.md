@@ -564,9 +564,24 @@ abstraction — duplication accepted for clarity). Full LAMPS matrix:
 - Composite ML-DSA — draft-ietf-lamps-pq-composite-**sigs**
 - Composite ML-KEM — draft-ietf-lamps-pq-composite-**kem**
 
-Distinct from hybrid: **single assigned OID per combination**,
-**SEQUENCE-of-components** serialization (not byte-concat), and a
-**domain-separated combiner** with a fixed per-OID label for signatures.
+Distinct from hybrid: **single assigned OID per combination** and a
+**domain-separated combiner**. NB per **draft-19** (verify verbatim before
+coding — earlier drafts differed): the serialization is **raw concatenation**,
+*not* the ASN.1 SEQUENCE-of-components earlier revisions used —
+`pubkey = mldsaPK || tradPK`, `privkey = mldsaSeed || tradSK`,
+`sig = mldsaSig || tradSig`, the concatenation wrapped in a single SPKI BIT
+STRING / `OneAsymmetricKey` OCTET STRING under the composite OID (component
+sizes are fixed per OID, so the split is unambiguous). Component sizes fixed per
+OID means this is *closer* to the hybrid concat layout than expected; the real
+distinguishers are the single OID and the signed message representative:
+
+```
+M' = Prefix || Label || len(ctx) || ctx || PH(M)
+  Prefix = "CompositeAlgorithmSignatures2025"   (fixed ASCII)
+  Label  = per-combo, e.g. "COMPSIG-MLDSA44-ECDSA-P256-SHA256"
+  PH     = per-combo prehash (SHA-256/512, SHAKE256, …)
+mldsaSig = ML-DSA.Sign(mldsaSK, M', ctx=Label)   tradSig = Trad.Sign(tradSK, M')
+```
 
 ### Phase-2 packaging decision (2026-08) — capability here, not a separate provider
 
