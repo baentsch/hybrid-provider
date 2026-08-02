@@ -14,8 +14,10 @@
  * just X.509/TLS (that is hybrid_cert_tls_test). A tampered content is required
  * to FAIL verification.
  *
- * The ML-DSA hybrids use the default provider's ML-DSA (3.5+), so no oqsprovider
- * is needed; the Falcon/MAYO/… families need oqsprovider and self-skip without
+ * The set of algorithms is driven off the master HYBRID_SIG_LIST, split by PQ
+ * half: the standardized (ML-DSA) hybrids use the default provider's ML-DSA
+ * (3.5+), so no oqsprovider is needed; the non-standardized PQ signatures
+ * (Falcon, MAYO, OV, SNOVA, MQOM, ...) need oqsprovider and are skipped without
  * it. Each algorithm self-skips if its components are unavailable (e.g. on 3.4).
  */
 #include <stdio.h>
@@ -26,19 +28,21 @@
 #include <openssl/cms.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include "hybrid_prov.h"
 
 static int tests, passed, failed, skipped;
 
-/* ML-DSA hybrids: base from the default provider, always attempted. */
-static const char *mldsa_sigs[] = {
-    "p256_mldsa44", "rsa3072_mldsa44", "p384_mldsa65", "p521_mldsa87",
-};
-/* Representative oqs-base hybrids across the remaining families (need oqs). */
-static const char *oqs_sigs[] = {
-    "p256_falcon512", "rsa3072_falcon512", "p521_falcon1024",
-    "p256_mayo1", "p384_mayo3",
-    "p256_OV_Is_pkc", "p256_snova2454", "p256_mqom2cat1gf16fastr5",
-};
+/*
+ * A hybrid's PQ half is "standardized" when it is ML-DSA, which the default
+ * provider ships (OpenSSL >= 3.5); every other PQ signature (Falcon, MAYO, OV,
+ * SNOVA, MQOM, ...) is non-standardized and only oqsprovider provides it. We do
+ * not enumerate the algorithms here — the set is driven off the master
+ * HYBRID_SIG_LIST so it never goes stale as rows are added.
+ */
+static int is_standardized_pq_sig(const char *pq_name)
+{
+    return strncmp(pq_name, "MLDSA", 5) == 0;
+}
 
 static int make_cert(OSSL_LIB_CTX *libctx, const char *alg,
                      EVP_PKEY **pkey_out, X509 **cert_out)
@@ -209,13 +213,19 @@ int main(void)
 
     printf("hybrid signatures in CMS SignedData\n");
     printf("===================================\n");
-    for (i = 0; i < sizeof(mldsa_sigs) / sizeof(mldsa_sigs[0]); i++)
-        check(ctx, mldsa_sigs[i]);
-    if (have_oqs)
-        for (i = 0; i < sizeof(oqs_sigs) / sizeof(oqs_sigs[0]); i++)
-            check(ctx, oqs_sigs[i]);
-    else
-        printf("  (oqsprovider absent -- skipping Falcon/MAYO/OV/SNOVA/MQOM)\n");
+    /* Drive the whole hybrid-signature inventory from the master table. The
+     * standardized (ML-DSA) hybrids run against the default provider; the
+     * non-standardized ones need oqsprovider and are skipped without it. Each
+     * algorithm additionally self-skips if its components are unavailable. */
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+        const HYBRID_SIG_INFO *info = &hybrid_sig_table[i];
+
+        if (is_standardized_pq_sig(info->alg2_name) || have_oqs)
+            check(ctx, info->hybrid_name);
+    }
+    if (!have_oqs)
+        printf("  (oqsprovider absent -- skipping non-standardized PQ "
+               "signatures)\n");
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);

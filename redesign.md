@@ -444,14 +444,17 @@ the master tables so nothing is silently omitted):
       clause is merely a scoring hint and falls back to another provider, so the
       test uses the mandatory form.
 - [x] **CMS sign/verify** (`hybrid_cms_test`) — self-signed hybrid cert →
-      `CMS_sign`/`CMS_verify` SignedData round-trip (+ tamper-reject), for the
-      ML-DSA hybrids (default-only) and, when oqsprovider is present, the
-      Falcon/MAYO/OV/SNOVA/MQOM families. This surfaced and fixed a real provider
-      gap: CMS drives the *streaming* `EVP_DigestSignUpdate` path, which hybrid
-      sigs (one-shot) do not implement. The keymgmt now advertises an empty
+      `CMS_sign`/`CMS_verify` SignedData round-trip (+ tamper-reject), driven off
+      the master signature table: the standardized (ML-DSA) hybrids run against
+      the default provider, the non-standardized PQ signatures need oqsprovider
+      and are skipped without it. This surfaced and fixed a real provider gap:
+      CMS drives the *streaming* `EVP_DigestSignUpdate` path, which hybrid sigs
+      (one-shot) do not implement. The keymgmt now advertises an empty
       `OSSL_PKEY_PARAM_MANDATORY_DIGEST` (`""` → `"UNDEF"`), the documented
       provider-keymgmt convention (as ML-DSA/EdDSA do) that makes CMS's
       `cms_signature_nomd()` select the one-shot `EVP_DigestSign` path instead.
+      (The CMS propquery is left NULL so the generic message digest still
+      resolves from the default provider.)
 - [x] **Deeper `EVP_PKEY` param round-trip** (`hybrid_param_test`) — descriptor
       params (bits/security-bits/max-size) plus `EVP_PKEY_todata`→`fromdata`→`eq`
       on the raw `PUB_KEY` param, and for sigs a sign/verify through the
@@ -463,8 +466,12 @@ the master tables so nothing is silently omitted):
       the length-prefixed DER encoder path, not the fixed-offset octet form.)
 - [x] **Full-matrix cross-version interop sweep** (`hybrid_matrix_test`) — the
       pinned oqsprovider interop extended to the *entire* hybrid KEM + SIG
-      inventory (driven off the master tables), both directions, skipped wholesale
-      when oqsprovider is absent (issue #3, work item 2).
+      inventory (driven off the master tables), both directions. Each KEM is
+      crossed against whichever second peer implements the name: oqsprovider for
+      the non-standardized hybrids, the default provider for the standardized MLX
+      groups (which oqsprovider lacks). Signatures cross only against oqsprovider
+      (the default provider has no hybrid signatures), so the sweep is skipped
+      wholesale when oqsprovider is absent (issue #3, work item 2).
 
 Explicitly **excluded** (not ours / conflicts with principles): pure-PQ tests;
 any test depending on the OQS private KEM OID arc beyond the gated encoders.

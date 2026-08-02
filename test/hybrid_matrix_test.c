@@ -10,16 +10,18 @@
  * silently omitted. It is the machine-checkable form of issue #3 work item 2
  * ("cross-check the full hybrid matrix — names, OIDs, code points, wire formats").
  *
- *   KEM: for each hybrid whose PQ base oqsprovider also provides (i.e. every
- *        name except the standardized MLX groups, which live only in the default
- *        provider), generate in A, encapsulate in B, decapsulate in A, both
- *        directions; shared secrets must match.
+ *   KEM: generate in A, encapsulate in B, decapsulate in A, both directions;
+ *        shared secrets must match. The peer B is whichever provider also
+ *        implements the name — oqsprovider for the non-standardized hybrids, the
+ *        default provider for the standardized MLX groups (which oqsprovider does
+ *        not provide), so every KEM name is crossed against a real second peer.
  *   SIG: for each hybrid signature, hybrid signs + encodes its SPKI, oqsprovider
  *        decodes the SPKI and verifies (proving SPKI + signature wire formats),
- *        and the reverse direction.
+ *        and the reverse direction. The default provider has no hybrid signatures,
+ *        so signatures are only crossed against oqsprovider.
  *
- * Skipped wholesale when oqsprovider is unavailable; per algorithm, names that
- * oqsprovider does not implement (MLX KEMs) self-skip.
+ * Skipped wholesale when oqsprovider is unavailable (the signature half needs it);
+ * per algorithm, a name with no second peer self-skips.
  */
 #include <stdio.h>
 #include <string.h>
@@ -39,21 +41,35 @@ static EVP_PKEY *import_encoded_pub(OSSL_LIB_CTX *ctx, const char *alg,
                                     const char *prop,
                                     const unsigned char *enc, size_t enclen)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, alg, prop);
+    /* The raw-concat public key imports under different param names depending on
+     * the peer: oqsprovider's hybrids take "encoded-pub-key", the default
+     * provider's MLX KEM takes "pub" (and rejects mutating a generated key). Try
+     * both fromdata forms, then fall back to set1_encoded_public_key. */
+    static const char *pnames[] = {
+        OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY, OSSL_PKEY_PARAM_PUB_KEY,
+    };
     EVP_PKEY *pk = NULL;
-    OSSL_PARAM p[2];
+    EVP_PKEY_CTX *c;
+    size_t i;
 
-    p[0] = OSSL_PARAM_construct_octet_string(
-        OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY, (void *)enc, enclen);
-    p[1] = OSSL_PARAM_construct_end();
-    if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
-            && EVP_PKEY_fromdata(c, &pk, EVP_PKEY_PUBLIC_KEY, p) > 0) {
+    for (i = 0; i < sizeof(pnames) / sizeof(pnames[0]); i++) {
+        OSSL_PARAM p[2];
+
+        c = EVP_PKEY_CTX_new_from_name(ctx, alg, prop);
+        p[0] = OSSL_PARAM_construct_octet_string(pnames[i],
+                                                 (void *)enc, enclen);
+        p[1] = OSSL_PARAM_construct_end();
+        if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
+                && EVP_PKEY_fromdata(c, &pk, EVP_PKEY_PUBLIC_KEY
+                                     | OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS,
+                                     p) > 0) {
+            EVP_PKEY_CTX_free(c);
+            return pk;
+        }
         EVP_PKEY_CTX_free(c);
-        return pk;
+        ERR_clear_error();
+        pk = NULL;
     }
-    EVP_PKEY_CTX_free(c);
-    ERR_clear_error();
-    pk = NULL;
     c = EVP_PKEY_CTX_new_from_name(ctx, alg, prop);
     if (c == NULL || EVP_PKEY_keygen_init(c) <= 0
             || EVP_PKEY_keygen(c, &pk) <= 0) {
@@ -105,30 +121,45 @@ end:
     return ok;
 }
 
-static void check_kem(OSSL_LIB_CTX *ctx, const char *alg)
+/* Can `prov` generate a key for `alg`? (Used to pick the cross-check peer.) */
+static int provider_has_kem(OSSL_LIB_CTX *ctx, const char *alg, const char *prov)
 {
-    /* MLX names live only in the default provider; oqsprovider has no keygen for
-     * them -> self-skip by probing an oqsprovider keygen first. */
-    EVP_PKEY_CTX *probe = EVP_PKEY_CTX_new_from_name(ctx, alg,
-                                                     "provider=oqsprovider");
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, alg, prov);
     EVP_PKEY *tmp = NULL;
-    int have = (probe != NULL && EVP_PKEY_keygen_init(probe) > 0
-                && EVP_PKEY_keygen(probe, &tmp) > 0);
+    int have = (c != NULL && EVP_PKEY_keygen_init(c) > 0
+                && EVP_PKEY_keygen(c, &tmp) > 0);
 
     EVP_PKEY_free(tmp);
-    EVP_PKEY_CTX_free(probe);
+    EVP_PKEY_CTX_free(c);
     ERR_clear_error();
+    return have;
+}
+
+static void check_kem(OSSL_LIB_CTX *ctx, const char *alg)
+{
+    /* Cross against whichever provider also implements this name: the
+     * non-standardized hybrids live in oqsprovider; the standardized MLX groups
+     * live only in the default provider (oqsprovider has no keygen for them), so
+     * those are proven hybrid<->default instead. */
+    const char *peer = provider_has_kem(ctx, alg, "provider=oqsprovider")
+                           ? "oqsprovider"
+                           : provider_has_kem(ctx, alg, "provider=default")
+                                 ? "default"
+                                 : NULL;
+    char peerprop[32];
 
     tests++;
-    printf("  %-24s KEM hybrid<->oqs (both dirs) ... ", alg);
+    printf("  %-24s KEM hybrid<->%-11s (both dirs) ... ",
+           alg, peer ? peer : "(none)");
     fflush(stdout);
-    if (!have) {
-        printf("SKIP (not in oqsprovider)\n");
+    if (peer == NULL) {
+        printf("SKIP (no peer provider)\n");
         skipped++; tests--;
         return;
     }
-    if (kem_cross(ctx, alg, "provider=hybrid", "provider=oqsprovider")
-            && kem_cross(ctx, alg, "provider=oqsprovider", "provider=hybrid")) {
+    snprintf(peerprop, sizeof(peerprop), "provider=%s", peer);
+    if (kem_cross(ctx, alg, "provider=hybrid", peerprop)
+            && kem_cross(ctx, alg, peerprop, "provider=hybrid")) {
         printf("PASS\n");
         passed++;
     } else {
