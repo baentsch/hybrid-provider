@@ -83,6 +83,14 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OPENSSL_BIN="${OPENSSL_BIN:-$PROJECT_DIR/.local/bin/openssl}"
 OPENSSL_LIBPATH="${OPENSSL_LIBPATH:-$PROJECT_DIR/.local/lib64}"
 MODULE_DIR="${MODULE_DIR:-$PROJECT_DIR/build}"
+# Shared-module file suffix. OpenSSL providers are built as CMake MODULE
+# libraries, which use .so on BOTH Linux and macOS (CMake gives MODULE targets
+# .so, not .dylib) — so the only platform that differs is Windows (.dll), where
+# this script would run under MSYS/Cygwin. Overridable via SOEXT for exotic setups.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
+    *)                    SOEXT="${SOEXT:-so}";;
+esac
 HYBRID_PROVIDER="hybrid"
 PQ_PROVIDER="default"
 CLASSIC_PROVIDER="default"
@@ -126,7 +134,7 @@ Commands:
               oqsprovider's groups colliding in the application libctx. Tests
               hybrid-vs-oqsprovider both directions. Self-skips when oqsprovider
               is not on the module path. Requires --module-dir to contain both
-              hybrid.so and oqsprovider.so.
+              the hybrid and oqsprovider provider modules.
   config      Print the openssl.cnf for the current settings.
   all         Run info then tls.
 
@@ -239,7 +247,7 @@ gen_config() {
             sect="${p}_sect"
             echo "[$sect]"
             # default lives in libcrypto; others are loadable modules.
-            [ "$p" = "default" ] || echo "module = $MODULE_DIR/${p}.so"
+            [ "$p" = "default" ] || echo "module = $MODULE_DIR/${p}.$SOEXT"
             echo "activate = 1"
             # Steer the hybrid provider's components to the chosen providers.
             if [ "$p" = "hybrid" ]; then
@@ -397,9 +405,9 @@ cmd_tls() {
 # The peer (the non-hybrid side) uses oqsprovider directly.
 # ========================================================================
 cmd_tls_compctx() {
-    # oqsprovider.so must exist on the module path.
-    if [ ! -f "$MODULE_DIR/oqsprovider.so" ]; then
-        note "oqsprovider.so not found in $MODULE_DIR — skipping tls-compctx"
+    # oqsprovider module must exist on the module path.
+    if [ ! -f "$MODULE_DIR/oqsprovider.$SOEXT" ]; then
+        note "oqsprovider.$SOEXT not found in $MODULE_DIR — skipping tls-compctx"
         return
     fi
 
@@ -467,7 +475,7 @@ hybrid = hybrid_sect
 [default_sect]
 activate = 1
 [hybrid_sect]
-module = $MODULE_DIR/hybrid.so
+module = $MODULE_DIR/hybrid.$SOEXT
 activate = 1
 component-providers = default oqsprovider
 component-path = $MODULE_DIR
