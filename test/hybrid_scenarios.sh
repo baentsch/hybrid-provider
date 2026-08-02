@@ -20,6 +20,33 @@
 # Those scenarios are covered in-process (via raw OSSL_PARAM export/import) by
 # the C test `hybrid_test` and cannot be reproduced here.
 #
+# CONFIGURATION IS CNF-ONLY, NEVER COMMAND LINE
+#
+# The hybrid provider is configurable ONLY through an openssl.cnf, never through
+# `openssl -provider hybrid` on the command line. Two things force this:
+#   * Its component-steering keys — pq-propquery, classic-propquery,
+#     component-providers, component-path — live in the provider's config
+#     section and have no command-line equivalent. component-providers /
+#     component-path in particular build the provider's PRIVATE component
+#     libctx (used to source Frodo/BIKE/HQC from oqsprovider without its group
+#     names colliding in the application context); without them those groups
+#     never register and `-groups p256_frodo640aes` fails.
+#   * `-provider hybrid` loads the module into the application libctx with none
+#     of the above keys set, so it cannot compose anything.
+# Every hybrid-side invocation below therefore sets OPENSSL_CONF to a generated
+# cnf and passes NO -provider flags. Only the pure-default / pure-oqsprovider
+# peers use -provider flags.
+#
+# NOTE: the component-providers/component-path half of this is only cnf-only
+# because oqsprovider currently registers TLS groups under the SAME names as
+# this provider (hence the private context to dodge the collision). Once
+# oqsprovider drops its hybrid combinations (redesign.md M8) and supplies only
+# the base FrodoKEM/BIKE/HQC KEMs, that collision goes away and these groups
+# become ordinary command-line-usable groups. The pq-propquery/classic-propquery
+# steering keys stay cnf-only, but that is an OpenSSL limitation (single
+# -propquery on the TLS path), not oqsprovider's, and only matters when the PQ
+# and classic components must come from different providers.
+#
 # What IS reproducible on the CLI is the TLS 1.3 handshake: there the KEM keys
 # live only in memory inside the handshake and are never serialized. This
 # script therefore focuses on:
@@ -56,16 +83,31 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OPENSSL_BIN="${OPENSSL_BIN:-$PROJECT_DIR/.local/bin/openssl}"
 OPENSSL_LIBPATH="${OPENSSL_LIBPATH:-$PROJECT_DIR/.local/lib64}"
 MODULE_DIR="${MODULE_DIR:-$PROJECT_DIR/build}"
+# Shared-module file suffix. OpenSSL providers are built as CMake MODULE
+# libraries, which use .so on BOTH Linux and macOS (CMake gives MODULE targets
+# .so, not .dylib) — so the only platform that differs is Windows (.dll), where
+# this script would run under MSYS/Cygwin. Overridable via SOEXT for exotic setups.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
+    *)                    SOEXT="${SOEXT:-so}";;
+esac
 HYBRID_PROVIDER="hybrid"
 PQ_PROVIDER="default"
 CLASSIC_PROVIDER="default"
 EXTRA_PROVIDERS=""          # space-separated, e.g. "bcrust oqsprovider"
 GROUP_LIST="X25519MLKEM768 SecP256r1MLKEM768 SecP384r1MLKEM1024"
+# Groups whose PQ base comes only from oqsprovider (not in the default provider).
+# The hybrid provider must use its private component context so these don't
+# collide with oqsprovider's own group names in the application libctx.
+COMPCTX_GROUPS="p256_frodo640aes x25519_frodo640aes p384_frodo976aes \
+    x448_bikel3 p521_bikel5 \
+    p256_hqc1 p384_hqc3 p521_hqc5"
 PORT=14433
 KEEP=0
 USE_CONFIG=0                # drive openssl via generated cnf instead of flags
 CONFIG_FILE=""
 COMMAND=""
+COMPONENT_PROVIDERS=""      # e.g. "default oqsprovider" for component-providers key
 
 pass=0; fail=0; skip=0
 
@@ -78,7 +120,7 @@ note() { echo "  ${C_SK}SKIP${C_Z}  $*"; skip=$((skip+1)); }
 hdr()  { echo; echo "== $* =="; }
 
 usage() {
-    sed -n '3,51p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,75p' "$0" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Usage: $(basename "$0") [options] <command>
@@ -86,6 +128,13 @@ Usage: $(basename "$0") [options] <command>
 Commands:
   info        List providers, KEM/signature algorithms and TLS groups in effect.
   tls         Run TLS 1.3 handshake interop for each selected group.
+  tls-compctx Run TLS 1.3 interop for Frodo/BIKE/HQC groups using the hybrid
+              provider's private component context (component-providers key in
+              openssl.cnf) so it sources the PQ base from oqsprovider without
+              oqsprovider's groups colliding in the application libctx. Tests
+              hybrid-vs-oqsprovider both directions. Self-skips when oqsprovider
+              is not on the module path. Requires --module-dir to contain both
+              the hybrid and oqsprovider provider modules.
   config      Print the openssl.cnf for the current settings.
   all         Run info then tls.
 
@@ -98,6 +147,10 @@ Options (override config-file values):
   --classic-provider NAME   X25519/EC component       (default: $CLASSIC_PROVIDER)
   --extra-provider NAME     load an extra provider (repeatable), e.g. bcrust
   --groups "G1 G2 ..."      groups to test            (default: all 3)
+  --component-providers "P1 P2"
+                            providers loaded into the hybrid provider's own
+                            libctx (component-providers config key), e.g.
+                            "default oqsprovider". Required for tls-compctx.
   --port N                  base TCP port             (default: $PORT)
   --config FILE             read KEY=value settings from FILE
   --use-config              drive openssl via a generated cnf, not flags
@@ -129,13 +182,14 @@ while [ $# -gt 0 ]; do
         --pq-provider)        PQ_PROVIDER="$2"; shift 2;;
         --classic-provider)   CLASSIC_PROVIDER="$2"; shift 2;;
         --extra-provider)     EXTRA_PROVIDERS="$EXTRA_PROVIDERS $2"; shift 2;;
+        --component-providers) COMPONENT_PROVIDERS="$2"; shift 2;;
         --groups)             GROUP_LIST="$2"; shift 2;;
         --port)               PORT="$2"; shift 2;;
         --config)             shift 2;;          # already handled
         --use-config)         USE_CONFIG=1; shift;;
         --keep)               KEEP=1; shift;;
         -h|--help)            usage; exit 0;;
-        info|tls|config|all)  COMMAND="$1"; shift;;
+        info|tls|tls-compctx|config|all)  COMMAND="$1"; shift;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
     esac
 done
@@ -193,7 +247,7 @@ gen_config() {
             sect="${p}_sect"
             echo "[$sect]"
             # default lives in libcrypto; others are loadable modules.
-            [ "$p" = "default" ] || echo "module = $MODULE_DIR/${p}.so"
+            [ "$p" = "default" ] || echo "module = $MODULE_DIR/${p}.$SOEXT"
             echo "activate = 1"
             # Steer the hybrid provider's components to the chosen providers.
             if [ "$p" = "hybrid" ]; then
@@ -201,6 +255,15 @@ gen_config() {
                     || echo "pq-propquery = ?provider=$PQ_PROVIDER"
                 [ "$CLASSIC_PROVIDER" = "default" ] \
                     || echo "classic-propquery = ?provider=$CLASSIC_PROVIDER"
+                # Private component context: the hybrid provider loads these
+                # providers into its OWN libctx so their group registrations
+                # don't collide with oqsprovider's in the application context.
+                # component-path tells the hybrid provider where to find those
+                # component modules (oqsprovider.so) in its private libctx.
+                if [ -n "$COMPONENT_PROVIDERS" ]; then
+                    echo "component-providers = $COMPONENT_PROVIDERS"
+                    echo "component-path = $MODULE_DIR"
+                fi
             fi
         done
     } > "$cnf"
@@ -334,14 +397,151 @@ cmd_tls() {
 }
 
 # ========================================================================
+# tls-compctx — Frodo/BIKE/HQC via the hybrid provider's private component
+# context (component-providers key).  The hybrid provider sources the PQ base
+# from oqsprovider in its OWN libctx, so the application context holds only
+# default + hybrid; oqsprovider's group registrations don't collide, and
+# these groups resolve unambiguously to the hybrid implementation.
+# The peer (the non-hybrid side) uses oqsprovider directly.
+# ========================================================================
+cmd_tls_compctx() {
+    # oqsprovider module must exist on the module path.
+    if [ ! -f "$MODULE_DIR/oqsprovider.$SOEXT" ]; then
+        note "oqsprovider.$SOEXT not found in $MODULE_DIR — skipping tls-compctx"
+        return
+    fi
+
+    hdr "TLS 1.3 Frodo/BIKE/HQC — hybrid (compctx) vs oqsprovider"
+
+    # Override settings for this command: the hybrid side uses the private
+    # component context; the oqsprovider side uses oqsprovider directly.
+    local saved_extra saved_comp saved_pq saved_use
+    saved_extra="$EXTRA_PROVIDERS"
+    saved_comp="$COMPONENT_PROVIDERS"
+    saved_pq="$PQ_PROVIDER"
+    saved_use="$USE_CONFIG"
+
+    COMPONENT_PROVIDERS="default oqsprovider"
+    EXTRA_PROVIDERS=""        # hybrid's component ctx loads oqsprovider privately;
+                              # don't expose it in the application context
+    PQ_PROVIDER="default"     # application-context component query (irrelevant —
+                              # overridden by the private ctx, but must be set)
+    USE_CONFIG=1              # component-providers only works via openssl.cnf
+
+    if ! make_cert; then
+        echo "could not generate server certificate" >&2; exit 1
+    fi
+
+    local g
+    for g in $COMPCTX_GROUPS; do
+        # hybrid server, oqsprovider client
+        handshake_compctx "$g" hybrid oqs
+        # oqsprovider server, hybrid client
+        handshake_compctx "$g" oqs hybrid
+    done
+
+    EXTRA_PROVIDERS="$saved_extra"
+    COMPONENT_PROVIDERS="$saved_comp"
+    PQ_PROVIDER="$saved_pq"
+    USE_CONFIG="$saved_use"
+}
+
+# One handshake for tls-compctx. $1=group  $2=server ("hybrid"|"oqs")
+#   $3=client ("hybrid"|"oqs").
+# hybrid side: loaded via the generated cnf (has component-providers key).
+# oqs side: only default + oqsprovider, no hybrid.
+handshake_compctx() {
+    local group="$1" sside="$2" cside="$3"
+    local port=$((PORT + PORT_SEQ)); PORT_SEQ=$((PORT_SEQ + 1))
+    local sprov scnf cprov ccnf srvlog clilog rc=0
+    srvlog="$WORKDIR/srv_cc.log"; clilog="$WORKDIR/cli_cc.log"
+
+    local oqs_prov_flags="-provider default -provider oqsprovider"
+
+    # Hybrid side: the provider MUST be configured entirely through a cnf, never
+    # via -provider CLI flags. The component-providers / component-path keys that
+    # build the hybrid provider's private component libctx only exist in the cnf;
+    # there is no command-line equivalent (see the CONFIGURATION note at the top
+    # of this file). Point OPENSSL_CONF at a minimal cnf carrying those keys.
+    local compctx_cnf="$WORKDIR/compctx.cnf"
+    if [ ! -f "$compctx_cnf" ]; then
+        cat > "$compctx_cnf" <<CNFEOF
+openssl_conf = osslcfg
+[osslcfg]
+providers = prov_sect
+[prov_sect]
+default = default_sect
+hybrid = hybrid_sect
+[default_sect]
+activate = 1
+[hybrid_sect]
+module = $MODULE_DIR/hybrid.$SOEXT
+activate = 1
+component-providers = default oqsprovider
+component-path = $MODULE_DIR
+CNFEOF
+    fi
+    # Hybrid side: providers activated ENTIRELY via the cnf (no -provider CLI
+    # flags). The cnf's [hybrid_sect] carries the component-providers key, which
+    # the hybrid provider reads at init to build its private component libctx
+    # (default + oqsprovider). The outer/app libctx therefore contains ONLY
+    # default + hybrid — no oqsprovider group-name collision — and the Frodo/
+    # BIKE/HQC groups resolve unambiguously to the hybrid provider.
+    # oqs side: no cnf (OPENSSL_CONF=/dev/null), providers via CLI flags only.
+    if [ "$sside" = "hybrid" ]; then
+        OPENSSL_CONF="$compctx_cnf" "$OPENSSL_BIN" s_server -accept "$port" \
+            -cert "$WORKDIR/server.crt" -key "$WORKDIR/server.key" -tls1_3 \
+            -groups "$group" -www -quiet \
+            >"$srvlog" 2>&1 &
+    else
+        OPENSSL_CONF=/dev/null "$OPENSSL_BIN" s_server -accept "$port" \
+            $oqs_prov_flags -groups "$group" \
+            -cert "$WORKDIR/server.crt" -key "$WORKDIR/server.key" -tls1_3 \
+            -www -quiet \
+            >"$srvlog" 2>&1 &
+    fi
+    local srvpid=$!
+
+    if ! wait_listen "$port"; then
+        kill "$srvpid" 2>/dev/null || true; wait "$srvpid" 2>/dev/null || true
+        no "$group  server=$sside client=$cside  (server did not start)"
+        sed 's/^/        /' "$srvlog" | head -3
+        return
+    fi
+
+    if [ "$cside" = "hybrid" ]; then
+        echo Q | OPENSSL_CONF="$compctx_cnf" "$OPENSSL_BIN" s_client \
+            -connect "localhost:$port" -tls1_3 -groups "$group" \
+            >"$clilog" 2>&1 || rc=$?
+    else
+        echo Q | OPENSSL_CONF=/dev/null "$OPENSSL_BIN" s_client \
+            $oqs_prov_flags -groups "$group" \
+            -connect "localhost:$port" -tls1_3 \
+            >"$clilog" 2>&1 || rc=$?
+    fi
+    kill "$srvpid" 2>/dev/null || true; wait "$srvpid" 2>/dev/null || true
+
+    local ng
+    ng="$(grep -iE "Negotiated .*group" "$clilog" | head -1 | sed 's/.*: *//')"
+    if grep -qiE "Cipher is TLS_" "$clilog" \
+       && ! grep -qiE "handshake failure|alert|:error:" "$clilog"; then
+        ok "$group  server=$sside client=$cside${ng:+  (group: $ng)}"
+    else
+        no "$group  server=$sside client=$cside"
+        grep -iE "error|alert|fail" "$clilog" | head -2 | sed 's/^/        /'
+    fi
+}
+
+# ========================================================================
 case "$COMMAND" in
-    info)   cmd_info;;
-    tls)    cmd_tls;;
-    config) gen_config >/dev/null; cat "$WORKDIR/openssl.cnf";;
-    all)    cmd_info; cmd_tls;;
+    info)        cmd_info;;
+    tls)         cmd_tls;;
+    tls-compctx) cmd_tls_compctx;;
+    config)      gen_config >/dev/null; cat "$WORKDIR/openssl.cnf";;
+    all)         cmd_info; cmd_tls;;
 esac
 
-if [ "$COMMAND" = "tls" ] || [ "$COMMAND" = "all" ]; then
+if [ "$COMMAND" = "tls" ] || [ "$COMMAND" = "tls-compctx" ] || [ "$COMMAND" = "all" ]; then
     hdr "Summary"
     echo "  passed: $pass   failed: $fail   skipped: $skip"
     echo

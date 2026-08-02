@@ -13,6 +13,18 @@ endif()
 find_package(OpenSSL 3.4 REQUIRED)
 message(STATUS "Using OpenSSL ${OPENSSL_VERSION} from ${OPENSSL_INCLUDE_DIR}")
 
+# Locate the matching `openssl` CLI (next to the OpenSSL we build against), used
+# by the separate-process shell scenario tests. Derived from the crypto lib's
+# location so it tracks OPENSSL_ROOT_DIR rather than any system install.
+get_filename_component(_ossl_libdir "${OPENSSL_CRYPTO_LIBRARY}" DIRECTORY)
+get_filename_component(_ossl_prefix "${_ossl_libdir}" DIRECTORY)
+find_program(OPENSSL_CLI openssl
+    HINTS "${_ossl_prefix}/bin" "${_ossl_prefix}/apps"
+    NO_DEFAULT_PATH)
+if(NOT OPENSSL_CLI)
+    find_program(OPENSSL_CLI openssl)   # fall back to PATH
+endif()
+
 # KEM key-file encoders/decoders. Off by default, mirroring oqsprovider's
 # OQS_KEM_ENCODERS option: KEM keys are usually ephemeral, only a few hybrid
 # KEMs have an assigned OID, and the format uses OQS's private OID arc.
@@ -130,6 +142,21 @@ add_test(NAME hybrid_kem_encode_test COMMAND hybrid_kem_encode_test)
 set_tests_properties(hybrid_kem_encode_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
+
+# Separate-process CLI TLS interop for Frodo/BIKE/HQC hybrids: the hybrid
+# provider (configured via cnf with component-providers/component-path) drives
+# real openssl s_server/s_client handshakes against a pure-oqsprovider peer,
+# both directions. This is the multi-process complement to the in-process
+# hybrid_compctx_test. The script self-skips (exit 0) when oqsprovider.so is not
+# on the module path. Only registered when an openssl CLI was found.
+if(OPENSSL_CLI)
+    add_test(NAME hybrid_scenarios_tls_compctx
+        COMMAND ${CMAKE_SOURCE_DIR}/test/hybrid_scenarios.sh
+                --openssl ${OPENSSL_CLI}
+                --libpath ${_ossl_libdir}
+                --module-dir ${CMAKE_BINARY_DIR}
+                tls-compctx)
+endif()
 
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
 # with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired

@@ -161,6 +161,37 @@ File-based KEM/signature round-trips remain **not** reproducible on the CLI (the
 provider has no encoder, so hybrid keys can't be serialized); those stay covered
 by `hybrid_test`.
 
+### Configuration is cnf-only, never command line
+
+The hybrid provider is configured **exclusively through an `openssl.cnf`**, never
+by loading it with `openssl -provider hybrid` on the command line. All of its
+component-steering keys — `pq-propquery`, `classic-propquery`,
+`component-providers`, `component-path` — live in the provider's config section
+and have **no command-line equivalent**. Loading the module with `-provider
+hybrid` gives it none of these keys, so it cannot compose anything, and the
+private component context that sources Frodo/BIKE/HQC (below) never gets built.
+Application code selects the provider by property query (`?provider=hybrid`) once
+the cnf has activated it; the CLI harness always drives the hybrid side via
+`OPENSSL_CONF` and passes no `-provider` flags for it.
+
+Two distinct limitations sit behind this, with different lifespans:
+
+- **The private component context** (`component-providers` / `component-path`,
+  below) is cnf-only and is what forces the Frodo/BIKE/HQC tests through a cnf.
+  It exists solely because oqsprovider advertises the *same* TLS group names as
+  this provider, so the two can't coexist in one application context. **Once
+  oqsprovider drops its hybrid combinations (redesign.md M8), leaving it to
+  supply only the base FrodoKEM/BIKE/HQC KEMs, that collision — and this
+  requirement — disappears:** all three providers can then be loaded on the
+  command line and those groups become ordinary CLI-usable groups.
+- **Independent per-component steering** (`pq-propquery` / `classic-propquery`,
+  below) stays cnf-only, but that is an OpenSSL TLS-plumbing constraint (only a
+  single `-propquery` is exposed on the TLS path), not an oqsprovider one, and
+  M8 does not change it. It only matters when you need to source the PQ and
+  classic halves from *different* providers; the common case (let each component
+  resolve normally, or force one provider globally with `-propquery`) needs no
+  cnf.
+
 ### Selecting component providers (`pq-propquery` / `classic-propquery`)
 
 The hybrid provider reads two optional keys from its config section to steer
@@ -180,6 +211,31 @@ unchanged without them. Because they come from configuration, they also take
 effect in TLS (where only one property query is otherwise exposed) — no OpenSSL
 core change required. `hybrid_config_test` verifies that each key independently
 governs its component.
+
+### Private component context (`component-providers` / `component-path`)
+
+Some PQ bases (FrodoKEM, BIKE, HQC) exist only in
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider), which also
+registers its **own** competing hybrid TLS groups (`p256_frodo640aes`, …) under
+the same names. Loading oqsprovider into the application context would therefore
+collide with the hybrid provider's groups. To avoid this, the hybrid provider can
+build a **private component library context** and source its PQ base from there:
+
+```ini
+[hybrid_sect]
+module              = /path/to/hybrid.so
+activate            = 1
+component-providers = default oqsprovider   # loaded into the provider's OWN ctx
+component-path      = /path/to/modules       # where to find oqsprovider.so
+```
+
+The application context then loads only `default` + `hybrid`, so the Frodo/BIKE/
+HQC hybrid groups resolve unambiguously to the hybrid provider while their PQ
+components come from oqsprovider privately. `component-path` is required so the
+provider can locate the component modules in its private context. This is
+verified in-process by `hybrid_compctx_test` and over separate-process `openssl`
+`s_server`/`s_client` handshakes (both directions, against a pure-oqsprovider
+peer) by `test/hybrid_scenarios.sh tls-compctx`.
 
 ## Benchmark
 
