@@ -21,8 +21,15 @@
  * registered in hybrid_prov.c — the canonical MLX names for the standardized
  * hybrids (so hybrid vs. default provider is a config-only choice) and the OQS
  * names for the rest (matching oqsprovider, so the two interoperate on the
- * wire). Code points are the oqsprovider / IETF defaults; per the EVP-only rule
- * they are hard-coded here rather than pulled from internal TLS headers.
+ * wire). Code points come from their standards: the MLX groups from IETF
+ * draft-ietf-tls-ecdhe-mlkem (also what OpenSSL's default provider registers),
+ * the OQS-legacy groups from oqsprovider's `oqs-template/generate.yml`. They are
+ * fixed integer constants, so there is nothing to "pull" at build time (a spec
+ * document is not machine-readable, and OpenSSL's own group tables live behind
+ * internal headers we must not use). Instead, drift is caught at test time:
+ * `hybrid_capability_test` compares every code point here against the values the
+ * default provider / oqsprovider actually advertise via OSSL_PROVIDER_get_
+ * capabilities("TLS-GROUP"). See the provenance note in hybrid_prov.h.
  */
 
 typedef struct {

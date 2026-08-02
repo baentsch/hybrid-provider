@@ -195,7 +195,8 @@ format alongside the existing raw-concat paths.
 > (encoders/decoders). So M3's first cross-provider KEM interop reduces to adding
 > table entries (sizes + slot) and exchanging keys via `ENCODED_PUBLIC_KEY`.
 
-**M2 — Encoders & decoders (currently missing subsystem).** New
+**M2 — Encoders & decoders (the key-file serialization subsystem, absent in the
+original provider).** New
 `hybrid_encoder.c` / `hybrid_decoder.c`: DER + PEM + text for
 `PrivateKeyInfo`/`SubjectPublicKeyInfo` keyed by the OQS OIDs, matching
 `oqs_encode_key2any.c` / `oqs_decode_der2key.c`. Register OIDs to match

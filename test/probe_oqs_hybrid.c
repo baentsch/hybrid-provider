@@ -73,9 +73,13 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-        || OSSL_PROVIDER_load(ctx, "oqsprovider") == NULL) {
-        fprintf(stderr, "provider load failed\n");
+    if (OSSL_PROVIDER_load(ctx, "default") == NULL) {
+        fprintf(stderr, "failed to load 'default' provider\n");
+        ERR_print_errors_fp(stderr);
+        return 1;
+    }
+    if (OSSL_PROVIDER_load(ctx, "oqsprovider") == NULL) {
+        fprintf(stderr, "failed to load 'oqsprovider' provider\n");
         ERR_print_errors_fp(stderr);
         return 1;
     }

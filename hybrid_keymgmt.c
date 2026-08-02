@@ -33,6 +33,9 @@ static void *hybrid_key_load(const void *reference, size_t reference_sz)
         *(HYBRID_KEY **)reference = NULL;   /* avoid a double free */
         return key;
     }
+    ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                   "hybrid load: unexpected key-reference size %zu (expected %zu)",
+                   reference_sz, sizeof(key));
     return NULL;
 }
 

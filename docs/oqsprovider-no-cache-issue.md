@@ -51,18 +51,16 @@ is deterministic and there is no correctness reason to disable caching.
 `ossl_method_construct`. When the provider set `no_cache=1`, the construct result
 is not cached, so the next init reconstructs it again.
 
-## Self-contained reproducer (no oqs, no hybrid-provider)
+## Reproduction (no oqs, no hybrid-provider)
 
-`test/repro_no_cache_sig.c` defines a tiny in-process provider with one trivial
-signature and ~200 trivial keymgmts, and takes `no_cache` as a runtime argument so
-the **same binary** shows both cases.
-
-```
-cc test/repro_no_cache_sig.c -o repro -I<ossl>/include -L<ossl>/lib64 \
-   -lcrypto -Wl,-rpath,<ossl>/lib64
-./repro 200000 0     # no_cache=0
-./repro 200000 1     # no_cache=1
-```
+A ~150-line self-contained program reproduces it with **zero** third-party
+providers: register a tiny in-process provider that exposes one trivial signature
+plus ~200 trivial keymgmts (to give a realistic algorithm count), and return
+`*no_cache = <argv>` from its `query_operation`. Then time N iterations of
+`EVP_MD_CTX_new` + `EVP_DigestSignInit_ex` + `EVP_DigestSign`, once with
+`no_cache=0` and once with `no_cache=1` (same binary). No file is kept in-tree —
+the mechanism is a one-line change (`*no_cache`), and the numbers below stand on
+their own.
 
 Measured (same machine; 200 keymgmts), ms per sign:
 

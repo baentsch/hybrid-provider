@@ -212,6 +212,10 @@ hybrid_sig_digest_verify(void *vctx,
 
     if (!hybrid_ensure_sizes(key) || !hybrid_have_pubkey(key))
         return 0;
+    /* Bounds guards: the signature must hold the 4-byte classical-length prefix
+     * before we read sig[0..3], and that length must fit within siglen before we
+     * split off the classical and PQ parts (else a malformed signature would
+     * cause an out-of-bounds read). */
     if (siglen < sizeof(uint32_t))
         return 0;
     clen = ((size_t)sig[0] << 24) | ((size_t)sig[1] << 16)

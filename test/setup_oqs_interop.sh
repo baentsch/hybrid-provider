@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 #
-# setup_oqs_interop.sh — (re)build the oqsprovider interop peer from GitHub main.
+# setup_oqs_interop.sh — (re)build the oqsprovider interop peer from source.
 #
 # The hybrid-provider's Phase-1 goal is format-identical interop with
-# oqsprovider (see redesign.md). Interop MUST be tested against oqsprovider
-# *main*, never a distro/local install. This script reproduces that peer from
-# scratch, so a machine wipe / reboot only costs one command:
+# oqsprovider (see redesign.md). Interop MUST be tested against a from-source
+# oqsprovider, never a distro/local install. This script reproduces that peer,
+# so a machine wipe / reboot only costs one command:
 #
 #     ./test/setup_oqs_interop.sh
 #
-# It clones liboqs + oqs-provider main into .interop/ (gitignored), builds them
-# against the repo's local OpenSSL 3.5+ in .local/, and symlinks the resulting
-# oqsprovider.so into build/ so the test harness finds it via OPENSSL_MODULES.
+# It clones liboqs + oqs-provider into .interop/ (gitignored) at LIBOQS_REF /
+# OQSPROV_REF (default: main for both), builds them against the OpenSSL install
+# at OPENSSL_PREFIX, and symlinks the resulting oqsprovider.so into $BUILD_DIR so
+# the test harness finds it via OPENSSL_MODULES.
+#
+#   OPENSSL_PREFIX  OpenSSL to build against (default: the repo's .local/, which
+#                   you build yourself first; 3.5+ recommended so the default
+#                   provider also offers the MLX hybrids — otherwise those tests
+#                   self-skip). No system OpenSSL is assumed.
+#   BUILD_DIR       hybrid-provider build dir to drop oqsprovider.so into.
 #
 # Everything lives under the repo (.interop/, .local/, build/) — nothing in /tmp.
 set -euo pipefail

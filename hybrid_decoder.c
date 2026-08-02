@@ -7,6 +7,17 @@
  * against the signature table, and rebuilds the hybrid key from the oqs blob
  * (UINT32 classical-length prefix + ordered component public keys). This lets
  * the hybrid provider consume public keys written by oqsprovider (and itself).
+ *
+ * On the "public API" rule: all cryptographic operations are EVP-only. Key-file
+ * (de)serialization additionally uses OpenSSL's public ASN.1/X.509 API —
+ * d2i_/i2d_X509_PUBKEY, d2i_PKCS8_PRIV_KEY_INFO, d2i_ASN1_OCTET_STRING,
+ * ASN1_STRING_get0_data/length, OBJ_obj2txt, PKCS8_pkey_get0. These are
+ * documented, stable, external functions declared in the public <openssl/x509.h>
+ * / <openssl/asn1.h>; the lowercase d2i_/i2d_ prefix is OpenSSL's standard
+ * public ASN.1 naming convention, NOT an internal-symbol marker. There is no
+ * EVP-only way to parse a SubjectPublicKeyInfo/PrivateKeyInfo by a custom OID
+ * into raw component blobs; oqsprovider uses these same primitives. No internal
+ * (crypto/…) headers are used.
  */
 
 #include "hybrid_prov.h"
@@ -41,7 +52,13 @@ static int hybrid_dec_does_selection(void *provctx, int selection)
         || (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0;
 }
 
-/* Read the whole core BIO into a buffer. */
+/*
+ * Read the whole core BIO into a buffer. Terminates when the BIO reports EOF
+ * (bio_read_ex returns 0, or a short/zero read) — key files are finite — or,
+ * defensively, once the buffer would exceed HYBRID_MAX_KEY_DER, which also caps
+ * memory use if the core ever hands us an unbounded stream.
+ */
+#define HYBRID_MAX_KEY_DER (1024 * 1024)    /* hybrid keys are a few KB at most */
 static int read_all(HYBRID_DEC_CTX *ctx, OSSL_CORE_BIO *cin,
                     unsigned char **out, size_t *outlen)
 {
@@ -54,6 +71,13 @@ static int read_all(HYBRID_DEC_CTX *ctx, OSSL_CORE_BIO *cin,
     }
     for (;;) {
         if (len == cap) {
+            if (cap > HYBRID_MAX_KEY_DER) {
+                ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                               "hybrid decode: input exceeds %d bytes",
+                               HYBRID_MAX_KEY_DER);
+                OPENSSL_free(buf);
+                return 0;
+            }
             if ((tmp = OPENSSL_realloc(buf, cap * 2)) == NULL) {
                 OPENSSL_free(buf);
                 return 0;
