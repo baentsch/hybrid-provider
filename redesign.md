@@ -369,9 +369,10 @@ enable/disable parity with oqsprovider defaults.
 > them — so they're KEM-level-only; not a hybrid-provider limitation.)
 >
 > Still pending for full M7: `OQS_CODEPOINT_*`/`OQS_OID_*` env overrides and
-> TLS-SIGALG advertisement (post M4/M5).
+> TLS-SIGALG advertisement (post M4/M5) — the latter tracked in **issue #5**.
 
-**M8 — Replacement validation & upstreaming.** Run oqsprovider's own test suite +
+**M8 — Replacement validation & upstreaming.** (tracked in **issue #3**) Run
+oqsprovider's own test suite +
 TLS interop with hybrid-provider substituted for its hybrid code; then prepare the
 oqsprovider PR that removes its hybrid logic and delegates to this provider.
 
