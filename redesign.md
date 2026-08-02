@@ -397,6 +397,59 @@ Decisions: (a) use oqsprovider canonical names as the primary registered names
 > native hybrids and any future delegated path equally — tracked for a later
 > oqsprovider code review, not a blocker for M8.
 
+#### M8 test-coverage gap analysis (keep the hybrid slice alive)
+
+When oqsprovider deletes its hybrid combinations, the *hybrid rows* drop out of
+its test suite; the **pure-PQ** rows stay (its tests iterate the provider's own
+algorithm list, so post-removal they simply cover fewer algorithms). Our job is
+therefore **not** to mirror oqsprovider's test files wholesale, but to guarantee
+this project's suite is a **superset of the hybrid-slice behavioural coverage**.
+Three principles bound the work:
+
+1. **Scope to hybrids only.** Pure-PQ (ML-KEM/ML-DSA/Falcon/MAYO/SLH-DSA…) stays
+   in oqsprovider and is not ours to test.
+2. **The pinned pre-M8 oqsprovider is the oracle.** Cross-version interop
+   (this provider ↔ oqsprovider `main @ 00fde33`, both directions, full hybrid
+   matrix) is a stronger drop-in proof than re-running oqsprovider's self-tests,
+   because that peer has those tests' expectations baked into its implementation.
+3. **Assert wire-compat, not oqsprovider internals.** Do not lock in oqsprovider
+   private constants (esp. the OQS KEM OID arc — kept behind `HYBRID_KEM_ENCODERS`
+   exactly as oqsprovider gates `OQS_KEM_ENCODERS`; see the "no private OID
+   formats" principle).
+
+Mapping of oqsprovider's e2e tests (hybrid slice) to our coverage:
+
+| oqsprovider test | hybrid slice | our equivalent | status |
+| --- | --- | --- | --- |
+| `oqs_test_kems` | hybrid encaps/decaps | `hybrid_test`, `hybrid_oqs_test` | ✅ |
+| `oqs_test_groups` | hybrid TLS handshake | `hybrid_tls_test`, `hybrid_compctx_test`, `hybrid_scenarios.sh tls*` | ✅ |
+| `oqs_test_signatures` | hybrid sign/verify | `hybrid_test` sig path | ✅ |
+| `oqs_test_tlssig` | hybrid sig cert auth in TLS | `hybrid_cert_tls_test` | ✅ |
+| `oqs_test_endecode` | hybrid key-file round-trip | `hybrid_encode_test`, `hybrid_kem_encode_test` (gated) | ~ partial (KEM endecode gated by design) |
+| `oqs_test_evp_pkey_params` | hybrid key param get/set | incidental in `hybrid_test` | ⚠️ thin |
+| `oqs_test_alg_overlap` | provider coexistence / no clash | — | ❌ gap (M8-central) |
+| `scripts/*cmssign/*cmsverify` | hybrid sig in CMS | — | ❌ gap |
+| `scripts/test_tls_full.py` | external s_client/s_server matrix | `hybrid_scenarios.sh tls`/`tls-compctx` | ✅ |
+
+Gaps to close as part of M8 (each a provider-agnostic, EVP-only test):
+
+- [ ] **Coexistence test** — the analog of `oqs_test_alg_overlap`, but with the
+      *inverse* assertion: we deliberately re-advertise default's MLX group names
+      for drop-in, so the contract to prove is "hybrid-provider + default coexist
+      and every hybrid algorithm resolves to the intended provider under the
+      documented propquery." This is the property M8 hinges on.
+- [ ] **CMS sign/verify** with a hybrid signature (we have sig-OID registration
+      but zero CMS coverage) — or explicitly scope CMS out of the drop-in claim.
+- [ ] **Deeper `EVP_PKEY` param round-trip** for hybrid keys (gettable/settable
+      parity beyond what `hybrid_test` exercises incidentally).
+- [ ] **Full-matrix cross-version interop sweep** — extend the existing pinned
+      oqsprovider interop to assert the *entire* hybrid KEM + SIG inventory
+      (names, OIDs, code points, wire formats), not today's representative subset
+      (issue #3, work item 2).
+
+Explicitly **excluded** (not ours / conflicts with principles): pure-PQ tests;
+any test depending on the OQS private KEM OID arc beyond the gated encoders.
+
 ---
 
 ## Performance (measured 2026-07-31, OpenSSL 3.5.6 + oqsprovider main)
