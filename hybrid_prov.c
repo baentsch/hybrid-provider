@@ -251,6 +251,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     HYBRID_PROV_CTX *ctx;
     OSSL_FUNC_core_get_libctx_fn *c_get_libctx = NULL;
     OSSL_FUNC_core_get_params_fn *c_get_params = NULL;
+    OSSL_FUNC_core_obj_create_fn *c_obj_create = NULL;
+    OSSL_FUNC_core_obj_add_sigid_fn *c_obj_add_sigid = NULL;
     OSSL_FUNC_BIO_write_ex_fn *bio_write_ex = NULL;
     OSSL_FUNC_BIO_read_ex_fn *bio_read_ex = NULL;
 
@@ -261,6 +263,12 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
             break;
         case OSSL_FUNC_CORE_GET_PARAMS:
             c_get_params = OSSL_FUNC_core_get_params(in);
+            break;
+        case OSSL_FUNC_CORE_OBJ_CREATE:
+            c_obj_create = OSSL_FUNC_core_obj_create(in);
+            break;
+        case OSSL_FUNC_CORE_OBJ_ADD_SIGID:
+            c_obj_add_sigid = OSSL_FUNC_core_obj_add_sigid(in);
             break;
         case OSSL_FUNC_BIO_WRITE_EX:
             bio_write_ex = OSSL_FUNC_BIO_write_ex(in);
@@ -314,6 +322,25 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
             if (!hybrid_setup_component_ctx(ctx, comp, comp_path))
                 goto err;
         }
+    }
+
+    /*
+     * Register the hybrid signature OIDs so the X.509 / TLS layers can map a
+     * signatureAlgorithm OID back to the algorithm — required to verify
+     * hybrid-signed certificates and the TLS CertificateVerify message. Uses the
+     * core OBJ up-calls (libctx-scoped, provider-clean; the same mechanism
+     * oqsprovider uses). If an OID is already registered (e.g. oqsprovider is
+     * also loaded, sharing these OIDs and names) the calls are harmless; marks
+     * keep any resulting "already exists" notices off the error stack.
+     */
+    if (c_obj_create != NULL && c_obj_add_sigid != NULL) {
+        ERR_set_mark();
+#define HYBRID_SIG_OID_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)             \
+        (void)c_obj_create(handle, oid, nm, nm);                             \
+        (void)c_obj_add_sigid(handle, nm, "", nm);
+        HYBRID_SIG_LIST(HYBRID_SIG_OID_REG)
+#undef HYBRID_SIG_OID_REG
+        ERR_pop_to_mark();
     }
 
     *provctx = ctx;

@@ -110,6 +110,16 @@ set_tests_properties(hybrid_capability_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# End-to-end hybrid-signature certificate over TLS 1.3 (in-process). Self-skips
+# per-algorithm when the components are unavailable (e.g. no ML-DSA on 3.4).
+add_executable(hybrid_cert_tls_test test/hybrid_cert_tls_test.c)
+target_include_directories(hybrid_cert_tls_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_cert_tls_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+add_test(NAME hybrid_cert_tls_test COMMAND hybrid_cert_tls_test)
+set_tests_properties(hybrid_cert_tls_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # KEM key-file interop test (SPKI + PKCS8 round-trip vs oqsprovider). Self-skips
 # unless both providers were built with KEM encoders on (HYBRID_KEM_ENCODERS /
 # OQS_KEM_ENCODERS).
