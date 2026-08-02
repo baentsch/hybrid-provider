@@ -143,6 +143,50 @@ set_tests_properties(hybrid_kem_encode_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Provider-coexistence test (M8 drop-in contract; inverse of oqsprovider's
+# alg-overlap test). Fetch-only, so it covers the whole inventory without a PQ
+# base; loads oqsprovider when present to also prove hybrid<->oqs coexistence.
+add_executable(hybrid_coexist_test test/hybrid_coexist_test.c)
+target_include_directories(hybrid_coexist_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_coexist_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_coexist_test COMMAND hybrid_coexist_test)
+set_tests_properties(hybrid_coexist_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# EVP_PKEY parameter round-trip / gettable-param parity (raw OSSL_PARAM export +
+# import, distinct from the DER encoder tests). Drives the full tables; each
+# algorithm self-skips when its components are unavailable.
+add_executable(hybrid_param_test test/hybrid_param_test.c)
+target_include_directories(hybrid_param_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_param_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_param_test COMMAND hybrid_param_test)
+set_tests_properties(hybrid_param_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# CMS SignedData with hybrid signatures (in-process analog of oqsprovider's CMS
+# scripts). ML-DSA hybrids need only the default provider; Falcon/MAYO/… self-
+# skip without oqsprovider, and each algorithm self-skips if unavailable.
+add_executable(hybrid_cms_test test/hybrid_cms_test.c)
+target_include_directories(hybrid_cms_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_cms_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_cms_test COMMAND hybrid_cms_test)
+set_tests_properties(hybrid_cms_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# Full-matrix cross-version interop sweep vs oqsprovider, driven by the master
+# tables so every hybrid KEM + SIG is checked (nothing silently omitted).
+# Skipped wholesale when oqsprovider is unavailable.
+add_executable(hybrid_matrix_test test/hybrid_matrix_test.c)
+target_include_directories(hybrid_matrix_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_matrix_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_matrix_test COMMAND hybrid_matrix_test)
+set_tests_properties(hybrid_matrix_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Separate-process CLI TLS interop for Frodo/BIKE/HQC hybrids: the hybrid
 # provider (configured via cnf with component-providers/component-path) drives
 # real openssl s_server/s_client handshakes against a pure-oqsprovider peer,

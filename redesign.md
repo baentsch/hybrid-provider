@@ -426,26 +426,45 @@ Mapping of oqsprovider's e2e tests (hybrid slice) to our coverage:
 | `oqs_test_signatures` | hybrid sign/verify | `hybrid_test` sig path | ✅ |
 | `oqs_test_tlssig` | hybrid sig cert auth in TLS | `hybrid_cert_tls_test` | ✅ |
 | `oqs_test_endecode` | hybrid key-file round-trip | `hybrid_encode_test`, `hybrid_kem_encode_test` (gated) | ~ partial (KEM endecode gated by design) |
-| `oqs_test_evp_pkey_params` | hybrid key param get/set | incidental in `hybrid_test` | ⚠️ thin |
-| `oqs_test_alg_overlap` | provider coexistence / no clash | — | ❌ gap (M8-central) |
-| `scripts/*cmssign/*cmsverify` | hybrid sig in CMS | — | ❌ gap |
-| `scripts/test_tls_full.py` | external s_client/s_server matrix | `hybrid_scenarios.sh tls`/`tls-compctx` | ✅ |
+| `oqs_test_evp_pkey_params` | hybrid key param get/set | `hybrid_param_test` (+ incidental in `hybrid_test`) | ✅ |
+| `oqs_test_alg_overlap` | provider coexistence / no clash | `hybrid_coexist_test` | ✅ |
+| `scripts/*cmssign/*cmsverify` | hybrid sig in CMS | `hybrid_cms_test` | ✅ |
+| `scripts/test_tls_full.py` | external s_client/s_server matrix | `hybrid_scenarios.sh tls`/`tls-compctx`, `hybrid_matrix_test` | ✅ |
 
-Gaps to close as part of M8 (each a provider-agnostic, EVP-only test):
+Gaps closed as part of M8 (each a provider-agnostic, EVP-only test, driven off
+the master tables so nothing is silently omitted):
 
-- [ ] **Coexistence test** — the analog of `oqs_test_alg_overlap`, but with the
-      *inverse* assertion: we deliberately re-advertise default's MLX group names
-      for drop-in, so the contract to prove is "hybrid-provider + default coexist
-      and every hybrid algorithm resolves to the intended provider under the
-      documented propquery." This is the property M8 hinges on.
-- [ ] **CMS sign/verify** with a hybrid signature (we have sig-OID registration
-      but zero CMS coverage) — or explicitly scope CMS out of the drop-in claim.
-- [ ] **Deeper `EVP_PKEY` param round-trip** for hybrid keys (gettable/settable
-      parity beyond what `hybrid_test` exercises incidentally).
-- [ ] **Full-matrix cross-version interop sweep** — extend the existing pinned
-      oqsprovider interop to assert the *entire* hybrid KEM + SIG inventory
-      (names, OIDs, code points, wire formats), not today's representative subset
-      (issue #3, work item 2).
+- [x] **Coexistence test** (`hybrid_coexist_test`) — the analog of
+      `oqs_test_alg_overlap`, with the *inverse* assertion: we deliberately
+      re-advertise default's MLX group names (and every OQS-legacy hybrid name)
+      for drop-in, so the test proves "hybrid + default (+ oqsprovider) coexist
+      and every hybrid algorithm resolves to the intended provider." Fetch-only,
+      so it covers the whole inventory without a PQ base. The contract holds only
+      under a **mandatory** `provider=…` propquery: an optional `?provider=…`
+      clause is merely a scoring hint and falls back to another provider, so the
+      test uses the mandatory form.
+- [x] **CMS sign/verify** (`hybrid_cms_test`) — self-signed hybrid cert →
+      `CMS_sign`/`CMS_verify` SignedData round-trip (+ tamper-reject), for the
+      ML-DSA hybrids (default-only) and, when oqsprovider is present, the
+      Falcon/MAYO/OV/SNOVA/MQOM families. This surfaced and fixed a real provider
+      gap: CMS drives the *streaming* `EVP_DigestSignUpdate` path, which hybrid
+      sigs (one-shot) do not implement. The keymgmt now advertises an empty
+      `OSSL_PKEY_PARAM_MANDATORY_DIGEST` (`""` → `"UNDEF"`), the documented
+      provider-keymgmt convention (as ML-DSA/EdDSA do) that makes CMS's
+      `cms_signature_nomd()` select the one-shot `EVP_DigestSign` path instead.
+- [x] **Deeper `EVP_PKEY` param round-trip** (`hybrid_param_test`) — descriptor
+      params (bits/security-bits/max-size) plus `EVP_PKEY_todata`→`fromdata`→`eq`
+      on the raw `PUB_KEY` param, and for sigs a sign/verify through the
+      reimported public key. This surfaced and fixed a second gap: RSA classical
+      components expose no raw `PUB_KEY` octet, so the raw-param public path now
+      falls back to `i2d_PublicKey`/`d2i_PublicKey` (constant-length for a fixed
+      modulus), symmetric with the decoder's existing RSA handling. (RSA
+      *private* raw-param stays deferred: its DER length varies, so it belongs to
+      the length-prefixed DER encoder path, not the fixed-offset octet form.)
+- [x] **Full-matrix cross-version interop sweep** (`hybrid_matrix_test`) — the
+      pinned oqsprovider interop extended to the *entire* hybrid KEM + SIG
+      inventory (driven off the master tables), both directions, skipped wholesale
+      when oqsprovider is absent (issue #3, work item 2).
 
 Explicitly **excluded** (not ours / conflicts with principles): pure-PQ tests;
 any test depending on the OQS private KEM OID arc beyond the gated encoders.

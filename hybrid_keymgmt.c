@@ -345,7 +345,18 @@ discover_sig_component_sizes(OSSL_LIB_CTX *libctx, const char *propq,
     *pub = 0;
     if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PUB_KEY,
                                         NULL, 0, pub) <= 0) {
-        *pub = 0;
+        /*
+         * RSA exposes no raw PUB_KEY octet; its public key is i2d_PublicKey
+         * (RSAPublicKey) DER, which is constant-length for a fixed modulus size
+         * and exponent (unlike the private key, whose DER length varies — that
+         * is why only the DER encoder, with an explicit length prefix, handles
+         * RSA private material). Use that length so the raw-param public path
+         * (extract_pubkey / load_keys) round-trips, mirroring the decoder's
+         * d2i_PublicKey import in hybrid_key_load_pub_components().
+         */
+        int dlen = i2d_PublicKey(tmp, NULL);
+
+        *pub = dlen > 0 ? (size_t)dlen : 0;
         ERR_clear_error();
     }
     *prv = 0;
@@ -457,7 +468,17 @@ load_keys(HYBRID_KEY *key,
         return 0;
     }
 
-    if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+    if (publen > 0
+            && strcmp(HYBRID_KEY_ALG1_NAME(key), "RSA") == 0) {
+        /* RSA public key is i2d_PublicKey DER (no PUB_KEY octet); parse the
+         * classical slot the same way the decoder does. Symmetric with
+         * extract_component_pub()'s i2d_PublicKey export. */
+        const unsigned char *p = alg1_data;
+
+        key->key1 = d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)len1);
+        if (key->key1 == NULL)
+            goto err;
+    } else if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
                         HYBRID_KEY_ALG1_NAME(key),
                         HYBRID_KEY_ALG1_GROUP(key),
                         pname, selection,
@@ -523,23 +544,36 @@ static int hybrid_import(void *vkey, int selection,
  * Extract concatenated public key bytes from both sub-keys.
  * Caller provides buffer of hybrid_key_pubkey_bytes(key) size.
  */
+/* Write one component's raw public key into buf[..len]; must fill exactly len.
+ * Classical EC/X25519 and PQ components expose a PUB_KEY octet; RSA does not, so
+ * fall back to i2d_PublicKey (constant length, matched by discover_sig_component_
+ * sizes and the d2i_PublicKey import in hybrid_key_load_pub_components). */
+static int extract_component_pub(EVP_PKEY *pk, uint8_t *buf, size_t len)
+{
+    size_t out = 0;
+    unsigned char *p = buf;
+    int dlen;
+
+    if (EVP_PKEY_get_octet_string_param(pk, OSSL_PKEY_PARAM_PUB_KEY,
+                                        buf, len, &out) > 0)
+        return out == len;
+    ERR_clear_error();
+    dlen = i2d_PublicKey(pk, &p);
+    return dlen > 0 && (size_t)dlen == len;
+}
+
 static int
 extract_pubkey(const HYBRID_KEY *key, uint8_t *buf, size_t buflen)
 {
-    size_t off1, len1, off2, len2, out;
+    size_t off1, len1, off2, len2;
 
     if (buflen < hybrid_key_pubkey_bytes(key))
         return 0;
 
     key_slot_offsets(key, 1, &off1, &len1, &off2, &len2);
 
-    if (EVP_PKEY_get_octet_string_param(key->key1, OSSL_PKEY_PARAM_PUB_KEY,
-            buf + off1, len1, &out) <= 0 || out != len1)
-        return 0;
-    if (EVP_PKEY_get_octet_string_param(key->key2, OSSL_PKEY_PARAM_PUB_KEY,
-            buf + off2, len2, &out) <= 0 || out != len2)
-        return 0;
-    return 1;
+    return extract_component_pub(key->key1, buf + off1, len1)
+        && extract_component_pub(key->key2, buf + off2, len2);
 }
 
 /* Callback arg for EVP_PKEY_export — used for private key extraction */
@@ -687,6 +721,11 @@ static const OSSL_PARAM hybrid_gettable[] = {
     OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY, NULL, 0),
     OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PUB_KEY, NULL, 0),
     OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PRIV_KEY, NULL, 0),
+    /* Signature keys advertise an empty mandatory digest ("no prehash"), which
+     * is how CMS/ASN1 detect a one-shot signer (cms_signature_nomd) and take the
+     * EVP_DigestSign one-shot path instead of streaming Update/Final, which we
+     * do not implement. Mirrors ML-DSA/EdDSA. */
+    OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_MANDATORY_DIGEST, NULL, 0),
     OSSL_PARAM_END
 };
 
@@ -721,6 +760,15 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
         else
             max_size = hybrid_sig_max_sig_bytes(key);
         if (!OSSL_PARAM_set_size_t(p, max_size))
+            return 0;
+    }
+
+    /* Signature keys are one-shot: report an empty mandatory digest so CMS and
+     * the ASN1 signing machinery skip streaming DigestSignUpdate (unimplemented)
+     * and use EVP_DigestSign directly. See hybrid_gettable[]. */
+    if (!key->is_kem) {
+        p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_MANDATORY_DIGEST);
+        if (p != NULL && !OSSL_PARAM_set_utf8_string(p, ""))
             return 0;
     }
 
