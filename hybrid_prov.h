@@ -20,6 +20,20 @@
 /* Config-section keys for selecting component sub-algorithm providers. */
 #define HYBRID_CONF_PQ_PROPQUERY       "pq-propquery"
 #define HYBRID_CONF_CLASSIC_PROPQUERY  "classic-propquery"
+/*
+ * Optional private component context. When "component-providers" is set (a
+ * space-separated list of provider module names, e.g. "default oqsprovider"),
+ * the hybrid provider loads those providers into its OWN library context and
+ * sources all component sub-algorithms from there, instead of from the
+ * application's context. This lets a base algorithm (e.g. FrodoKEM from
+ * oqsprovider) be composed without that provider's competing hybrid groups
+ * colliding in the application's context. "component-path" optionally sets the
+ * module search path for that context (defaults to the OPENSSL_MODULES env).
+ */
+#define HYBRID_CONF_COMPONENT_PROVIDERS "component-providers"
+#define HYBRID_CONF_COMPONENT_PATH      "component-path"
+
+#define HYBRID_MAX_COMPONENT_PROVIDERS  8
 
 /* Provider context */
 typedef struct {
@@ -33,7 +47,24 @@ typedef struct {
      */
     char *pq_propq;
     char *classic_propq;
+    /*
+     * Context used to fetch component sub-algorithms. Equals `libctx` by
+     * default; when "component-providers" is configured it is a private context
+     * (comp_owned == 1) holding the named providers. Component operations use
+     * this, so the application's context need not load those providers.
+     */
+    OSSL_LIB_CTX *comp_libctx;
+    int comp_owned;
+    OSSL_PROVIDER *comp_provs[HYBRID_MAX_COMPONENT_PROVIDERS];
+    int n_comp_provs;
+    /* Core BIO up-calls, captured from the core dispatch (en/decoders). */
+    OSSL_FUNC_BIO_write_ex_fn *bio_write_ex;
+    OSSL_FUNC_BIO_read_ex_fn *bio_read_ex;
 } HYBRID_PROV_CTX;
+
+/* The context to use for component sub-algorithm fetches. */
+#define HYBRID_COMPONENT_LIBCTX(pctx) \
+    ((pctx)->comp_libctx != NULL ? (pctx)->comp_libctx : (pctx)->libctx)
 
 /* Key state */
 #define HYBRID_HAVE_NOKEYS  0
@@ -50,28 +81,43 @@ typedef struct {
     const char *alg2_group;     /* e.g., NULL */
     int         alg2_is_kem;    /* 1 = native KEM */
     int         alg2_slot;      /* position of alg2 in concatenation (0 or 1) */
-    size_t      alg1_pubkey_bytes;
-    size_t      alg1_prvkey_bytes;
-    size_t      alg1_shsec_bytes;
-    size_t      alg2_pubkey_bytes;
-    size_t      alg2_prvkey_bytes;
-    size_t      alg2_shsec_bytes;
-    size_t      alg2_ctext_bytes;
+    int         tls_codepoint;  /* TLS group code point, 0 if none */
+    const char *oid;            /* X.509 OID, or NULL if not key-file encodable
+                                 * (mirrors oqsprovider: most hybrid KEMs NULL) */
+    /* Component sizes are discovered at runtime; see HYBRID_SIZES. */
 } HYBRID_KEM_INFO;
 
-/* Signature component info */
+/*
+ * Signature component info. Sizes are discovered at runtime (see
+ * hybrid_ensure_sizes); the table carries only identity + the parameters that
+ * define oqsprovider's hybrid-sig wire format:
+ *   - nist_level: NIST level of the PQ component, which selects the digest the
+ *     classical component signs (1 -> SHA-256, 2/3 -> SHA-384, 4/5 -> SHA-512).
+ *   - alg1 is always ECDSA ("EC" + group) or "RSA" (3072-bit); no EdDSA.
+ * Signature layout: ENCODE_UINT32(classical_len) || classical_sig || pq_sig.
+ */
 typedef struct {
-    const char *hybrid_name;    /* e.g., "ed25519mldsa44" */
-    const char *alg1_name;      /* e.g., "Ed25519" */
-    const char *alg1_group;     /* e.g., NULL or "P-256" */
-    const char *alg2_name;      /* e.g., "MLDSA44" */
-    size_t      alg1_pubkey_bytes;
-    size_t      alg1_prvkey_bytes;
-    size_t      alg1_sig_bytes;     /* max signature size for alg1 */
-    size_t      alg2_pubkey_bytes;
-    size_t      alg2_prvkey_bytes;
-    size_t      alg2_sig_bytes;
+    const char *hybrid_name;    /* e.g., "p256_mldsa44" */
+    const char *alg1_name;      /* "EC" or "RSA" */
+    const char *alg1_group;     /* EC group (e.g. "P-256"), or NULL for RSA */
+    const char *alg2_name;      /* PQ, e.g. "MLDSA44" */
+    int         nist_level;     /* PQ NIST level -> classical digest choice */
+    const char *oid;            /* X.509 OID (used by M2 encoders/decoders) */
 } HYBRID_SIG_INFO;
+
+/*
+ * Per-component sizes for a KEM hybrid, discovered at runtime from the actual
+ * component algorithms (see hybrid_kem_ensure_sizes) rather than hardcoded.
+ * This keeps the algorithm table free of size constants: adding a hybrid needs
+ * only component names + slot. `ct` is the ciphertext contribution (ephemeral
+ * public-key length for a key-exchange component, KEM ciphertext otherwise).
+ */
+typedef struct {
+    size_t a1_pub, a1_prv, a1_ss, a1_ct;   /* classical (alg1); KEM: ss/ct */
+    size_t a2_pub, a2_prv, a2_ss, a2_ct;   /* PQ (alg2); KEM: ss/ct */
+    size_t a1_sig, a2_sig;                 /* SIG only: max signature sizes */
+    int    valid;
+} HYBRID_SIZES;
 
 /* Hybrid key — used for both KEM and SIG hybrids */
 typedef struct hybrid_key_st {
@@ -82,6 +128,7 @@ typedef struct hybrid_key_st {
     EVP_PKEY *key1;             /* classical component */
     EVP_PKEY *key2;             /* PQ component */
     unsigned int state;
+    HYBRID_SIZES sizes;         /* KEM only: runtime-discovered component sizes */
     /*
      * Per-component property queries (borrowed pointers into the provider
      * context, which outlives the key; not freed here). NULL when unset, in
@@ -101,97 +148,212 @@ typedef struct hybrid_key_st {
 #define hybrid_have_prvkey(key)  ((key)->state >= HYBRID_HAVE_PRVKEY)
 
 /*
- * Algorithm table — matches OpenSSL's built-in MLX KEM wire format.
+ * Master hybrid-KEM list — single source of truth. One row per algorithm drives
+ * the info table (below), the per-algorithm keymgmt thunks/dispatch tables
+ * (hybrid_keymgmt.c) and the provider registration (hybrid_prov.c). To add a
+ * hybrid KEM, add exactly one row here.
  *
- * Wire format analysis from openssl/providers/implementations/kem/mlx_kem.c:
- *   X25519MLKEM768:    ml_kem_slot=0 → ctext = mlkem_ct || x25519_pub
- *   X448MLKEM1024:     ml_kem_slot=0 → ctext = mlkem_ct || x448_pub
- *   SecP256r1MLKEM768: ml_kem_slot=1 → ctext = ec_pub   || mlkem_ct
- *   SecP384r1MLKEM1024:ml_kem_slot=1 → ctext = ec_pub   || mlkem_ct
+ * The alg2 (PQ) component is always a native KEM. `slot` is the position of
+ * the PQ share in the ctext/shared-secret/pubkey concatenation (0 = PQ first),
+ * which equals oqsprovider's `reverse_share` (reverse_share=1 -> slot 0). It
+ * also matches OpenSSL's built-in MLX layout for the standardized names.
  *
- * Our alg2_slot matches ml_kem_slot (alg2 = PQ = ML-KEM).
+ * Component sizes are NOT listed here — they are discovered at runtime from the
+ * component algorithms (hybrid_kem_ensure_sizes), so a new hybrid needs only its
+ * component names, EC group and slot.
+ *
+ * X(cfield, name, alg1, alg1_group, alg1_is_kem, alg2, slot,
+ *   tls_codepoint, secbits, desc, oid)
+ *
+ * PROVENANCE — the `tls_codepoint` and `oid` values are copied from their
+ * origins and must stay in sync with them:
+ *   - MLX names (X25519MLKEM768, …): code points are IETF
+ *     draft-ietf-tls-ecdhe-mlkem, implemented by OpenSSL's default provider.
+ *     These groups have no key-file encoders anywhere, hence oid = NULL.
+ *   - OQS-legacy names: code points and OIDs are oqsprovider's, defined in its
+ *     `oqs-template/generate.yml` (see ALGORITHMS.md). Most hybrid KEMs have
+ *     oid = NULL there too (not key-file encodable); only a few carry one.
+ * Drift is caught automatically: `hybrid_capability_test` compares every
+ * code point against the default/oqsprovider live TLS-GROUP capabilities, and
+ * the encode round-trip tests fail on any OID mismatch. `secbits` is the
+ * oqsprovider/IETF default; a 0 code point means "no TLS group" (KEM API only,
+ * e.g. X448MLKEM1024).
  */
+#define HYBRID_KEM_LIST(X)                                                    \
+  /* --- default-provider MLX names (raw concat) --- */                       \
+  X(x25519mlkem768,    "X25519MLKEM768",     "X25519", NULL,            0,    \
+      "MLKEM768",  0, 0x11ec, 192, "X25519+ML-KEM-768", NULL)\
+  X(x448mlkem1024,     "X448MLKEM1024",      "X448",   NULL,            0,    \
+      "MLKEM1024", 0, 0x0000, 256, "X448+ML-KEM-1024", NULL)\
+  X(secp256r1mlkem768, "SecP256r1MLKEM768",  "EC",     "P-256",         0,    \
+      "MLKEM768",  1, 0x11eb, 192, "P-256+ML-KEM-768", NULL)\
+  X(secp384r1mlkem1024,"SecP384r1MLKEM1024", "EC",     "P-384",         0,    \
+      "MLKEM1024", 1, 0x11ed, 256, "P-384+ML-KEM-1024", "1.3.6.1.4.1.42235.6")\
+  /* --- oqsprovider OQS-legacy ML-KEM hybrids --- */                         \
+  X(x25519_mlkem512,   "x25519_mlkem512",    "X25519", NULL,            0,    \
+      "MLKEM512",  0, 0x2fb6, 128, "X25519+ML-KEM-512", "1.3.6.1.4.1.22554.5.8.1")\
+  X(p256_mlkem512,     "p256_mlkem512",      "EC",     "P-256",         0,    \
+      "MLKEM512",  1, 0x2f4b, 128, "P-256+ML-KEM-512", "1.3.6.1.4.1.22554.5.7.1")\
+  X(bp256_mlkem512,    "bp256_mlkem512",     "EC",   "brainpoolP256r1", 0,    \
+      "MLKEM512",  0, 0xfe20, 128, "brainpoolP256r1+ML-KEM-512", NULL)\
+  X(p384_mlkem768,     "p384_mlkem768",      "EC",     "P-384",         0,    \
+      "MLKEM768",  1, 0x2f4c, 192, "P-384+ML-KEM-768", NULL)\
+  X(x448_mlkem768,     "x448_mlkem768",      "X448",   NULL,            0,    \
+      "MLKEM768",  0, 0x2fb7, 192, "X448+ML-KEM-768", NULL)\
+  X(bp384_mlkem768,    "bp384_mlkem768",     "EC",   "brainpoolP384r1", 0,    \
+      "MLKEM768",  0, 0xfe21, 192, "brainpoolP384r1+ML-KEM-768", NULL)\
+  X(p521_mlkem1024,    "p521_mlkem1024",     "EC",     "P-521",         0,    \
+      "MLKEM1024", 1, 0x2f4d, 256, "P-521+ML-KEM-1024", NULL)\
+  X(bp512_mlkem1024,   "bp512_mlkem1024",    "EC",   "brainpoolP512r1", 0,    \
+      "MLKEM1024", 0, 0xfe22, 256, "brainpoolP512r1+ML-KEM-1024", NULL)\
+  /* --- oqsprovider FrodoKEM hybrids (PQ base from oqsprovider only) --- */   \
+  X(p256_frodo640aes,  "p256_frodo640aes",   "EC",     "P-256",         0,    \
+      "frodo640aes", 1, 0xfe24, 128, "P-256+FrodoKEM-640-AES", NULL)\
+  X(x25519_frodo640aes,"x25519_frodo640aes", "X25519", NULL,            0,    \
+      "frodo640aes", 1, 0xfe25, 128, "X25519+FrodoKEM-640-AES", NULL)\
+  X(p256_frodo640shake,"p256_frodo640shake", "EC",     "P-256",         0,    \
+      "frodo640shake", 1, 0xfe27, 128, "P-256+FrodoKEM-640-SHAKE", NULL)\
+  X(x25519_frodo640shake,"x25519_frodo640shake","X25519",NULL,          0,    \
+      "frodo640shake", 1, 0xfe28, 128, "X25519+FrodoKEM-640-SHAKE", NULL)\
+  X(p384_frodo976aes,  "p384_frodo976aes",   "EC",     "P-384",         0,    \
+      "frodo976aes", 1, 0xfe2a, 192, "P-384+FrodoKEM-976-AES", NULL)\
+  X(x448_frodo976aes,  "x448_frodo976aes",   "X448",   NULL,            0,    \
+      "frodo976aes", 1, 0xfe2b, 192, "X448+FrodoKEM-976-AES", NULL)\
+  X(p384_frodo976shake,"p384_frodo976shake", "EC",     "P-384",         0,    \
+      "frodo976shake", 1, 0xfe2d, 192, "P-384+FrodoKEM-976-SHAKE", NULL)\
+  X(x448_frodo976shake,"x448_frodo976shake", "X448",   NULL,            0,    \
+      "frodo976shake", 1, 0xfe2e, 192, "X448+FrodoKEM-976-SHAKE", NULL)\
+  X(p521_frodo1344aes, "p521_frodo1344aes",  "EC",     "P-521",         0,    \
+      "frodo1344aes", 1, 0xfe30, 256, "P-521+FrodoKEM-1344-AES", NULL)\
+  X(p521_frodo1344shake,"p521_frodo1344shake","EC",    "P-521",         0,    \
+      "frodo1344shake", 1, 0xfe32, 256, "P-521+FrodoKEM-1344-SHAKE", NULL)\
+  /* --- oqsprovider BIKE hybrids --- */                                      \
+  X(p256_bikel1,       "p256_bikel1",        "EC",     "P-256",         0,    \
+      "bikel1", 1, 0xfe11, 128, "P-256+BIKE-L1", NULL)\
+  X(x25519_bikel1,     "x25519_bikel1",      "X25519", NULL,            0,    \
+      "bikel1", 1, 0xfe12, 128, "X25519+BIKE-L1", NULL)\
+  X(p384_bikel3,       "p384_bikel3",        "EC",     "P-384",         0,    \
+      "bikel3", 1, 0xfe14, 192, "P-384+BIKE-L3", NULL)\
+  X(x448_bikel3,       "x448_bikel3",        "X448",   NULL,            0,    \
+      "bikel3", 1, 0xfe15, 192, "X448+BIKE-L3", NULL)\
+  X(p521_bikel5,       "p521_bikel5",        "EC",     "P-521",         0,    \
+      "bikel5", 1, 0xfe17, 256, "P-521+BIKE-L5", NULL)\
+  /* --- oqsprovider HQC hybrids --- */                                       \
+  X(p256_hqc1,         "p256_hqc1",          "EC",     "P-256",         0,    \
+      "hqc1", 1, 0xfe34, 128, "P-256+HQC-1", NULL)\
+  X(x25519_hqc1,       "x25519_hqc1",        "X25519", NULL,            0,    \
+      "hqc1", 1, 0xfe35, 128, "X25519+HQC-1", NULL)\
+  X(p384_hqc3,         "p384_hqc3",          "EC",     "P-384",         0,    \
+      "hqc3", 1, 0xfe37, 192, "P-384+HQC-3", NULL)\
+  X(x448_hqc3,         "x448_hqc3",          "X448",   NULL,            0,    \
+      "hqc3", 1, 0xfe38, 192, "X448+HQC-3", NULL)\
+  X(p521_hqc5,         "p521_hqc5",          "EC",     "P-521",         0,    \
+      "hqc5", 1, 0xfe3a, 256, "P-521+HQC-5", NULL)
+
+/* Generate the info table from the master list. */
+#define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)       \
+    { nm, a1, grp, a1k, a2, NULL, 1, slot, cp, oid },
 static const HYBRID_KEM_INFO hybrid_kem_table[] = {
-    {
-        "X25519MLKEM768",
-        "X25519", NULL, 0,          /* alg1: key-exchange */
-        "MLKEM768", NULL, 1,      /* alg2: native KEM */
-        0,                           /* alg2_slot: ML-KEM first in ctext/ss */
-        32, 32, 32,                  /* X25519: pub, prv, shsec */
-        1184, 2400, 32, 1088         /* ML-KEM-768: pub, prv, shsec, ctext */
-    },
-    {
-        "X448MLKEM1024",
-        "X448", NULL, 0,
-        "MLKEM1024", NULL, 1,
-        0,
-        56, 56, 56,                  /* X448 */
-        1568, 3168, 32, 1568         /* ML-KEM-1024 */
-    },
-    {
-        "SecP256r1MLKEM768",
-        "EC", "P-256", 0,
-        "MLKEM768", NULL, 1,
-        1,                           /* alg2_slot: ML-KEM second in ctext/ss */
-        65, 32, 32,                  /* P-256 */
-        1184, 2400, 32, 1088         /* ML-KEM-768 */
-    },
-    {
-        "SecP384r1MLKEM1024",
-        "EC", "P-384", 0,
-        "MLKEM1024", NULL, 1,
-        1,
-        97, 48, 48,                  /* P-384 */
-        1568, 3168, 32, 1568         /* ML-KEM-1024 */
-    },
+    HYBRID_KEM_LIST(HYBRID_KEM_ROW)
 };
+#undef HYBRID_KEM_ROW
+
+/* Per-algorithm table index, in list order (used to bind keymgmt thunks). */
+#define HYBRID_KEM_IDX_ROW(cf, ...) HYBRID_KEM_IDX_##cf,
+enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
+#undef HYBRID_KEM_IDX_ROW
 
 #define HYBRID_KEM_ALG_COUNT \
     (sizeof(hybrid_kem_table) / sizeof(hybrid_kem_table[0]))
 
 /*
- * Signature algorithm table.
- * Wire format: sig = alg1_sig || alg2_sig (classical first, PQ second).
- * ECDSA signatures are DER-encoded with variable length; we use max sizes.
+ * Master hybrid-SIG list — single source of truth, mirroring HYBRID_KEM_LIST.
+ * These are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ), matching
+ * its names, OIDs and wire format. Component sizes are discovered at runtime.
+ *
+ * PROVENANCE: the `oid` values are oqsprovider's, from its
+ * `oqs-template/generate.yml` (see ALGORITHMS.md). Drift is caught automatically
+ * — a wrong OID breaks the cross-provider SPKI/PKCS8 round-trips in
+ * hybrid_encode_test (oqsprovider can't decode our key by that OID, or vice versa).
+ *
+ * X(cfield, name, alg1, alg1_group, alg2, nist_level, oid, desc)
+ *   alg1        : "EC" or "RSA"
+ *   alg1_group  : EC group, or NULL for RSA (3072-bit)
+ *   nist_level  : PQ NIST level -> classical digest (1:SHA256 2/3:SHA384 4/5:SHA512)
  */
+#define HYBRID_SIG_LIST(X)                                                    \
+  /* --- ML-DSA hybrids --- */                                                \
+  X(p256_mldsa44,   "p256_mldsa44",   "EC",  "P-256", "MLDSA44", 2,           \
+      "1.3.9999.7.5", "P-256+ML-DSA-44")                                      \
+  X(rsa3072_mldsa44,"rsa3072_mldsa44","RSA", NULL,    "MLDSA44", 2,           \
+      "1.3.9999.7.6", "RSA3072+ML-DSA-44")                                    \
+  X(p384_mldsa65,   "p384_mldsa65",   "EC",  "P-384", "MLDSA65", 3,           \
+      "1.3.9999.7.7", "P-384+ML-DSA-65")                                      \
+  X(p521_mldsa87,   "p521_mldsa87",   "EC",  "P-521", "MLDSA87", 5,           \
+      "1.3.9999.7.8", "P-521+ML-DSA-87")                                      \
+  /* --- Falcon hybrids (PQ base from oqsprovider only) --- */                \
+  X(p256_falcon512, "p256_falcon512", "EC",  "P-256", "falcon512", 1,         \
+      "1.3.9999.3.12", "P-256+Falcon-512")                                    \
+  X(rsa3072_falcon512,"rsa3072_falcon512","RSA",NULL, "falcon512", 1,         \
+      "1.3.9999.3.13", "RSA3072+Falcon-512")                                  \
+  X(p521_falcon1024,"p521_falcon1024","EC",  "P-521", "falcon1024", 5,        \
+      "1.3.9999.3.15", "P-521+Falcon-1024")                                   \
+  /* --- Falcon-padded hybrids --- */                                         \
+  X(p256_falconpadded512,"p256_falconpadded512","EC","P-256",                 \
+      "falconpadded512", 1, "1.3.9999.3.17", "P-256+Falcon-padded-512")       \
+  X(rsa3072_falconpadded512,"rsa3072_falconpadded512","RSA",NULL,             \
+      "falconpadded512", 1, "1.3.9999.3.18", "RSA3072+Falcon-padded-512")     \
+  X(p521_falconpadded1024,"p521_falconpadded1024","EC","P-521",               \
+      "falconpadded1024", 5, "1.3.9999.3.20", "P-521+Falcon-padded-1024")     \
+  /* --- MAYO hybrids --- */                                                  \
+  X(p256_mayo1,     "p256_mayo1",     "EC",  "P-256", "mayo1", 1,             \
+      "1.3.9999.8.1.4", "P-256+MAYO-1")                                       \
+  X(p256_mayo2,     "p256_mayo2",     "EC",  "P-256", "mayo2", 1,             \
+      "1.3.9999.8.2.4", "P-256+MAYO-2")                                       \
+  X(p384_mayo3,     "p384_mayo3",     "EC",  "P-384", "mayo3", 3,             \
+      "1.3.9999.8.3.4", "P-384+MAYO-3")                                       \
+  X(p521_mayo5,     "p521_mayo5",     "EC",  "P-521", "mayo5", 5,             \
+      "1.3.9999.8.5.4", "P-521+MAYO-5")                                       \
+  /* --- OV (UOV) hybrids; all NIST level 1 --- */                            \
+  X(p256_OV_Is_pkc, "p256_OV_Is_pkc", "EC",  "P-256", "OV_Is_pkc", 1,         \
+      "1.3.9999.9.5.2", "P-256+OV-Is-pkc")                                    \
+  X(p256_OV_Ip_pkc, "p256_OV_Ip_pkc", "EC",  "P-256", "OV_Ip_pkc", 1,         \
+      "1.3.9999.9.6.2", "P-256+OV-Ip-pkc")                                    \
+  X(p256_OV_Is_pkc_skc,"p256_OV_Is_pkc_skc","EC","P-256","OV_Is_pkc_skc", 1,  \
+      "1.3.9999.9.9.2", "P-256+OV-Is-pkc-skc")                                \
+  X(p256_OV_Ip_pkc_skc,"p256_OV_Ip_pkc_skc","EC","P-256","OV_Ip_pkc_skc", 1,  \
+      "1.3.9999.9.10.2", "P-256+OV-Ip-pkc-skc")                               \
+  /* --- SNOVA hybrids --- */                                                 \
+  X(p256_snova2454, "p256_snova2454", "EC",  "P-256", "snova2454", 1,         \
+      "1.3.9999.10.1.2", "P-256+SNOVA-24-5-4")                                \
+  X(p256_snova2454esk,"p256_snova2454esk","EC","P-256","snova2454esk", 1,     \
+      "1.3.9999.10.3.2", "P-256+SNOVA-24-5-4-esk")                            \
+  X(p256_snova37172,"p256_snova37172","EC",  "P-256", "snova37172", 1,        \
+      "1.3.9999.10.5.2", "P-256+SNOVA-37-17-2")                               \
+  X(p384_snova2455, "p384_snova2455", "EC",  "P-384", "snova2455", 3,         \
+      "1.3.9999.10.10.2", "P-384+SNOVA-24-5-5")                               \
+  X(p521_snova2965, "p521_snova2965", "EC",  "P-521", "snova2965", 5,         \
+      "1.3.9999.10.12.2", "P-521+SNOVA-29-6-5")                               \
+  /* --- MQOM2 hybrids (GF16 fast r5) --- */                                  \
+  X(p256_mqom2cat1gf16fastr5,"p256_mqom2cat1gf16fastr5","EC","P-256",         \
+      "mqom2cat1gf16fastr5", 1, "1.3.9999.11.1.2", "P-256+MQOM2-cat1")        \
+  X(p384_mqom2cat3gf16fastr5,"p384_mqom2cat3gf16fastr5","EC","P-384",         \
+      "mqom2cat3gf16fastr5", 3, "1.3.9999.11.3.2", "P-384+MQOM2-cat3")        \
+  X(p521_mqom2cat5gf16fastr5,"p521_mqom2cat5gf16fastr5","EC","P-521",         \
+      "mqom2cat5gf16fastr5", 5, "1.3.9999.11.5.2", "P-521+MQOM2-cat5")
+
+/* Generate the info table from the master list. */
+#define HYBRID_SIG_ROW(cf, nm, a1, grp, a2, lvl, oid, ds)                     \
+    { nm, a1, grp, a2, lvl, oid },
 static const HYBRID_SIG_INFO hybrid_sig_table[] = {
-    {
-        "ed25519mldsa44",
-        "Ed25519", NULL, "MLDSA44",
-        32, 32, 64,                  /* Ed25519: pub, prv, sig */
-        1312, 2560, 2420             /* ML-DSA-44: pub, prv, sig */
-    },
-    {
-        "ed25519mldsa65",
-        "Ed25519", NULL, "MLDSA65",
-        32, 32, 64,
-        1952, 4032, 3309
-    },
-    {
-        "ed448mldsa87",
-        "Ed448", NULL, "MLDSA87",
-        57, 57, 114,                 /* Ed448: pub, prv, sig */
-        2592, 4896, 4627
-    },
-    {
-        "p256mldsa44",
-        "EC", "P-256", "MLDSA44",
-        65, 32, 72,                  /* P-256: pub, prv, max DER sig */
-        1312, 2560, 2420
-    },
-    {
-        "p256mldsa65",
-        "EC", "P-256", "MLDSA65",
-        65, 32, 72,
-        1952, 4032, 3309
-    },
-    {
-        "p384mldsa87",
-        "EC", "P-384", "MLDSA87",
-        97, 48, 104,                 /* P-384: pub, prv, max DER sig */
-        2592, 4896, 4627
-    },
+    HYBRID_SIG_LIST(HYBRID_SIG_ROW)
 };
+#undef HYBRID_SIG_ROW
+
+/* Per-algorithm table index, in list order (used to bind keymgmt thunks). */
+#define HYBRID_SIG_IDX_ROW(cf, ...) HYBRID_SIG_IDX_##cf,
+enum { HYBRID_SIG_LIST(HYBRID_SIG_IDX_ROW) HYBRID_SIG_ALG_COUNT_ENUM };
+#undef HYBRID_SIG_IDX_ROW
 
 #define HYBRID_SIG_ALG_COUNT \
     (sizeof(hybrid_sig_table) / sizeof(hybrid_sig_table[0]))
@@ -206,76 +368,83 @@ static const HYBRID_SIG_INFO hybrid_sig_table[] = {
 #define HYBRID_KEY_ALG2_NAME(k) \
     ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_name \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_name)
-#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_pubkey_bytes \
-                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_pubkey_bytes)
-#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_pubkey_bytes \
-                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_pubkey_bytes)
-#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_prvkey_bytes \
-                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_prvkey_bytes)
-#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_prvkey_bytes \
-                 : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_prvkey_bytes)
+/*
+ * Size accessors read the runtime-discovered cache (key->sizes) for both KEM
+ * and SIG keys. Callers must have populated it via hybrid_ensure_sizes() first.
+ */
+#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) ((k)->sizes.a1_pub)
+#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) ((k)->sizes.a2_pub)
+#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) ((k)->sizes.a1_prv)
+#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) ((k)->sizes.a2_prv)
 
-/* Total sizes for KEM algorithms */
-static inline size_t hybrid_kem_pubkey_bytes(const HYBRID_KEM_INFO *info)
+/* Total ciphertext / shared-secret sizes for a KEM key (from the cache). */
+static inline size_t hybrid_kem_ctext_bytes(const HYBRID_KEY *key)
 {
-    return info->alg1_pubkey_bytes + info->alg2_pubkey_bytes;
+    return key->sizes.a1_ct + key->sizes.a2_ct;
 }
 
-static inline size_t hybrid_kem_prvkey_bytes(const HYBRID_KEM_INFO *info)
+static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 {
-    return info->alg1_prvkey_bytes + info->alg2_prvkey_bytes;
+    return key->sizes.a1_ss + key->sizes.a2_ss;
 }
 
-static inline size_t hybrid_kem_ctext_bytes(const HYBRID_KEM_INFO *info)
+/*
+ * Maximum hybrid signature size (from the cache):
+ * ENCODE_UINT32(classical_len) + max classical sig + PQ sig.
+ */
+static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_KEY *key)
 {
-    /* For key-exchange alg, "ciphertext" is the ephemeral public key */
-    size_t alg1_ct = info->alg1_is_kem ? 0 : info->alg1_pubkey_bytes;
-    return alg1_ct + info->alg2_ctext_bytes;
+    return sizeof(uint32_t) + key->sizes.a1_sig + key->sizes.a2_sig;
 }
 
-static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEM_INFO *info)
-{
-    return info->alg1_shsec_bytes + info->alg2_shsec_bytes;
-}
-
-/* Total sizes for signature algorithms */
-static inline size_t hybrid_sig_pubkey_bytes(const HYBRID_SIG_INFO *info)
-{
-    return info->alg1_pubkey_bytes + info->alg2_pubkey_bytes;
-}
-
-static inline size_t hybrid_sig_prvkey_bytes(const HYBRID_SIG_INFO *info)
-{
-    return info->alg1_prvkey_bytes + info->alg2_prvkey_bytes;
-}
-
-static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_SIG_INFO *info)
-{
-    return info->alg1_sig_bytes + info->alg2_sig_bytes;
-}
-
-/* Generic total sizes via HYBRID_KEY */
+/* Generic total sizes via HYBRID_KEY (from the cache). */
 static inline size_t hybrid_key_pubkey_bytes(const HYBRID_KEY *key)
 {
-    if (key->is_kem)
-        return hybrid_kem_pubkey_bytes((const HYBRID_KEM_INFO *)key->info);
-    return hybrid_sig_pubkey_bytes((const HYBRID_SIG_INFO *)key->info);
+    return key->sizes.a1_pub + key->sizes.a2_pub;
 }
 
 static inline size_t hybrid_key_prvkey_bytes(const HYBRID_KEY *key)
 {
-    if (key->is_kem)
-        return hybrid_kem_prvkey_bytes((const HYBRID_KEM_INFO *)key->info);
-    return hybrid_sig_prvkey_bytes((const HYBRID_SIG_INFO *)key->info);
+    return key->sizes.a1_prv + key->sizes.a2_prv;
 }
 
 /* Extern declarations for dispatch tables */
 extern const OSSL_DISPATCH hybrid_kem_functions[];
 extern const OSSL_DISPATCH hybrid_sig_functions[];
+
+/* Encoders (hybrid_encoder.c) */
+extern const OSSL_DISPATCH hybrid_spki_der_encoder_functions[];
+extern const OSSL_DISPATCH hybrid_spki_pem_encoder_functions[];
+extern const OSSL_DISPATCH hybrid_pkcs8_der_encoder_functions[];
+extern const OSSL_DISPATCH hybrid_pkcs8_pem_encoder_functions[];
+int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out,
+                           size_t *outlen);
+int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out,
+                            size_t *outlen);
+
+/* Decoders (hybrid_decoder.c) */
+extern const OSSL_DISPATCH hybrid_spki_der_decoder_functions[];
+extern const OSSL_DISPATCH hybrid_pkcs8_der_decoder_functions[];
+
+/* Decoder support (hybrid_keymgmt.c) */
+void hybrid_keymgmt_free(void *vkey);
+void *hybrid_keymgmt_new_by_variant(void *provctx, int is_kem,
+                                    unsigned int variant);
+int hybrid_key_load_pub_components(HYBRID_KEY *key,
+                                   const unsigned char *classic, size_t clen,
+                                   const unsigned char *pq, size_t plen);
+int hybrid_key_load_prv_components(HYBRID_KEY *key,
+                                   const unsigned char *cder, size_t cderlen,
+                                   const unsigned char *pqv, size_t pqvlen);
+
+/*
+ * Populate key->sizes by querying the component algorithms with throwaway
+ * keygens (sizes are deterministic per algorithm). Handles both KEM keys
+ * (pub/priv/shared-secret/ciphertext) and SIG keys (pub/priv/max-signature).
+ * Safe to call repeatedly; a no-op once the cache is valid. Returns 1 on
+ * success. Implemented in hybrid_keymgmt.c.
+ */
+int hybrid_ensure_sizes(HYBRID_KEY *key);
 
 /* TLS-GROUP capability advertising (hybrid_caps.c) */
 int hybrid_get_capabilities(void *provctx, const char *capability,
@@ -285,18 +454,14 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
 #define DECLARE_HYBRID_KMGMT_EXTERN(name) \
     extern const OSSL_DISPATCH hybrid_##name##_kmgmt_functions[];
 
-/* KEM keymgmt */
-DECLARE_HYBRID_KMGMT_EXTERN(x25519mlkem768)
-DECLARE_HYBRID_KMGMT_EXTERN(x448mlkem1024)
-DECLARE_HYBRID_KMGMT_EXTERN(secp256r1mlkem768)
-DECLARE_HYBRID_KMGMT_EXTERN(secp384r1mlkem1024)
+/* KEM keymgmt — generated from the master list */
+#define HYBRID_KEM_EXTERN_ROW(cf, ...) DECLARE_HYBRID_KMGMT_EXTERN(cf)
+HYBRID_KEM_LIST(HYBRID_KEM_EXTERN_ROW)
+#undef HYBRID_KEM_EXTERN_ROW
 
-/* Signature keymgmt */
-DECLARE_HYBRID_KMGMT_EXTERN(ed25519mldsa44)
-DECLARE_HYBRID_KMGMT_EXTERN(ed25519mldsa65)
-DECLARE_HYBRID_KMGMT_EXTERN(ed448mldsa87)
-DECLARE_HYBRID_KMGMT_EXTERN(p256mldsa44)
-DECLARE_HYBRID_KMGMT_EXTERN(p256mldsa65)
-DECLARE_HYBRID_KMGMT_EXTERN(p384mldsa87)
+/* Signature keymgmt — generated from the master list */
+#define HYBRID_SIG_EXTERN_ROW(cf, ...) DECLARE_HYBRID_KMGMT_EXTERN(cf)
+HYBRID_SIG_LIST(HYBRID_SIG_EXTERN_ROW)
+#undef HYBRID_SIG_EXTERN_ROW
 
 #endif /* HYBRID_PROV_H */

@@ -352,159 +352,170 @@ err:
     return ret;
 }
 
+/*
+ * A hybrid-vs-native comparison is only apples-to-apples ("fair") when both
+ * sides end up exercising the SAME PQ implementation. That holds iff the PQ
+ * component is served by the same provider the native peer uses internally:
+ *   - MLX groups: native is the default provider and the hybrid also sources
+ *     ML-KEM from default -> always fair.
+ *   - OQS-legacy: native is oqsprovider (liboqs). The hybrid's
+ *     "?provider=oqsprovider" only reaches liboqs if oqsprovider actually
+ *     exposes that PQ primitive STANDALONE; otherwise it silently falls through
+ *     to default's portable-C impl (e.g. ML-KEM/ML-DSA are ceded to default
+ *     under OpenSSL 3.5), making the row UNFAIR (different implementations).
+ * These probes decide the tag empirically so the numbers can't be misread.
+ */
+static int pq_from_oqs_kem(OSSL_LIB_CTX *libctx, const char *pqname)
+{
+    EVP_KEM *k = EVP_KEM_fetch(libctx, pqname, "provider=oqsprovider");
+    int ok = (k != NULL);
+    EVP_KEM_free(k);
+    ERR_clear_error();
+    return ok;
+}
+
+static int pq_from_oqs_sig(OSSL_LIB_CTX *libctx, const char *pqname)
+{
+    EVP_SIGNATURE *s = EVP_SIGNATURE_fetch(libctx, pqname, "provider=oqsprovider");
+    int ok = (s != NULL);
+    EVP_SIGNATURE_free(s);
+    ERR_clear_error();
+    return ok;
+}
+
+#define FAIR_TAG(fair) \
+    ((fair) ? "[FAIR: same PQ impl both sides]" \
+            : "[UNFAIR: hybrid PQ=default portable-C vs native liboqs]")
+
+/*
+ * Compare one KEM hybrid across the providers that implement it: the native
+ * implementation (default for MLX names, oqsprovider for OQS-legacy names) and
+ * the hybrid provider. For the hybrid provider we source the PQ base from the
+ * same place the native peer uses (comp_propq), so the delta is the hybrid
+ * provider's composition overhead, not a different PQ implementation -- but only
+ * when the row is FAIR (see pq_from_oqs_kem).
+ */
+static void compare_kem(OSSL_LIB_CTX *libctx, const char *alg,
+                        const char *native, const char *pq, int it)
+{
+    char lbl[80];
+    int fair = (native[0] == 'd') ? 1 : pq_from_oqs_kem(libctx, pq);
+
+    printf("%s:  %s\n", alg, FAIR_TAG(fair));
+    snprintf(lbl, sizeof(lbl), "  %s (native)", native);
+    bench_kem(libctx, alg, native[0] == 'd' ? "provider=default"
+                                            : "provider=oqsprovider",
+              NULL, lbl, it);
+    snprintf(lbl, sizeof(lbl), "  hybrid (PQ from %s)", native);
+    bench_kem(libctx, alg, "provider=hybrid",
+              native[0] == 'd' ? "provider=default" : "?provider=oqsprovider",
+              lbl, it);
+}
+
+/* Same, for a signature hybrid (native peer is always oqsprovider). */
+static void compare_sig(OSSL_LIB_CTX *libctx, const char *alg,
+                        const char *pq, int it)
+{
+    char lbl[80];
+    int fair = pq_from_oqs_sig(libctx, pq);
+
+    printf("%s:  %s\n", alg, FAIR_TAG(fair));
+    snprintf(lbl, sizeof(lbl), "  oqsprovider (native)");
+    bench_sig(libctx, alg, "provider=oqsprovider", NULL, lbl, it);
+    snprintf(lbl, sizeof(lbl), "  hybrid");
+    bench_sig(libctx, alg, "provider=hybrid", "?provider=oqsprovider", lbl, it);
+}
+
 int main(int argc, char **argv)
 {
     OSSL_LIB_CTX *libctx = NULL;
-    OSSL_PROVIDER *hybrid_prov = NULL, *dflt_prov = NULL;
-    OSSL_PROVIDER *oqs_prov = NULL, *bcrust_prov = NULL;
+    OSSL_PROVIDER *hybrid_prov = NULL, *dflt_prov = NULL, *oqs_prov = NULL;
     const char *modulepath;
-    int iterations = ITERATIONS;
-    int oqs_mlkem = 0, bcrust_mlkem = 0;
-    int oqs_mldsa = 0, bcrust_mldsa = 0;
+    int it = ITERATIONS, has_oqs;
+    size_t i;
+    /* Each row carries its standalone PQ component name so the fair/unfair tag
+     * can be decided empirically (does oqsprovider expose that PQ primitive?). */
+    static const struct { const char *alg, *pq; } mlx_kems[] = {
+        { "X25519MLKEM768", "MLKEM768" },
+        { "SecP256r1MLKEM768", "MLKEM768" },
+        { "SecP384r1MLKEM1024", "MLKEM1024" },
+    };
+    static const struct { const char *alg, *pq; } oqs_kems[] = {
+        { "p256_mlkem512", "MLKEM512" },
+        { "x25519_mlkem512", "MLKEM512" },
+        { "p384_mlkem768", "MLKEM768" },
+        { "p256_frodo640aes", "frodo640aes" },
+        { "p256_hqc1", "hqc1" },
+    };
+    static const struct { const char *alg, *pq; } sig_algs[] = {
+        { "p256_mldsa44", "MLDSA44" },
+        { "p384_mldsa65", "MLDSA65" },
+        { "p256_falcon512", "falcon512" },
+        { "p256_mayo1", "mayo1" },
+        { "p256_snova2454", "snova2454" },
+    };
 
-    if (argc > 1)
-        iterations = atoi(argv[1]);
-    if (iterations < 1)
-        iterations = ITERATIONS;
-
+    if (argc > 1 && atoi(argv[1]) > 0)
+        it = atoi(argv[1]);
     modulepath = getenv("OPENSSL_MODULES");
 
     libctx = OSSL_LIB_CTX_new();
-    if (libctx == NULL) {
-        fprintf(stderr, "Failed to create library context\n");
+    if (libctx == NULL || (dflt_prov = OSSL_PROVIDER_load(libctx, "default"))
+                              == NULL) {
+        fprintf(stderr, "cannot init libctx/default\n");
         return 1;
     }
-
-    dflt_prov = OSSL_PROVIDER_load(libctx, "default");
-    if (dflt_prov == NULL) {
-        fprintf(stderr, "Failed to load default provider\n");
-        return 1;
-    }
-
     if (modulepath != NULL)
         OSSL_PROVIDER_set_default_search_path(libctx, modulepath);
-
-    /* Alternative PQ providers are optional: only configs 3 and 4 need them. */
     oqs_prov = OSSL_PROVIDER_load(libctx, "oqsprovider");
     if (oqs_prov != NULL) {
-        oqs_mlkem = provider_has_mlkem(libctx, "oqsprovider");
-        oqs_mldsa = provider_has_mldsa(libctx, "oqsprovider");
+        /* Under OpenSSL 3.5 oqsprovider cedes standalone ML-KEM to default, so
+         * probe a hybrid it actually owns. */
+        EVP_KEM *k = EVP_KEM_fetch(libctx, "p256_mlkem512",
+                                   "provider=oqsprovider");
+        has_oqs = k != NULL;
+        EVP_KEM_free(k);
     } else {
-        ERR_clear_error();
+        has_oqs = 0;
     }
-
-    /* Loaded as module "bcrust_provider", but its algorithms advertise the
-     * property "provider=bcrust" — the two names differ. */
-    bcrust_prov = OSSL_PROVIDER_load(libctx, "bcrust_provider");
-    if (bcrust_prov != NULL) {
-        bcrust_mlkem = provider_has_mlkem(libctx, "bcrust");
-        bcrust_mldsa = provider_has_mldsa(libctx, "bcrust");
-    } else {
-        ERR_clear_error();
-    }
-
+    ERR_clear_error();
     hybrid_prov = OSSL_PROVIDER_load(libctx, "hybrid");
     if (hybrid_prov == NULL) {
-        fprintf(stderr, "Failed to load hybrid provider\n");
+        fprintf(stderr, "cannot load hybrid provider\n");
         ERR_print_errors_fp(stderr);
         return 1;
     }
 
-    printf("X25519MLKEM768 benchmark (%d iterations)\n", iterations);
-    printf("OpenSSL %s\n", OpenSSL_version(OPENSSL_VERSION));
-    printf("oqsprovider:     %s (ML-KEM: %s, ML-DSA: %s)\n",
-           oqs_prov != NULL ? "loaded" : "not available",
-           oqs_mlkem ? "yes" : "no", oqs_mldsa ? "yes" : "no");
-    printf("bcrust_provider: %s (ML-KEM: %s, ML-DSA: %s)\n",
-           bcrust_prov != NULL ? "loaded" : "not available",
-           bcrust_mlkem ? "yes" : "no", bcrust_mldsa ? "yes" : "no");
-    printf("==================================================================="
-           "==================\n");
+    printf("Hybrid provider vs native performance (%d iterations)\n", it);
+    printf("OpenSSL %s; oqsprovider %s\n", OpenSSL_version(OPENSSL_VERSION),
+           has_oqs ? "loaded" : "not available");
+    printf("=====================================================\n");
+    printf("FAIR   = hybrid and native use the same PQ implementation; the delta\n"
+           "         is pure composition overhead.\n"
+           "UNFAIR = the PQ primitive is ceded to default (portable C), so the\n"
+           "         hybrid runs a DIFFERENT impl than native's liboqs; the delta\n"
+           "         reflects implementation choice, not composition (may be\n"
+           "         faster or slower per operation).\n");
 
-    /* 1. default provider's native MLX hybrid */
-    bench_kem(libctx, "X25519MLKEM768", "provider=default", NULL,
-              "default provider (native MLX)", iterations);
+    printf("\n[KEM: MLX groups — hybrid vs default provider]\n");
+    for (i = 0; i < sizeof(mlx_kems) / sizeof(mlx_kems[0]); i++)
+        compare_kem(libctx, mlx_kems[i].alg, "default", mlx_kems[i].pq, it);
 
-    /* 2. hybrid provider composing both components from the default provider */
-    bench_kem(libctx, "X25519MLKEM768", "provider=hybrid", "provider=default",
-              "hybrid provider (X25519+ML-KEM from default)", iterations);
+    if (has_oqs) {
+        printf("\n[KEM: OQS-legacy hybrids — hybrid vs oqsprovider]\n");
+        for (i = 0; i < sizeof(oqs_kems) / sizeof(oqs_kems[0]); i++)
+            compare_kem(libctx, oqs_kems[i].alg, "oqsprovider",
+                        oqs_kems[i].pq, it);
 
-    /* 3. hybrid provider: X25519 from default, ML-KEM from oqsprovider.
-     *    "?provider=oqsprovider" prefers oqsprovider where it has the
-     *    component (ML-KEM) and falls back to default otherwise (X25519). */
-    if (oqs_mlkem) {
-        bench_kem(libctx, "X25519MLKEM768", "provider=hybrid",
-                  "?provider=oqsprovider",
-                  "hybrid provider (X25519 default, ML-KEM oqsprovider)",
-                  iterations);
-    } else {
-        printf("  %-46s  SKIPPED (oqsprovider ML-KEM unavailable)\n",
-               "hybrid provider (X25519 default, ML-KEM oqsprovider)");
+        printf("\n[SIG: hybrids — hybrid vs oqsprovider]\n");
+        for (i = 0; i < sizeof(sig_algs) / sizeof(sig_algs[0]); i++)
+            compare_sig(libctx, sig_algs[i].alg, sig_algs[i].pq, it);
     }
-
-    /* 4. hybrid provider: X25519 from default, ML-KEM from bcrust_provider.
-     *    bcrust_provider ships its own ML-KEM, so it is available regardless
-     *    of the OpenSSL version; "?provider=bcrust_provider" prefers it for
-     *    ML-KEM and falls back to default for X25519. */
-    if (bcrust_mlkem) {
-        bench_kem(libctx, "X25519MLKEM768", "provider=hybrid",
-                  "?provider=bcrust",
-                  "hybrid provider (X25519 default, ML-KEM bcrust)",
-                  iterations);
-    } else {
-        printf("  %-46s  SKIPPED (bcrust_provider ML-KEM unavailable)\n",
-               "hybrid provider (X25519 default, ML-KEM bcrust)");
-    }
-
-    /* --- Hybrid signatures: all six classical+ML-DSA combos, with the
-     *     ML-DSA component sourced from the default provider and (when
-     *     available) from bcrust-provider and oqsprovider. --- */
-    {
-        static const char *sig_algs[] = {
-            "ed25519mldsa44", "ed25519mldsa65", "ed448mldsa87",
-            "p256mldsa44", "p256mldsa65", "p384mldsa87",
-        };
-        size_t nsig = sizeof(sig_algs) / sizeof(sig_algs[0]);
-
-        printf("\nHybrid signatures (%d iterations) — ML-DSA component from "
-               "default", iterations);
-        if (bcrust_mldsa)
-            printf(", bcrust");
-        if (oqs_mldsa)
-            printf(", oqsprovider");
-        printf("\n");
-        printf("==================================================================="
-               "==================\n");
-
-        for (size_t i = 0; i < nsig; i++) {
-            char label[64];
-
-            snprintf(label, sizeof(label), "%s (ML-DSA: default)", sig_algs[i]);
-            bench_sig(libctx, sig_algs[i], "provider=hybrid", "provider=default",
-                      label, iterations);
-
-            if (bcrust_mldsa) {
-                snprintf(label, sizeof(label), "%s (ML-DSA: bcrust)",
-                         sig_algs[i]);
-                bench_sig(libctx, sig_algs[i], "provider=hybrid",
-                          "?provider=bcrust", label, iterations);
-            }
-            if (oqs_mldsa) {
-                snprintf(label, sizeof(label), "%s (ML-DSA: oqsprovider)",
-                         sig_algs[i]);
-                bench_sig(libctx, sig_algs[i], "provider=hybrid",
-                          "?provider=oqsprovider", label, iterations);
-            }
-        }
-    }
-
     printf("\n");
 
     OSSL_PROVIDER_unload(hybrid_prov);
     if (oqs_prov != NULL)
         OSSL_PROVIDER_unload(oqs_prov);
-    if (bcrust_prov != NULL)
-        OSSL_PROVIDER_unload(bcrust_prov);
     OSSL_PROVIDER_unload(dflt_prov);
     OSSL_LIB_CTX_free(libctx);
     return 0;

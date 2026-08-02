@@ -62,6 +62,22 @@ make
 
 This produces `hybrid.so` in the build directory.
 
+### Build options
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `HYBRID_KEM_ENCODERS` | `OFF` | Build encoders/decoders for hybrid **KEM** key files (SPKI + PKCS8) |
+
+`HYBRID_KEM_ENCODERS` mirrors oqsprovider's `OQS_KEM_ENCODERS` option, and off for
+the same reasons: KEM keys are usually ephemeral, and only the hybrid KEMs that
+oqsprovider assigns an OID are key-file encodable (`p256_mlkem512`,
+`x25519_mlkem512`; `SecP384r1MLKEM1024` on OpenSSL < 3.5). The MLX KEMs the
+default provider implements are TLS groups with no key-file encoders on either
+side, so they are not serializable as key files. Signature key files (needed for
+certificates) are always built. When enabled, `hybrid_kem_encode_test`
+round-trips KEM SPKI/PKCS8 key files against oqsprovider (built with
+`OQS_KEM_ENCODERS=ON`); it self-skips otherwise.
+
 ## Test
 
 ```sh

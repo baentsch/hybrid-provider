@@ -433,12 +433,18 @@ signature interop testing is limited to self-consistency.
 - **TLS-specific**: The initial KEM hybrids follow the TLS wire format
   (draft-ietf-tls-ecdhe-mlkem). They concatenate shared secrets directly
   without an additional KDF — the TLS HKDF handles derivation.
-- **No ASN.1 encoding**: Raw concatenated key format only (matching MLX).
-  No X.509/PKCS#8 encoding in the initial version.
-- **No encoder/decoder**: Key persistence via encode/decode is deferred.
-  Keys are imported/exported via raw OSSL_PARAM octet strings.
-- **Single library context**: The provider uses the caller's `OSSL_LIB_CTX`.
-  Sub-algorithm providers must be loaded in that same context.
+- **Key serialization**: Signature keys encode/decode as X.509
+  SubjectPublicKeyInfo and PKCS#8 PrivateKeyInfo (DER + PEM), byte-compatible
+  with oqsprovider (`hybrid_encoder.c` / `hybrid_decoder.c`). KEM key files are
+  supported behind the `HYBRID_KEM_ENCODERS` build option (off by default,
+  mirroring oqsprovider's `OQS_KEM_ENCODERS`); only the few hybrid KEMs with an
+  assigned OID are encodable. Keys can still be imported/exported via raw
+  `OSSL_PARAM` octet strings for the runtime KEM/TLS paths.
+- **Library context**: By default the provider uses the caller's `OSSL_LIB_CTX`,
+  so sub-algorithm providers must be loaded there. Optionally, the
+  `component-providers` config key makes the provider load its component
+  providers into its own private context, so the application context need not
+  hold them (used for Frodo/BIKE/HQC over TLS).
 
 ## References
 

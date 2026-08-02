@@ -4,6 +4,7 @@
  */
 
 #include "hybrid_prov.h"
+#include <openssl/x509.h>
 
 /* --- Key lifecycle --- */
 
@@ -17,6 +18,25 @@ static void hybrid_key_free(void *vkey)
     EVP_PKEY_free(key->key1);
     EVP_PKEY_free(key->key2);
     OPENSSL_free(key);
+}
+
+/*
+ * Materialize a key from a decoder-provided reference (the decoder hands back a
+ * pointer to a HYBRID_KEY it built; ownership transfers to the EVP_PKEY).
+ */
+static void *hybrid_key_load(const void *reference, size_t reference_sz)
+{
+    HYBRID_KEY *key = NULL;
+
+    if (reference_sz == sizeof(key)) {
+        key = *(HYBRID_KEY **)reference;
+        *(HYBRID_KEY **)reference = NULL;   /* avoid a double free */
+        return key;
+    }
+    ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                   "hybrid load: unexpected key-reference size %zu (expected %zu)",
+                   reference_sz, sizeof(key));
+    return NULL;
 }
 
 static void *
@@ -145,6 +165,240 @@ err:
     return ret;
 }
 
+/* --- Decoder support: build a public key from oqs blob components --- */
+
+/* Free a hybrid key (public wrapper over the static free, for decoders). */
+void hybrid_keymgmt_free(void *vkey)
+{
+    hybrid_key_free(vkey);
+}
+
+/* Create an empty hybrid key of the given family/variant (used by decoders). */
+void *hybrid_keymgmt_new_by_variant(void *provctx, int is_kem,
+                                    unsigned int variant)
+{
+    HYBRID_PROV_CTX *ctx = provctx;
+    OSSL_LIB_CTX *lc = ctx ? HYBRID_COMPONENT_LIBCTX(ctx) : NULL;
+    HYBRID_KEY *k = hybrid_key_new(is_kem, variant, lc, NULL);
+
+    if (k != NULL && ctx != NULL) {
+        k->pq_propq = ctx->pq_propq;
+        k->classic_propq = ctx->classic_propq;
+    }
+    return k;
+}
+
+/* Load the classical + PQ public components from their raw byte ranges. */
+int hybrid_key_load_pub_components(HYBRID_KEY *key,
+                                  const unsigned char *classic, size_t clen,
+                                  const unsigned char *pq, size_t plen)
+{
+    int sel = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
+            | OSSL_KEYMGMT_SELECT_PUBLIC_KEY;
+
+    if (strcmp(HYBRID_KEY_ALG1_NAME(key), "RSA") == 0) {
+        /* RSA public key is i2d_PublicKey (RSAPublicKey) DER, not an octet. */
+        const unsigned char *p = classic;
+
+        key->key1 = d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)clen);
+        if (key->key1 == NULL)
+            return 0;
+    } else if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+                        HYBRID_KEY_ALG1_NAME(key), HYBRID_KEY_ALG1_GROUP(key),
+                        OSSL_PKEY_PARAM_PUB_KEY, sel, classic, clen,
+                        &key->key1)) {
+        return 0;
+    }
+    if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+                        HYBRID_KEY_ALG2_NAME(key), NULL,
+                        OSSL_PKEY_PARAM_PUB_KEY, sel, pq, plen, &key->key2))
+        return 0;
+    key->state = HYBRID_HAVE_PUBKEY;
+    return 1;
+}
+
+/* Load the classical (DER) + PQ (raw) private components (decoders). */
+int hybrid_key_load_prv_components(HYBRID_KEY *key,
+                                  const unsigned char *cder, size_t cderlen,
+                                  const unsigned char *pqv, size_t pqvlen)
+{
+    int sel = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
+            | OSSL_KEYMGMT_SELECT_PRIVATE_KEY;
+    const char *a1 = HYBRID_KEY_ALG1_NAME(key);
+
+    /* Raw-key classical types (X25519/X448) are stored raw, not DER. */
+    if (strcmp(a1, "X25519") == 0 || strcmp(a1, "X448") == 0) {
+        key->key1 = EVP_PKEY_new_raw_private_key_ex(key->libctx, a1,
+                        HYBRID_KEY_CLASSIC_PROPQ(key), cder, cderlen);
+    } else {
+        const unsigned char *p = cder;
+
+        key->key1 = d2i_AutoPrivateKey_ex(NULL, &p, (long)cderlen, key->libctx,
+                                          HYBRID_KEY_CLASSIC_PROPQ(key));
+    }
+    if (key->key1 == NULL)
+        return 0;
+    if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+                        HYBRID_KEY_ALG2_NAME(key), NULL,
+                        OSSL_PKEY_PARAM_PRIV_KEY, sel, pqv, pqvlen, &key->key2)) {
+        EVP_PKEY_free(key->key1);
+        key->key1 = NULL;
+        return 0;
+    }
+    key->state = HYBRID_HAVE_PRVKEY;
+    return 1;
+}
+
+/* --- Runtime component-size discovery --- */
+
+/* Forward declaration; defined in the Key Generation section below. */
+static EVP_PKEY *
+hybrid_component_keygen(OSSL_LIB_CTX *libctx, const char *propq,
+                        const char *alg_name, const char *group_name);
+
+/*
+ * Query the pub/priv/shared-secret/ciphertext sizes of one component algorithm
+ * by generating a throwaway keypair (sizes are deterministic per algorithm and
+ * EC group, so a fresh key yields the same sizes as the real component). For a
+ * key-exchange component (is_kem==0) the "ciphertext" is the ephemeral public
+ * key, so a1_ct == a1_pub, and the shared-secret length comes from a throwaway
+ * ECDH derive.
+ */
+static int
+discover_component_sizes(OSSL_LIB_CTX *libctx, const char *propq,
+                         const char *alg_name, const char *group_name,
+                         int is_kem, size_t *pub, size_t *prv,
+                         size_t *ss, size_t *ct)
+{
+    EVP_PKEY *tmp = NULL, *eph = NULL;
+    EVP_PKEY_CTX *c = NULL;
+    int ret = 0;
+
+    tmp = hybrid_component_keygen(libctx, propq, alg_name, group_name);
+    if (tmp == NULL)
+        return 0;
+
+    if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PUB_KEY,
+                                        NULL, 0, pub) <= 0)
+        goto end;
+    /*
+     * The private-key size: KEM components and raw curves (X25519/X448) expose
+     * PRIV_KEY as an octet string. EC curves expose it as a BIGNUM, for which
+     * the octet-string query fails; fall back to the field byte length so the
+     * size reflects the fixed scalar width (not a particular key's stripped BN).
+     */
+    if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PRIV_KEY,
+                                        NULL, 0, prv) <= 0) {
+        int bits = EVP_PKEY_get_bits(tmp);
+
+        ERR_clear_error();
+        if (bits <= 0)
+            goto end;
+        *prv = (size_t)(bits + 7) / 8;
+    }
+
+    if (is_kem) {
+        c = EVP_PKEY_CTX_new_from_pkey(libctx, tmp, propq);
+        if (c == NULL || EVP_PKEY_encapsulate_init(c, NULL) <= 0
+            || EVP_PKEY_encapsulate(c, NULL, ct, NULL, ss) <= 0)
+            goto end;
+    } else {
+        *ct = *pub;   /* ephemeral public key */
+        c = EVP_PKEY_CTX_new_from_pkey(libctx, tmp, propq);
+        if (c == NULL || EVP_PKEY_keygen_init(c) <= 0
+            || EVP_PKEY_keygen(c, &eph) <= 0)
+            goto end;
+        EVP_PKEY_CTX_free(c);
+        c = EVP_PKEY_CTX_new_from_pkey(libctx, eph, propq);
+        if (c == NULL || EVP_PKEY_derive_init(c) <= 0
+            || EVP_PKEY_derive_set_peer(c, tmp) <= 0
+            || EVP_PKEY_derive(c, NULL, ss) <= 0)
+            goto end;
+    }
+    ret = 1;
+end:
+    EVP_PKEY_CTX_free(c);
+    EVP_PKEY_free(eph);
+    EVP_PKEY_free(tmp);
+    return ret;
+}
+
+/*
+ * Query the pub/priv/signature sizes of one signature component. pub/priv are
+ * best-effort (used only by key export, deferred): RSA exposes neither as an
+ * octet string, so they may be left 0. The signature size (EVP_PKEY_get_size)
+ * is what sign/verify and the max-size query need.
+ */
+static int
+discover_sig_component_sizes(OSSL_LIB_CTX *libctx, const char *propq,
+                             const char *alg_name, const char *group_name,
+                             size_t *pub, size_t *prv, size_t *sig)
+{
+    EVP_PKEY *tmp = hybrid_component_keygen(libctx, propq, alg_name, group_name);
+    int n;
+
+    if (tmp == NULL)
+        return 0;
+    n = EVP_PKEY_get_size(tmp);
+    *sig = n > 0 ? (size_t)n : 0;
+
+    *pub = 0;
+    if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PUB_KEY,
+                                        NULL, 0, pub) <= 0) {
+        *pub = 0;
+        ERR_clear_error();
+    }
+    *prv = 0;
+    if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PRIV_KEY,
+                                        NULL, 0, prv) <= 0) {
+        int bits = EVP_PKEY_get_bits(tmp);
+
+        *prv = bits > 0 ? (size_t)(bits + 7) / 8 : 0;
+        ERR_clear_error();
+    }
+    EVP_PKEY_free(tmp);
+    return *sig != 0;
+}
+
+int hybrid_ensure_sizes(HYBRID_KEY *key)
+{
+    if (key->sizes.valid)
+        return 1;
+
+    if (key->is_kem) {
+        const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)key->info;
+
+        if (!discover_component_sizes(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+                                      info->alg1_name, info->alg1_group,
+                                      info->alg1_is_kem,
+                                      &key->sizes.a1_pub, &key->sizes.a1_prv,
+                                      &key->sizes.a1_ss, &key->sizes.a1_ct))
+            return 0;
+        if (!discover_component_sizes(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+                                      info->alg2_name, info->alg2_group,
+                                      info->alg2_is_kem,
+                                      &key->sizes.a2_pub, &key->sizes.a2_prv,
+                                      &key->sizes.a2_ss, &key->sizes.a2_ct))
+            return 0;
+    } else {
+        const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
+
+        if (!discover_sig_component_sizes(key->libctx,
+                                          HYBRID_KEY_CLASSIC_PROPQ(key),
+                                          info->alg1_name, info->alg1_group,
+                                          &key->sizes.a1_pub, &key->sizes.a1_prv,
+                                          &key->sizes.a1_sig))
+            return 0;
+        if (!discover_sig_component_sizes(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+                                          info->alg2_name, NULL,
+                                          &key->sizes.a2_pub, &key->sizes.a2_prv,
+                                          &key->sizes.a2_sig))
+            return 0;
+    }
+    key->sizes.valid = 1;
+    return 1;
+}
+
 /*
  * Determine slot offsets for concatenated key material.
  * KEM keys use alg2_slot to control ordering; SIG keys always use alg1 first.
@@ -236,6 +490,8 @@ static int hybrid_import(void *vkey, int selection,
     int include_private;
 
     if (key == NULL || (selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
+        return 0;
+    if (!hybrid_ensure_sizes(key))
         return 0;
 
     include_private = (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) ? 1 : 0;
@@ -329,6 +585,8 @@ static int hybrid_export(void *vkey, int selection,
     if (key == NULL || !hybrid_have_pubkey(key))
         return 0;
     if ((selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
+        return 0;
+    if (!hybrid_ensure_sizes(key))
         return 0;
 
     publen = hybrid_key_pubkey_bytes(key);
@@ -445,6 +703,8 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
 
     if (key == NULL)
         return 0;
+    if (!hybrid_ensure_sizes(key))
+        return 0;
 
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_BITS);
     if (p != NULL && !OSSL_PARAM_set_int(p, 256))
@@ -457,11 +717,9 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_MAX_SIZE);
     if (p != NULL) {
         if (key->is_kem)
-            max_size = hybrid_kem_ctext_bytes(
-                (const HYBRID_KEM_INFO *)key->info);
+            max_size = hybrid_kem_ctext_bytes(key);
         else
-            max_size = hybrid_sig_max_sig_bytes(
-                (const HYBRID_SIG_INFO *)key->info);
+            max_size = hybrid_sig_max_sig_bytes(key);
         if (!OSSL_PARAM_set_size_t(p, max_size))
             return 0;
     }
@@ -527,6 +785,8 @@ static int hybrid_set_params_fn(void *vkey, const OSSL_PARAM params[])
 
     if (!OSSL_PARAM_get_octet_string_ptr(p, &pubenc, &publen))
         return 0;
+    if (!hybrid_ensure_sizes(key))
+        return 0;
     if (publen != hybrid_key_pubkey_bytes(key))
         return 0;
 
@@ -562,6 +822,15 @@ hybrid_component_keygen(OSSL_LIB_CTX *libctx, const char *propq,
 
         parr[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
                                                    (char *)group_name, 0);
+        parr[1] = OSSL_PARAM_construct_end();
+        if (EVP_PKEY_CTX_set_params(ctx, parr) <= 0)
+            goto err;
+    } else if (strcmp(alg_name, "RSA") == 0) {
+        /* The only RSA classical component in the hybrid sigs is RSA-3072. */
+        size_t bits = 3072;
+        OSSL_PARAM parr[2];
+
+        parr[0] = OSSL_PARAM_construct_size_t(OSSL_PKEY_PARAM_RSA_BITS, &bits);
         parr[1] = OSSL_PARAM_construct_end();
         if (EVP_PKEY_CTX_set_params(ctx, parr) <= 0)
             goto err;
@@ -668,7 +937,8 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
     static void *hybrid_##name##_new(void *provctx)                          \
     {                                                                        \
         HYBRID_PROV_CTX *ctx = provctx;                                      \
-        OSSL_LIB_CTX *libctx = ctx ? ctx->libctx : NULL;                    \
+        OSSL_LIB_CTX *libctx =                                               \
+            ctx ? HYBRID_COMPONENT_LIBCTX(ctx) : NULL;                       \
         HYBRID_KEY *k = hybrid_key_new(is_kem_val, variant, libctx, NULL);   \
         if (k != NULL && ctx != NULL) {                                      \
             k->pq_propq = ctx->pq_propq;                                     \
@@ -688,7 +958,7 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
         if (gctx == NULL) return NULL;                                       \
         gctx->is_kem = is_kem_val;                                          \
         gctx->algo_idx = variant;                                            \
-        gctx->libctx = pctx->libctx;                                        \
+        gctx->libctx = HYBRID_COMPONENT_LIBCTX(pctx);                       \
         gctx->pq_propq = pctx->pq_propq;                                     \
         gctx->classic_propq = pctx->classic_propq;                          \
         gctx->selection = selection;                                         \
@@ -700,6 +970,7 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
     }                                                                        \
     const OSSL_DISPATCH hybrid_##name##_kmgmt_functions[] = {                \
         { OSSL_FUNC_KEYMGMT_NEW, (void (*)(void))hybrid_##name##_new },      \
+        { OSSL_FUNC_KEYMGMT_LOAD, (void (*)(void))hybrid_key_load },         \
         { OSSL_FUNC_KEYMGMT_FREE, (void (*)(void))hybrid_key_free },         \
         { OSSL_FUNC_KEYMGMT_HAS, (void (*)(void))hybrid_kem_has },           \
         { OSSL_FUNC_KEYMGMT_MATCH, (void (*)(void))hybrid_kem_match },       \
@@ -730,16 +1001,15 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
         { 0, NULL }                                                          \
     }
 
-/* KEM keymgmt instances */
-DECLARE_HYBRID_KMGMT(x25519mlkem768, 1, 0);
-DECLARE_HYBRID_KMGMT(x448mlkem1024, 1, 1);
-DECLARE_HYBRID_KMGMT(secp256r1mlkem768, 1, 2);
-DECLARE_HYBRID_KMGMT(secp384r1mlkem1024, 1, 3);
+/* KEM keymgmt instances — generated from the master list in hybrid_prov.h.
+ * Each row binds its keymgmt thunks to the matching info-table index. */
+#define HYBRID_KEM_KMGMT_ROW(cf, ...) \
+    DECLARE_HYBRID_KMGMT(cf, 1, HYBRID_KEM_IDX_##cf);
+HYBRID_KEM_LIST(HYBRID_KEM_KMGMT_ROW)
+#undef HYBRID_KEM_KMGMT_ROW
 
-/* Signature keymgmt instances */
-DECLARE_HYBRID_KMGMT(ed25519mldsa44, 0, 0);
-DECLARE_HYBRID_KMGMT(ed25519mldsa65, 0, 1);
-DECLARE_HYBRID_KMGMT(ed448mldsa87, 0, 2);
-DECLARE_HYBRID_KMGMT(p256mldsa44, 0, 3);
-DECLARE_HYBRID_KMGMT(p256mldsa65, 0, 4);
-DECLARE_HYBRID_KMGMT(p384mldsa87, 0, 5);
+/* Signature keymgmt instances — generated from the master list. */
+#define HYBRID_SIG_KMGMT_ROW(cf, ...) \
+    DECLARE_HYBRID_KMGMT(cf, 0, HYBRID_SIG_IDX_##cf);
+HYBRID_SIG_LIST(HYBRID_SIG_KMGMT_ROW)
+#undef HYBRID_SIG_KMGMT_ROW

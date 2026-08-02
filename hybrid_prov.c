@@ -5,6 +5,7 @@
 
 #include "hybrid_prov.h"
 #include <openssl/provider.h>
+#include <stdlib.h>
 
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;
 static OSSL_FUNC_provider_gettable_params_fn hybrid_gettable_params;
@@ -14,12 +15,61 @@ static OSSL_FUNC_provider_query_operation_fn hybrid_query;
 static void hybrid_teardown(void *provctx)
 {
     HYBRID_PROV_CTX *ctx = provctx;
+    int i;
 
     if (ctx != NULL) {
+        for (i = 0; i < ctx->n_comp_provs; i++)
+            OSSL_PROVIDER_unload(ctx->comp_provs[i]);
+        if (ctx->comp_owned)
+            OSSL_LIB_CTX_free(ctx->comp_libctx);
         OPENSSL_free(ctx->pq_propq);
         OPENSSL_free(ctx->classic_propq);
         OPENSSL_free(ctx);
     }
+}
+
+/*
+ * Set up a private component context from a space/comma-separated provider
+ * list. On success ctx->comp_libctx points at the new context (comp_owned = 1);
+ * when `providers` is empty the component context stays the application context.
+ */
+static int hybrid_setup_component_ctx(HYBRID_PROV_CTX *ctx,
+                                      const char *providers, const char *path)
+{
+    char *list = NULL, *tok, *save = NULL;
+    OSSL_LIB_CTX *cc = NULL;
+
+    if (providers == NULL || *providers == '\0')
+        return 1;   /* not configured: comp_libctx remains the app context */
+
+    if ((cc = OSSL_LIB_CTX_new()) == NULL)
+        return 0;
+    if (path == NULL)
+        path = getenv("OPENSSL_MODULES");
+    if (path != NULL)
+        OSSL_PROVIDER_set_default_search_path(cc, path);
+
+    if ((list = OPENSSL_strdup(providers)) == NULL)
+        goto err;
+    for (tok = strtok_r(list, " \t,", &save); tok != NULL;
+         tok = strtok_r(NULL, " \t,", &save)) {
+        OSSL_PROVIDER *p;
+
+        if (ctx->n_comp_provs >= HYBRID_MAX_COMPONENT_PROVIDERS)
+            break;
+        if ((p = OSSL_PROVIDER_load(cc, tok)) == NULL)
+            goto err;
+        ctx->comp_provs[ctx->n_comp_provs++] = p;
+    }
+    OPENSSL_free(list);
+
+    ctx->comp_libctx = cc;
+    ctx->comp_owned = 1;
+    return 1;
+err:
+    OPENSSL_free(list);
+    OSSL_LIB_CTX_free(cc);
+    return 0;
 }
 
 static const OSSL_PARAM *hybrid_gettable_params(void *provctx)
@@ -47,79 +97,116 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
 
 /* --- Algorithm tables --- */
 
+/* KEM keymgmt registration rows, generated from the master list. */
+#define HYBRID_KEM_KMGMT_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid) \
+    { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
+      ds " hybrid key management" },
+
+/* SIG keymgmt registration rows, generated from the master list. */
+#define HYBRID_SIG_KMGMT_REG(cf, nm, a1, grp, a2, lvl, oid, ds)              \
+    { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
+      ds " hybrid key management" },
+
 static const OSSL_ALGORITHM hybrid_keymgmts[] = {
     /* KEM keymgmts */
-    { "X25519MLKEM768", "provider=hybrid",
-      hybrid_x25519mlkem768_kmgmt_functions,
-      "X25519+ML-KEM-768 hybrid key management" },
-    { "X448MLKEM1024", "provider=hybrid",
-      hybrid_x448mlkem1024_kmgmt_functions,
-      "X448+ML-KEM-1024 hybrid key management" },
-    { "SecP256r1MLKEM768", "provider=hybrid",
-      hybrid_secp256r1mlkem768_kmgmt_functions,
-      "P-256+ML-KEM-768 hybrid key management" },
-    { "SecP384r1MLKEM1024", "provider=hybrid",
-      hybrid_secp384r1mlkem1024_kmgmt_functions,
-      "P-384+ML-KEM-1024 hybrid key management" },
+    HYBRID_KEM_LIST(HYBRID_KEM_KMGMT_REG)
     /* Signature keymgmts */
-    { "ed25519mldsa44", "provider=hybrid",
-      hybrid_ed25519mldsa44_kmgmt_functions,
-      "Ed25519+ML-DSA-44 hybrid key management" },
-    { "ed25519mldsa65", "provider=hybrid",
-      hybrid_ed25519mldsa65_kmgmt_functions,
-      "Ed25519+ML-DSA-65 hybrid key management" },
-    { "ed448mldsa87", "provider=hybrid",
-      hybrid_ed448mldsa87_kmgmt_functions,
-      "Ed448+ML-DSA-87 hybrid key management" },
-    { "p256mldsa44", "provider=hybrid",
-      hybrid_p256mldsa44_kmgmt_functions,
-      "P-256+ML-DSA-44 hybrid key management" },
-    { "p256mldsa65", "provider=hybrid",
-      hybrid_p256mldsa65_kmgmt_functions,
-      "P-256+ML-DSA-65 hybrid key management" },
-    { "p384mldsa87", "provider=hybrid",
-      hybrid_p384mldsa87_kmgmt_functions,
-      "P-384+ML-DSA-87 hybrid key management" },
+    HYBRID_SIG_LIST(HYBRID_SIG_KMGMT_REG)
     { NULL, NULL, NULL, NULL }
 };
+#undef HYBRID_SIG_KMGMT_REG
+#undef HYBRID_KEM_KMGMT_REG
+
+/* KEM operation registration rows, generated from the master list. */
+#define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)   \
+    { nm, "provider=hybrid", hybrid_kem_functions, ds " hybrid KEM" },
 
 static const OSSL_ALGORITHM hybrid_kems[] = {
-    { "X25519MLKEM768", "provider=hybrid",
-      hybrid_kem_functions,
-      "X25519+ML-KEM-768 hybrid KEM" },
-    { "X448MLKEM1024", "provider=hybrid",
-      hybrid_kem_functions,
-      "X448+ML-KEM-1024 hybrid KEM" },
-    { "SecP256r1MLKEM768", "provider=hybrid",
-      hybrid_kem_functions,
-      "P-256+ML-KEM-768 hybrid KEM" },
-    { "SecP384r1MLKEM1024", "provider=hybrid",
-      hybrid_kem_functions,
-      "P-384+ML-KEM-1024 hybrid KEM" },
+    HYBRID_KEM_LIST(HYBRID_KEM_OP_REG)
     { NULL, NULL, NULL, NULL }
 };
+#undef HYBRID_KEM_OP_REG
+
+/* SIG operation registration rows, generated from the master list. */
+#define HYBRID_SIG_OP_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                 \
+    { nm, "provider=hybrid", hybrid_sig_functions, ds " hybrid signature" },
 
 static const OSSL_ALGORITHM hybrid_signatures[] = {
-    { "ed25519mldsa44", "provider=hybrid",
-      hybrid_sig_functions,
-      "Ed25519+ML-DSA-44 hybrid signature" },
-    { "ed25519mldsa65", "provider=hybrid",
-      hybrid_sig_functions,
-      "Ed25519+ML-DSA-65 hybrid signature" },
-    { "ed448mldsa87", "provider=hybrid",
-      hybrid_sig_functions,
-      "Ed448+ML-DSA-87 hybrid signature" },
-    { "p256mldsa44", "provider=hybrid",
-      hybrid_sig_functions,
-      "P-256+ML-DSA-44 hybrid signature" },
-    { "p256mldsa65", "provider=hybrid",
-      hybrid_sig_functions,
-      "P-256+ML-DSA-65 hybrid signature" },
-    { "p384mldsa87", "provider=hybrid",
-      hybrid_sig_functions,
-      "P-384+ML-DSA-87 hybrid signature" },
+    HYBRID_SIG_LIST(HYBRID_SIG_OP_REG)
     { NULL, NULL, NULL, NULL }
 };
+#undef HYBRID_SIG_OP_REG
+
+/*
+ * Encoders: SubjectPublicKeyInfo in DER and PEM, one pair per signature
+ * algorithm (matched by key-type name + output/structure properties).
+ */
+#define HYBRID_SIG_ENC_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                \
+    { nm, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo",       \
+      hybrid_spki_der_encoder_functions, ds " SPKI DER encoder" },           \
+    { nm, "provider=hybrid,output=pem,structure=SubjectPublicKeyInfo",       \
+      hybrid_spki_pem_encoder_functions, ds " SPKI PEM encoder" },           \
+    { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
+      hybrid_pkcs8_der_encoder_functions, ds " PKCS8 DER encoder" },         \
+    { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
+      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },
+
+/*
+ * KEM encoders. Gated by HYBRID_KEM_ENCODERS (off by default), mirroring
+ * oqsprovider's OQS_KEM_ENCODERS build option: KEM key files are rarely used
+ * and only a few hybrid KEMs have an assigned OID. The shared encoder code
+ * handles both families; NULL-OID KEMs registered here simply decline to encode.
+ */
+#ifdef HYBRID_KEM_ENCODERS
+# define HYBRID_KEM_ENC_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)  \
+    { nm, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo",       \
+      hybrid_spki_der_encoder_functions, ds " SPKI DER encoder" },           \
+    { nm, "provider=hybrid,output=pem,structure=SubjectPublicKeyInfo",       \
+      hybrid_spki_pem_encoder_functions, ds " SPKI PEM encoder" },           \
+    { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
+      hybrid_pkcs8_der_encoder_functions, ds " PKCS8 DER encoder" },         \
+    { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
+      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },
+#endif
+
+static const OSSL_ALGORITHM hybrid_encoders[] = {
+    HYBRID_SIG_LIST(HYBRID_SIG_ENC_REG)
+#ifdef HYBRID_KEM_ENCODERS
+    HYBRID_KEM_LIST(HYBRID_KEM_ENC_REG)
+#endif
+    { NULL, NULL, NULL, NULL }
+};
+#undef HYBRID_SIG_ENC_REG
+#ifdef HYBRID_KEM_ENCODERS
+# undef HYBRID_KEM_ENC_REG
+#endif
+
+/* Decoders: DER SubjectPublicKeyInfo -> key, one per signature algorithm. */
+#define HYBRID_SIG_DEC_REG(cf, nm, a1, grp, a2, lvl, oid, ds)                \
+    { nm, "provider=hybrid,input=der,structure=SubjectPublicKeyInfo",        \
+      hybrid_spki_der_decoder_functions, ds " SPKI DER decoder" },           \
+    { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \
+      hybrid_pkcs8_der_decoder_functions, ds " PKCS8 DER decoder" },
+
+#ifdef HYBRID_KEM_ENCODERS
+# define HYBRID_KEM_DEC_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)  \
+    { nm, "provider=hybrid,input=der,structure=SubjectPublicKeyInfo",        \
+      hybrid_spki_der_decoder_functions, ds " SPKI DER decoder" },           \
+    { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \
+      hybrid_pkcs8_der_decoder_functions, ds " PKCS8 DER decoder" },
+#endif
+
+static const OSSL_ALGORITHM hybrid_decoders[] = {
+    HYBRID_SIG_LIST(HYBRID_SIG_DEC_REG)
+#ifdef HYBRID_KEM_ENCODERS
+    HYBRID_KEM_LIST(HYBRID_KEM_DEC_REG)
+#endif
+    { NULL, NULL, NULL, NULL }
+};
+#undef HYBRID_SIG_DEC_REG
+#ifdef HYBRID_KEM_ENCODERS
+# undef HYBRID_KEM_DEC_REG
+#endif
 
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)
@@ -132,6 +219,10 @@ hybrid_query(void *provctx, int operation_id, int *no_cache)
         return hybrid_kems;
     case OSSL_OP_SIGNATURE:
         return hybrid_signatures;
+    case OSSL_OP_ENCODER:
+        return hybrid_encoders;
+    case OSSL_OP_DECODER:
+        return hybrid_decoders;
     default:
         return NULL;
     }
@@ -160,6 +251,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     HYBRID_PROV_CTX *ctx;
     OSSL_FUNC_core_get_libctx_fn *c_get_libctx = NULL;
     OSSL_FUNC_core_get_params_fn *c_get_params = NULL;
+    OSSL_FUNC_BIO_write_ex_fn *bio_write_ex = NULL;
+    OSSL_FUNC_BIO_read_ex_fn *bio_read_ex = NULL;
 
     for (; in->function_id != 0; in++) {
         switch (in->function_id) {
@@ -168,6 +261,12 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
             break;
         case OSSL_FUNC_CORE_GET_PARAMS:
             c_get_params = OSSL_FUNC_core_get_params(in);
+            break;
+        case OSSL_FUNC_BIO_WRITE_EX:
+            bio_write_ex = OSSL_FUNC_BIO_write_ex(in);
+            break;
+        case OSSL_FUNC_BIO_READ_EX:
+            bio_read_ex = OSSL_FUNC_BIO_read_ex(in);
             break;
         default:
             break;
@@ -183,6 +282,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 
     ctx->handle = handle;
     ctx->libctx = (OSSL_LIB_CTX *)c_get_libctx(handle);
+    ctx->bio_write_ex = bio_write_ex;
+    ctx->bio_read_ex = bio_read_ex;
 
     /*
      * Read optional component property queries from the provider's config
@@ -191,20 +292,26 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
      * call. Absent keys leave the pointers untouched (NULL).
      */
     if (c_get_params != NULL) {
-        char *pq = NULL, *classic = NULL;
-        OSSL_PARAM core_params[3];
+        char *pq = NULL, *classic = NULL, *comp = NULL, *comp_path = NULL;
+        OSSL_PARAM core_params[5];
 
         core_params[0] = OSSL_PARAM_construct_utf8_ptr(
             HYBRID_CONF_PQ_PROPQUERY, &pq, 0);
         core_params[1] = OSSL_PARAM_construct_utf8_ptr(
             HYBRID_CONF_CLASSIC_PROPQUERY, &classic, 0);
-        core_params[2] = OSSL_PARAM_construct_end();
+        core_params[2] = OSSL_PARAM_construct_utf8_ptr(
+            HYBRID_CONF_COMPONENT_PROVIDERS, &comp, 0);
+        core_params[3] = OSSL_PARAM_construct_utf8_ptr(
+            HYBRID_CONF_COMPONENT_PATH, &comp_path, 0);
+        core_params[4] = OSSL_PARAM_construct_end();
 
         if (c_get_params(handle, core_params)) {
             if (pq != NULL && (ctx->pq_propq = OPENSSL_strdup(pq)) == NULL)
                 goto err;
             if (classic != NULL
                     && (ctx->classic_propq = OPENSSL_strdup(classic)) == NULL)
+                goto err;
+            if (!hybrid_setup_component_ctx(ctx, comp, comp_path))
                 goto err;
         }
     }

@@ -8,3 +8,8 @@ openssl/
 openssl-34/
 oqs-provider/
 liboqs/
+.interop/
+# Ignore everything under .claude/ (personal settings, local caches) except a
+# deliberately-shared team settings.json, should one ever be committed.
+.claude/*
+!.claude/settings.json
