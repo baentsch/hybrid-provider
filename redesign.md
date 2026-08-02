@@ -568,6 +568,41 @@ Distinct from hybrid: **single assigned OID per combination**,
 **SEQUENCE-of-components** serialization (not byte-concat), and a
 **domain-separated combiner** with a fixed per-OID label for signatures.
 
+### Phase-2 packaging decision (2026-08) — capability here, not a separate provider
+
+**Decision: composite ships as a build-flag-gated capability *inside this
+provider* (default off), as a cleanly-removable module — not a separate
+`composite.so`, not a separate repo.** The `composite_*` files stay a distinct
+family (own OIDs, ASN.1, domain-separated combiner — no shared *combiner*
+abstraction), but reuse the generic two-`EVP_PKEY` key plumbing and the
+`{oqsprovider|default}`-PQ / `default`-classic sourcing rule.
+
+Rationale (an earlier draft argued the opposite on a *false* premise — that
+composite was the volatile churner and hybrid the frozen dependency; both are
+inverted):
+
+- **Composite is stabilizing, not churning.** `draft-ietf-lamps-pq-composite-sigs`
+  is at **-19** (Apr 2026), already past **IETF Last Call** and in IESG review
+  toward Proposed Standard; the matrix is bounded (ML-DSA × {RSA-PSS, RSA-PKCS1.5,
+  ECDSA, Ed25519, Ed448}). So there is no blast-radius / "stability-coupling" case
+  for isolating it in its own `.so`.
+- **Hybrid is the family that grows,** not composite: each NIST additional-signature
+  on-ramp alg oqsprovider lands (Round 3, May 2026: FAEST, HAWK, MAYO, MQOM, QR-UOV,
+  SDitH, SNOVA, SQIsign, UOV) becomes a new hybrid combo here. Hybrid is the
+  long-term differentiator worth a stable standalone identity; composite is bounded.
+- **Deployment-surface isolation needs only a build flag,** not a second provider:
+  the M8 hybrid-backend build simply omits composite (the `HYBRID_KEM_ENCODERS`
+  precedent). Shared core → a separate provider would just duplicate the skeleton.
+- **Composite is transitional — treat it like the MLX KEMs.** OpenSSL is tracking a
+  native implementation (issue [openssl#26121](https://github.com/openssl/openssl/issues/26121),
+  triaged feature, gated on its ML-DSA/PKI work). So design composite as a
+  **gap-filler that cedes to the default provider's composite once it ships**, exactly
+  as hybrid cedes MLX to default today. A build-flagged module is as cheap to remove
+  later as a separate provider would be.
+
+Would only flip to a separate `.so` if composite ever needed a materially different
+release cadence — a locked spec + build-flag gating removes that.
+
 ### Phase-2 files (proposed)
 ```
 composite_prov.h        composite OID/info tables, COMPOSITE_KEY
@@ -585,10 +620,14 @@ composite_decoder.c     DER + PEM decode by composite OID
 - PQ primitives via EVP from {oqsprovider | default}; classic from default only.
 
 ### Phase-2 open items
-- [ ] Exact composite matrix + OIDs from oqsprovider `main` (LAMPS combos) — not
-  yet enumerated.
-- [ ] Which LAMPS draft revision Bouncy Castle currently tracks (affects the sig
-  combiner + OIDs).
+- [ ] Enumerate the exact composite matrix + OIDs against
+  `draft-ietf-lamps-pq-composite-sigs-19` (bounded: ML-DSA × {RSA-PSS, RSA-PKCS1.5,
+  ECDSA, Ed25519, Ed448}) and cross-check oqsprovider `main`.
+- [ ] Confirm the LAMPS revision Bouncy Castle currently tracks (spec is at -19,
+  past IETF Last Call, so churn risk is low but pin it before coding the combiner).
+- [ ] **Cede-to-default path:** design composite to defer to the default provider's
+  native composite once OpenSSL ships it (openssl#26121), mirroring the MLX-to-default
+  deferral. Gate the whole family behind a build flag (default off).
 - [ ] Internal order — assumption: composite sig before composite KEM, encoders
   alongside each.
 
