@@ -137,6 +137,16 @@ In-process cross-provider round-trips vs oqsprovider `main`, both directions, fo
 every algorithm: keygen ↔ import, encaps/decaps shared-secret equality, sign in
 one / verify in the other, and key-material byte-for-byte round-trip.
 
+**Follow-up (open):** separate-process cross-provider TLS for the Frodo/BIKE/HQC
+hybrids. The in-process dual-libctx `hybrid_tls_test` can't cover them — the
+hybrid side must load oqsprovider to source their PQ base, and then both providers
+advertise the same group name/code point in one libctx, so the TLS keyshare keygen
+can't be steered to the hybrid implementation (see the note near the end of
+`test/hybrid_tls_test.c`). `test/hybrid_scenarios.sh` already drives real
+`s_server`/`s_client` runs and is the natural home for this; extend it to negotiate
+these groups hybrid-vs-oqsprovider across two processes. Tracked in **issue #2**
+(raised in PR #1 review).
+
 ### Phase-1 implementation roadmap (sequenced)
 
 Delta from today's code (as of this planning): only the 4 raw-concat
