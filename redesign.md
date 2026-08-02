@@ -618,6 +618,38 @@ inverted):
 Would only flip to a separate `.so` if composite ever needed a materially different
 release cadence — a locked spec + build-flag gating removes that.
 
+### Phase-2 design: generic over the PQ component, two-tier
+
+The combiner is generic — nothing about `M'` or the concat serialization needs
+ML-DSA specifically. So composite is **info-table-driven, exactly like the hybrid
+master list** (`COMPOSITE_SIG_LIST`): one row per combination, the combiner reads
+the row and delegates to both components via EVP with **zero ML-DSA hardcoding**.
+This makes composite span research PQ sigs (Falcon/MAYO/SLH-DSA/on-ramp round-3)
+the same way the hybrid matrix does — experimentation over the same growing PQ set.
+
+A row = `{ pq_alg, trad_alg, trad_group, oid, label, prehash, pq_priv_form, tier }`.
+Per-row (not hardcoded): `label` + `prehash` (normative constants for ML-DSA combos),
+`pq_priv_form` (ML-DSA stores the draft's 32-byte **seed**; other PQ sigs use their
+raw private form), and `tier`.
+
+**Firm two-tier split — never blurred:**
+
+| Tier | PQ component | OID arc | Wire contract |
+| --- | --- | --- | --- |
+| **standardized** | ML-DSA only | IANA/LAMPS registered | byte-exact vs BouncyCastle / future OpenSSL-native; normative |
+| **experimental** | any other PQ sig | a **distinct experimental arc** | non-normative; interop only with ourselves / oqsprovider-if-it-matches |
+
+Why the split is load-bearing:
+- **Cede-to-default stays symmetric with hybrid.** When OpenSSL ships native
+  composite (ML-DSA only, openssl#26121) we cede *exactly* the standardized subset
+  and keep the experimental one — the MLX-to-default move again. A shared OID arc
+  would make that impossible to do cleanly.
+- **No collision.** Experimental combos can never be mistaken for a standards-track
+  OID; a peer that only knows the standard set simply won't resolve ours.
+
+Experimental rows reuse the same `Prefix` (whole-scheme domain separator) with our
+own, explicitly non-normative `label`s.
+
 ### Phase-2 files (proposed)
 ```
 composite_prov.h        composite OID/info tables, COMPOSITE_KEY
@@ -643,6 +675,10 @@ composite_decoder.c     DER + PEM decode by composite OID
 - [ ] **Cede-to-default path:** design composite to defer to the default provider's
   native composite once OpenSSL ships it (openssl#26121), mirroring the MLX-to-default
   deferral. Gate the whole family behind a build flag (default off).
+- [ ] **Experimental OID arc:** pick the arc for the non-ML-DSA experimental combos —
+  match oqsprovider `main` if it defines composite combos (for interop, as we match
+  its hybrid OIDs), else assign our own experimental arc. Must be disjoint from the
+  IANA/LAMPS standardized arc.
 - [ ] Internal order — assumption: composite sig before composite KEM, encoders
   alongside each.
 
