@@ -94,6 +94,12 @@ typedef struct composite_key_st {
     const char *trad_propq;     /* source for the classical component          */
 } COMPOSITE_KEY;
 
+/* Provider context — just the libctx the components are fetched from. */
+typedef struct composite_prov_ctx_st {
+    const OSSL_CORE_HANDLE *handle;
+    OSSL_LIB_CTX *libctx;
+} COMPOSITE_PROV_CTX;
+
 /*
  * Master composite-signature list — single source of truth (mirrors
  * HYBRID_SIG_LIST). One row per combination drives the info table, the keymgmt
@@ -154,6 +160,15 @@ enum { COMPOSITE_SIG_LIST(COMPOSITE_SIG_IDX_ROW) COMPOSITE_SIG_ALG_COUNT_ENUM };
 
 #define COMPOSITE_SIG_ALG_COUNT \
     (sizeof(composite_sig_table) / sizeof(composite_sig_table[0]))
+
+/* Per-algorithm keymgmt dispatch tables (composite_keymgmt.c) + the shared
+ * signature dispatch (composite_sig.c), bound to names in composite_prov.c. */
+#define COMPOSITE_KMGMT_EXTERN(cf, ...) \
+    extern const OSSL_DISPATCH composite_##cf##_kmgmt_functions[];
+COMPOSITE_SIG_LIST(COMPOSITE_KMGMT_EXTERN)
+#undef COMPOSITE_KMGMT_EXTERN
+
+extern const OSSL_DISPATCH composite_sig_functions[];
 
 /* --- Combiner (composite_sig.c) ---
  *

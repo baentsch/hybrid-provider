@@ -193,11 +193,36 @@ set_tests_properties(hybrid_matrix_test PROPERTIES
 # its self-consistency test; the provider module (keymgmt/registration) follows.
 option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" OFF)
 if(HYBRID_COMPOSITE)
+    # Combiner self-consistency test (no provider registration).
     add_executable(composite_sig_test test/composite_sig_test.c composite_sig.c)
     target_include_directories(composite_sig_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
     target_link_libraries(composite_sig_test PRIVATE OpenSSL::Crypto)
     add_test(NAME composite_sig_test COMMAND composite_sig_test)
     set_tests_properties(composite_sig_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # Composite provider module (composite.so) — keygen + sign/verify.
+    add_library(composite-provider MODULE
+        composite_prov.c
+        composite_keymgmt.c
+        composite_sig.c
+    )
+    target_include_directories(composite-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(composite-provider PRIVATE OpenSSL::Crypto)
+    set_target_properties(composite-provider PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "composite"
+        SUFFIX ".so"
+    )
+
+    # Provider-level test: drive composite through EVP by name.
+    add_executable(composite_test test/composite_test.c)
+    target_include_directories(composite_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_test composite-provider)
+    add_test(NAME composite_test COMMAND composite_test)
+    set_tests_properties(composite_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 endif()

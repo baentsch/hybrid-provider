@@ -24,6 +24,7 @@
  */
 #include "composite_prov.h"
 #include <openssl/evp.h>
+#include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
 #include <openssl/rsa.h>
 #include <string.h>
@@ -215,3 +216,105 @@ end:
     OPENSSL_free(mp);
     return ret;
 }
+
+/* --- Provider signature dispatch (wraps the combiner over a COMPOSITE_KEY) --- */
+
+typedef struct {
+    COMPOSITE_KEY *key;
+} COMPOSITE_SIGCTX;
+
+static void *composite_sig_newctx(void *provctx, const char *propq)
+{
+    return OPENSSL_zalloc(sizeof(COMPOSITE_SIGCTX));
+}
+
+static void composite_sig_freectx(void *vctx)
+{
+    OPENSSL_free(vctx);
+}
+
+static void *composite_sig_dupctx(void *vctx)
+{
+    COMPOSITE_SIGCTX *c = OPENSSL_zalloc(sizeof(*c));
+
+    if (c != NULL)
+        *c = *(COMPOSITE_SIGCTX *)vctx;
+    return c;
+}
+
+static int composite_sig_sign_init(void *vctx, const char *mdname, void *vkey,
+                                   const OSSL_PARAM params[])
+{
+    COMPOSITE_SIGCTX *c = vctx;
+    COMPOSITE_KEY *k = vkey;
+
+    if (k == NULL || k->state < COMPOSITE_HAVE_PRVKEY)
+        return 0;
+    c->key = k;
+    return 1;
+}
+
+static int composite_sig_verify_init(void *vctx, const char *mdname, void *vkey,
+                                     const OSSL_PARAM params[])
+{
+    COMPOSITE_SIGCTX *c = vctx;
+    COMPOSITE_KEY *k = vkey;
+
+    if (k == NULL || k->state < COMPOSITE_HAVE_PUBKEY)
+        return 0;
+    c->key = k;
+    return 1;
+}
+
+static int composite_sig_digest_sign(void *vctx, unsigned char *sig,
+                                     size_t *siglen, size_t sigsize,
+                                     const unsigned char *tbs, size_t tbslen)
+{
+    COMPOSITE_SIGCTX *c = vctx;
+    COMPOSITE_KEY *k = c->key;
+    unsigned char *tmp = NULL;
+    size_t tlen = 0;
+    int ret = 0;
+
+    if (sig == NULL) {          /* size query: upper bound (fixed PQ + max trad) */
+        *siglen = (size_t)EVP_PKEY_get_size(k->pq_key)
+                + (size_t)EVP_PKEY_get_size(k->trad_key);
+        return 1;
+    }
+    if (!composite_sign(k->info, k->pq_key, k->trad_key, k->libctx,
+                        k->pq_propq, k->trad_propq, tbs, tbslen, &tmp, &tlen))
+        return 0;
+    if (tlen <= sigsize) {
+        memcpy(sig, tmp, tlen);
+        *siglen = tlen;
+        ret = 1;
+    }
+    OPENSSL_free(tmp);
+    return ret;
+}
+
+static int composite_sig_digest_verify(void *vctx, const unsigned char *sig,
+                                       size_t siglen, const unsigned char *tbs,
+                                       size_t tbslen)
+{
+    COMPOSITE_SIGCTX *c = vctx;
+    COMPOSITE_KEY *k = c->key;
+
+    return composite_verify(k->info, k->pq_key, k->trad_key, k->libctx,
+                            k->pq_propq, k->trad_propq, tbs, tbslen, sig, siglen);
+}
+
+const OSSL_DISPATCH composite_sig_functions[] = {
+    { OSSL_FUNC_SIGNATURE_NEWCTX, (void (*)(void))composite_sig_newctx },
+    { OSSL_FUNC_SIGNATURE_FREECTX, (void (*)(void))composite_sig_freectx },
+    { OSSL_FUNC_SIGNATURE_DUPCTX, (void (*)(void))composite_sig_dupctx },
+    { OSSL_FUNC_SIGNATURE_DIGEST_SIGN_INIT,
+      (void (*)(void))composite_sig_sign_init },
+    { OSSL_FUNC_SIGNATURE_DIGEST_SIGN,
+      (void (*)(void))composite_sig_digest_sign },
+    { OSSL_FUNC_SIGNATURE_DIGEST_VERIFY_INIT,
+      (void (*)(void))composite_sig_verify_init },
+    { OSSL_FUNC_SIGNATURE_DIGEST_VERIFY,
+      (void (*)(void))composite_sig_digest_verify },
+    { 0, NULL }
+};
