@@ -77,6 +77,15 @@ static const OSSL_ALGORITHM composite_encoders[] = {
 };
 #undef COMPOSITE_ENC_REG
 
+#define COMPOSITE_DEC_REG(cf, nm, ...) \
+    { nm, "provider=composite,input=der,structure=SubjectPublicKeyInfo",      \
+      composite_spki_der_decoder_functions, "composite SPKI DER decoder" },
+static const OSSL_ALGORITHM composite_decoders[] = {
+    COMPOSITE_SIG_LIST(COMPOSITE_DEC_REG)
+    { NULL, NULL, NULL, NULL }
+};
+#undef COMPOSITE_DEC_REG
+
 static const OSSL_ALGORITHM *
 composite_query(void *provctx, int operation_id, int *no_cache)
 {
@@ -88,6 +97,8 @@ composite_query(void *provctx, int operation_id, int *no_cache)
         return composite_signatures;
     case OSSL_OP_ENCODER:
         return composite_encoders;
+    case OSSL_OP_DECODER:
+        return composite_decoders;
     default:
         return NULL;
     }
@@ -113,6 +124,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     OSSL_FUNC_core_obj_create_fn *c_obj_create = NULL;
     OSSL_FUNC_core_obj_add_sigid_fn *c_obj_add_sigid = NULL;
     OSSL_FUNC_BIO_write_ex_fn *bio_write_ex = NULL;
+    OSSL_FUNC_BIO_read_ex_fn *bio_read_ex = NULL;
 
     for (; in->function_id != 0; in++) {
         switch (in->function_id) {
@@ -128,6 +140,9 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
         case OSSL_FUNC_BIO_WRITE_EX:
             bio_write_ex = OSSL_FUNC_BIO_write_ex(in);
             break;
+        case OSSL_FUNC_BIO_READ_EX:
+            bio_read_ex = OSSL_FUNC_BIO_read_ex(in);
+            break;
         default:
             break;
         }
@@ -140,6 +155,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     ctx->handle = handle;
     ctx->libctx = (OSSL_LIB_CTX *)c_get_libctx(handle);
     ctx->bio_write_ex = bio_write_ex;
+    ctx->bio_read_ex = bio_read_ex;
 
     /*
      * Register the composite OIDs so the X.509 / TLS layers can map a

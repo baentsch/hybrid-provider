@@ -16,6 +16,7 @@
 #include <openssl/core_names.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
+#include <openssl/x509.h>
 #include <string.h>
 
 /* --- lifecycle --- */
@@ -182,6 +183,86 @@ static const OSSL_PARAM *composite_gen_settable_params(void *vgctx,
     return tbl;
 }
 
+/* --- decoder support: load from a reference, rebuild public components --- */
+
+/* KEYMGMT_LOAD: materialize the key the decoder built and referenced. */
+static void *composite_key_load(const void *reference, size_t reference_sz)
+{
+    COMPOSITE_KEY *key = NULL;
+
+    if (reference_sz == sizeof(key)) {
+        key = *(COMPOSITE_KEY **)reference;
+        *(COMPOSITE_KEY **)reference = NULL;   /* ownership transfers */
+    }
+    return key;
+}
+
+COMPOSITE_KEY *composite_keymgmt_new_by_index(void *provctx, size_t idx)
+{
+    return composite_key_new(provctx, &composite_sig_table[idx]);
+}
+
+void composite_keymgmt_free(COMPOSITE_KEY *key)
+{
+    composite_key_free(key);
+}
+
+/* Rebuild one classical public component from its raw bytes. */
+static EVP_PKEY *load_trad_pub(OSSL_LIB_CTX *libctx,
+                               const COMPOSITE_SIG_INFO *info,
+                               const unsigned char *pub, size_t len)
+{
+    if (strcmp(info->trad_alg, "EC") == 0) {
+        EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(libctx, "EC",
+                                                     "provider=default");
+        EVP_PKEY *k = NULL;
+        OSSL_PARAM p[3];
+
+        p[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
+                                                (char *)info->trad_group, 0);
+        p[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
+                                                 (void *)pub, len);
+        p[2] = OSSL_PARAM_construct_end();
+        if (c != NULL && EVP_PKEY_fromdata_init(c) > 0)
+            EVP_PKEY_fromdata(c, &k, EVP_PKEY_PUBLIC_KEY, p);
+        EVP_PKEY_CTX_free(c);
+        return k;
+    }
+    if (strcmp(info->trad_alg, "ED25519") == 0
+            || strcmp(info->trad_alg, "ED448") == 0)
+        return EVP_PKEY_new_raw_public_key_ex(libctx, info->trad_alg,
+                                              "provider=default", pub, len);
+    /* RSA / RSA-PSS: raw form is i2d_PublicKey (RSAPublicKey) DER. */
+    {
+        const unsigned char *pp = pub;
+
+        return d2i_PublicKey(EVP_PKEY_RSA, NULL, &pp, (long)len);
+    }
+}
+
+int composite_key_load_pub(COMPOSITE_KEY *key,
+                           const unsigned char *pqpub, size_t pqlen,
+                           const unsigned char *tradpub, size_t tradlen)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
+                                                 key->pq_propq);
+    OSSL_PARAM p[2];
+    int ok = 0;
+
+    p[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
+                                             (void *)pqpub, pqlen);
+    p[1] = OSSL_PARAM_construct_end();
+    if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
+            && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_PUBLIC_KEY, p) > 0
+            && (key->trad_key = load_trad_pub(key->libctx, key->info,
+                                              tradpub, tradlen)) != NULL) {
+        key->state = COMPOSITE_HAVE_PUBKEY;
+        ok = 1;
+    }
+    EVP_PKEY_CTX_free(c);
+    return ok;
+}
+
 /*
  * Per-algorithm keymgmt instances — generated from the master list, each binding
  * its NEW/GEN_INIT to the matching info-table row (the hybrid family's pattern).
@@ -198,6 +279,7 @@ static const OSSL_PARAM *composite_gen_settable_params(void *vgctx,
     }                                                                          \
     const OSSL_DISPATCH composite_##cf##_kmgmt_functions[] = {                 \
         { OSSL_FUNC_KEYMGMT_NEW, (void (*)(void))composite_##cf##_new },       \
+        { OSSL_FUNC_KEYMGMT_LOAD, (void (*)(void))composite_key_load },        \
         { OSSL_FUNC_KEYMGMT_FREE, (void (*)(void))composite_key_free },        \
         { OSSL_FUNC_KEYMGMT_HAS, (void (*)(void))composite_key_has },          \
         { OSSL_FUNC_KEYMGMT_GET_PARAMS,                                        \

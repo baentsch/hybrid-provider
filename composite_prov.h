@@ -101,6 +101,7 @@ typedef struct composite_prov_ctx_st {
     const OSSL_CORE_HANDLE *handle;
     OSSL_LIB_CTX *libctx;
     OSSL_FUNC_BIO_write_ex_fn *bio_write_ex;
+    OSSL_FUNC_BIO_read_ex_fn *bio_read_ex;
 } COMPOSITE_PROV_CTX;
 
 /*
@@ -182,10 +183,21 @@ extern const OSSL_DISPATCH composite_sig_functions[];
 extern const OSSL_DISPATCH composite_spki_der_encoder_functions[];
 extern const OSSL_DISPATCH composite_spki_pem_encoder_functions[];
 
+/* SubjectPublicKeyInfo DER decoder (composite_decoder.c). */
+extern const OSSL_DISPATCH composite_spki_der_decoder_functions[];
+
 /* Build the raw-concat composite public key blob: pqPub || tradPub (draft-19
  * order), component sizes fixed per OID. Caller frees *out. */
 int composite_encode_pub_blob(COMPOSITE_KEY *key, unsigned char **out,
                               size_t *outlen);
+
+/* Keymgmt helpers used by the decoder (composite_keymgmt.c). */
+COMPOSITE_KEY *composite_keymgmt_new_by_index(void *provctx, size_t idx);
+void composite_keymgmt_free(COMPOSITE_KEY *key);
+/* Rebuild both public components from their raw split (pqPub then tradPub). */
+int composite_key_load_pub(COMPOSITE_KEY *key,
+                           const unsigned char *pqpub, size_t pqlen,
+                           const unsigned char *tradpub, size_t tradlen);
 
 /* --- Combiner (composite_sig.c) ---
  *

@@ -16,10 +16,65 @@
 #include <openssl/evp.h>
 #include <openssl/provider.h>
 #include <openssl/x509.h>
+#include <openssl/encoder.h>
+#include <openssl/decoder.h>
 #include <openssl/err.h>
 #include "composite_prov.h"
 
 static int tests, passed, failed, skipped;
+
+/* Encode the public key to DER SPKI, decode it back, and verify a signature made
+ * by the original key with the *decoded* key — exercises the encoder, decoder and
+ * public-component reconstruction. */
+static int spki_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
+                             EVP_PKEY *key)
+{
+    const unsigned char msg[] = "composite SPKI encode/decode round-trip";
+    unsigned char *sig = NULL, *der = NULL;
+    size_t siglen = 0, derlen = 0;
+    EVP_MD_CTX *m = EVP_MD_CTX_new();
+    EVP_PKEY *dec = NULL;
+    OSSL_ENCODER_CTX *ec = NULL;
+    OSSL_DECODER_CTX *dc = NULL;
+    const unsigned char *p;
+    int ok = 0;
+
+    if (m == NULL
+            || EVP_DigestSignInit_ex(m, NULL, NULL, ctx, "provider=composite",
+                                     key, NULL) <= 0
+            || EVP_DigestSign(m, NULL, &siglen, msg, sizeof(msg) - 1) <= 0
+            || (sig = OPENSSL_malloc(siglen)) == NULL
+            || EVP_DigestSign(m, sig, &siglen, msg, sizeof(msg) - 1) <= 0)
+        goto end;
+
+    ec = OSSL_ENCODER_CTX_new_for_pkey(key, EVP_PKEY_PUBLIC_KEY, "DER",
+                                       "SubjectPublicKeyInfo",
+                                       "provider=composite");
+    if (ec == NULL || OSSL_ENCODER_to_data(ec, &der, &derlen) <= 0)
+        goto end;
+
+    dc = OSSL_DECODER_CTX_new_for_pkey(&dec, "DER", "SubjectPublicKeyInfo",
+                                       info->name, EVP_PKEY_PUBLIC_KEY, ctx,
+                                       "provider=composite");
+    p = der;
+    if (dc == NULL || OSSL_DECODER_from_data(dc, &p, &derlen) <= 0 || dec == NULL)
+        goto end;
+
+    EVP_MD_CTX_free(m);
+    m = EVP_MD_CTX_new();
+    ok = m != NULL
+        && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=composite",
+                                   dec, NULL) > 0
+        && EVP_DigestVerify(m, sig, siglen, msg, sizeof(msg) - 1) == 1;
+end:
+    OPENSSL_free(sig);
+    OPENSSL_free(der);
+    EVP_MD_CTX_free(m);
+    EVP_PKEY_free(dec);
+    OSSL_ENCODER_CTX_free(ec);
+    OSSL_DECODER_CTX_free(dc);
+    return ok;
+}
 
 /* Self-signed X.509 round-trip: exercises the composite OID registration and the
  * signature's AlgorithmIdentifier getter (one-shot X509_sign, NULL md). */
@@ -105,14 +160,22 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     }
     ERR_clear_error();
 
-    /* Where an OID is assigned, exercise the X.509 AlgorithmIdentifier path. */
-    if (info->oid != NULL && !x509_selfsign_ok(ctx, key)) {
-        printf("FAIL (X509 self-sign/verify)\n");
-        ERR_print_errors_fp(stdout);
-        failed++;
-        goto done;
+    /* Where an OID is assigned, exercise the X.509 + SPKI encode/decode paths. */
+    if (info->oid != NULL) {
+        if (!x509_selfsign_ok(ctx, key)) {
+            printf("FAIL (X509 self-sign/verify)\n");
+            ERR_print_errors_fp(stdout);
+            failed++;
+            goto done;
+        }
+        if (!spki_roundtrip_ok(ctx, info, key)) {
+            printf("FAIL (SPKI encode/decode round-trip)\n");
+            ERR_print_errors_fp(stdout);
+            failed++;
+            goto done;
+        }
     }
-    printf("PASS (sig=%zu%s)\n", siglen, info->oid ? ", x509" : "");
+    printf("PASS (sig=%zu%s)\n", siglen, info->oid ? ", x509, spki" : "");
     passed++;
 done:
     OPENSSL_free(sig);
