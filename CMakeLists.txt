@@ -230,6 +230,18 @@ if(HYBRID_COMPOSITE)
     set_tests_properties(composite_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
+
+    # KAT interop: verify the draft-19 reference test vectors (real cross-impl
+    # check against lamps-wg/draft-composite-sigs, distilled into composite_kat.txt).
+    add_executable(composite_kat_test test/composite_kat_test.c)
+    target_include_directories(composite_kat_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_kat_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_kat_test composite-provider)
+    add_test(NAME composite_kat_test
+        COMMAND composite_kat_test ${CMAKE_SOURCE_DIR}/test/composite_kat.txt)
+    set_tests_properties(composite_kat_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
 endif()
 
 # Separate-process CLI TLS interop for Frodo/BIKE/HQC hybrids: the hybrid

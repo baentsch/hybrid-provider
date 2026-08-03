@@ -146,9 +146,11 @@ typedef struct composite_prov_ctx_st {
       "SHA512", NULL, 1,                                                       \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa87_ecdsa_p384, "mldsa87_ecdsa_p384", "ML-DSA-87", "EC", "P-384",     \
-      /* draft label drops "ECDSA" for this combo (labelsTable.md); signed into M' */ \
-      "1.3.6.1.5.5.7.6.49", "COMPSIG-MLDSA87-P384-SHA512",                    \
-      "SHA512", "SHA512", 1,                                                   \
+      /* trad_md is the curve-native ECDSA hash (P-384 -> SHA-384), NOT the SHA-512
+       * in the name (that is only PH(M)). Confirmed via KATs. Label keeps "ECDSA"
+       * per generate_test_vectors.py (labelsTable.md doc wrongly drops it). */    \
+      "1.3.6.1.5.5.7.6.49", "COMPSIG-MLDSA87-ECDSA-P384-SHA512",              \
+      "SHA512", "SHA384", 1,                                                   \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa87_ed448, "mldsa87_ed448", "ML-DSA-87", "ED448", NULL,               \
       "1.3.6.1.5.5.7.6.51", "COMPSIG-MLDSA87-Ed448-SHAKE256",                \
