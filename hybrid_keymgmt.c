@@ -745,13 +745,28 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
     if (!hybrid_ensure_sizes(key))
         return 0;
 
+    /* Report the PQ component's key size; a hybrid's "bits" is otherwise
+     * ill-defined and the PQ half dominates. */
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_BITS);
-    if (p != NULL && !OSSL_PARAM_set_int(p, 256))
-        return 0;
+    if (p != NULL) {
+        int bits = key->key2 != NULL ? EVP_PKEY_get_bits(key->key2) : 0;
 
+        if (!OSSL_PARAM_set_int(p, bits))
+            return 0;
+    }
+
+    /* Hybrid security is bounded by the weaker component — derive it, don't
+     * hardcode (it differs per algorithm: e.g. ML-DSA-44/65/87 -> ~128/192/256,
+     * P-256/384/521 -> 128/192/256). */
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_SECURITY_BITS);
-    if (p != NULL && !OSSL_PARAM_set_int(p, 128))
-        return 0;
+    if (p != NULL) {
+        int sc = key->key1 != NULL ? EVP_PKEY_get_security_bits(key->key1) : 0;
+        int sp = key->key2 != NULL ? EVP_PKEY_get_security_bits(key->key2) : 0;
+        int sec = sc == 0 ? sp : (sp == 0 ? sc : (sc < sp ? sc : sp));
+
+        if (!OSSL_PARAM_set_int(p, sec))
+            return 0;
+    }
 
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_MAX_SIZE);
     if (p != NULL) {
