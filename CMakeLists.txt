@@ -45,10 +45,13 @@ target_link_libraries(hybrid-provider PRIVATE OpenSSL::Crypto)
 if(HYBRID_KEM_ENCODERS)
     target_compile_definitions(hybrid-provider PRIVATE HYBRID_KEM_ENCODERS)
 endif()
+# No SUFFIX override: an OpenSSL provider is a CMake MODULE library, whose
+# default suffix is already the right one per platform (.so on Linux/macOS,
+# .dll on Windows) — matching what OpenSSL's loader looks for. PREFIX "" just
+# drops the "lib" so the module is hybrid.so, not libhybrid.so.
 set_target_properties(hybrid-provider PROPERTIES
     PREFIX ""
     OUTPUT_NAME "hybrid"
-    SUFFIX ".so"
 )
 
 # Test executable
@@ -202,7 +205,8 @@ if(HYBRID_COMPOSITE)
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 
-    # Composite provider module (composite.so) — keygen + sign/verify.
+    # Composite provider module — keygen + sign/verify. Like hybrid above, no
+    # SUFFIX override: the MODULE default suffix is already correct per platform.
     add_library(composite-provider MODULE
         composite_prov.c
         composite_keymgmt.c
@@ -215,7 +219,6 @@ if(HYBRID_COMPOSITE)
     set_target_properties(composite-provider PROPERTIES
         PREFIX ""
         OUTPUT_NAME "composite"
-        SUFFIX ".so"
     )
 
     # Provider-level test: drive composite through EVP by name.
