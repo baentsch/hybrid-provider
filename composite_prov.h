@@ -146,7 +146,8 @@ typedef struct composite_prov_ctx_st {
       "SHA512", NULL, 1,                                                       \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa87_ecdsa_p384, "mldsa87_ecdsa_p384", "ML-DSA-87", "EC", "P-384",     \
-      "1.3.6.1.5.5.7.6.49", "COMPSIG-MLDSA87-ECDSA-P384-SHA512",             \
+      /* draft label drops "ECDSA" for this combo (labelsTable.md); signed into M' */ \
+      "1.3.6.1.5.5.7.6.49", "COMPSIG-MLDSA87-P384-SHA512",                    \
       "SHA512", "SHA512", 1,                                                   \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa87_ed448, "mldsa87_ed448", "ML-DSA-87", "ED448", NULL,               \
