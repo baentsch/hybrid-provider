@@ -11,6 +11,7 @@
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 #include <openssl/crypto.h>
+#include <openssl/err.h>
 
 static OSSL_FUNC_provider_teardown_fn composite_teardown;
 static OSSL_FUNC_provider_gettable_params_fn composite_prov_gettable_params;
@@ -65,6 +66,17 @@ static const OSSL_ALGORITHM composite_signatures[] = {
 };
 #undef COMPOSITE_SIG_REG
 
+#define COMPOSITE_ENC_REG(cf, nm, ...) \
+    { nm, "provider=composite,output=der,structure=SubjectPublicKeyInfo",     \
+      composite_spki_der_encoder_functions, "composite SPKI DER encoder" },   \
+    { nm, "provider=composite,output=pem,structure=SubjectPublicKeyInfo",     \
+      composite_spki_pem_encoder_functions, "composite SPKI PEM encoder" },
+static const OSSL_ALGORITHM composite_encoders[] = {
+    COMPOSITE_SIG_LIST(COMPOSITE_ENC_REG)
+    { NULL, NULL, NULL, NULL }
+};
+#undef COMPOSITE_ENC_REG
+
 static const OSSL_ALGORITHM *
 composite_query(void *provctx, int operation_id, int *no_cache)
 {
@@ -74,6 +86,8 @@ composite_query(void *provctx, int operation_id, int *no_cache)
         return composite_keymgmts;
     case OSSL_OP_SIGNATURE:
         return composite_signatures;
+    case OSSL_OP_ENCODER:
+        return composite_encoders;
     default:
         return NULL;
     }
@@ -96,10 +110,27 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 {
     COMPOSITE_PROV_CTX *ctx;
     OSSL_FUNC_core_get_libctx_fn *c_get_libctx = NULL;
+    OSSL_FUNC_core_obj_create_fn *c_obj_create = NULL;
+    OSSL_FUNC_core_obj_add_sigid_fn *c_obj_add_sigid = NULL;
+    OSSL_FUNC_BIO_write_ex_fn *bio_write_ex = NULL;
 
     for (; in->function_id != 0; in++) {
-        if (in->function_id == OSSL_FUNC_CORE_GET_LIBCTX)
+        switch (in->function_id) {
+        case OSSL_FUNC_CORE_GET_LIBCTX:
             c_get_libctx = OSSL_FUNC_core_get_libctx(in);
+            break;
+        case OSSL_FUNC_CORE_OBJ_CREATE:
+            c_obj_create = OSSL_FUNC_core_obj_create(in);
+            break;
+        case OSSL_FUNC_CORE_OBJ_ADD_SIGID:
+            c_obj_add_sigid = OSSL_FUNC_core_obj_add_sigid(in);
+            break;
+        case OSSL_FUNC_BIO_WRITE_EX:
+            bio_write_ex = OSSL_FUNC_BIO_write_ex(in);
+            break;
+        default:
+            break;
+        }
     }
     if (c_get_libctx == NULL)
         return 0;
@@ -108,6 +139,29 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
         return 0;
     ctx->handle = handle;
     ctx->libctx = (OSSL_LIB_CTX *)c_get_libctx(handle);
+    ctx->bio_write_ex = bio_write_ex;
+
+    /*
+     * Register the composite OIDs so the X.509 / TLS layers can map a
+     * signatureAlgorithm OID back to the algorithm (needed to label and verify
+     * composite-signed certificates). Rows with a NULL oid (experimental tier)
+     * are skipped. Harmless if already registered; marks keep any "already
+     * exists" notices off the error stack.
+     */
+    if (c_obj_create != NULL && c_obj_add_sigid != NULL) {
+        size_t i;
+
+        ERR_set_mark();
+        for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {
+            const COMPOSITE_SIG_INFO *info = &composite_sig_table[i];
+
+            if (info->oid == NULL)
+                continue;
+            (void)c_obj_create(handle, info->oid, info->name, info->name);
+            (void)c_obj_add_sigid(handle, info->name, "", info->name);
+        }
+        ERR_pop_to_mark();
+    }
 
     *provctx = ctx;
     *out = composite_dispatch_table;

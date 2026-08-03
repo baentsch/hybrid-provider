@@ -27,6 +27,7 @@
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
 #include <openssl/rsa.h>
+#include <openssl/x509.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -304,6 +305,53 @@ static int composite_sig_digest_verify(void *vctx, const unsigned char *sig,
                             k->pq_propq, k->trad_propq, tbs, tbslen, sig, siglen);
 }
 
+/* Provide the X.509 AlgorithmIdentifier (DER SEQUENCE { composite OID }, absent
+ * parameters) so X509_sign()/verify and TLS CertificateVerify can label the
+ * signature — mirrors the hybrid family. */
+static int composite_sig_get_ctx_params(void *vctx, OSSL_PARAM params[])
+{
+    COMPOSITE_SIGCTX *c = vctx;
+    OSSL_PARAM *p = OSSL_PARAM_locate(params, OSSL_SIGNATURE_PARAM_ALGORITHM_ID);
+
+    if (p != NULL) {
+        const COMPOSITE_SIG_INFO *info;
+        X509_ALGOR *alg = NULL;
+        ASN1_OBJECT *oid = NULL;
+        unsigned char *der = NULL;
+        int derlen, ok = 0;
+
+        if (c == NULL || c->key == NULL)
+            return 0;
+        info = c->key->info;
+        if (info->oid == NULL || (oid = OBJ_txt2obj(info->oid, 1)) == NULL
+                || (alg = X509_ALGOR_new()) == NULL
+                || !X509_ALGOR_set0(alg, oid, V_ASN1_UNDEF, NULL))
+            goto end;
+        oid = NULL;             /* ownership transferred to alg */
+        if ((derlen = i2d_X509_ALGOR(alg, &der)) <= 0
+                || !OSSL_PARAM_set_octet_string(p, der, (size_t)derlen))
+            goto end;
+        ok = 1;
+    end:
+        OPENSSL_free(der);
+        ASN1_OBJECT_free(oid);
+        X509_ALGOR_free(alg);
+        if (!ok)
+            return 0;
+    }
+    return 1;
+}
+
+static const OSSL_PARAM *composite_sig_gettable_ctx_params(void *vctx,
+                                                           void *provctx)
+{
+    static const OSSL_PARAM params[] = {
+        OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_ALGORITHM_ID, NULL, 0),
+        OSSL_PARAM_END
+    };
+    return params;
+}
+
 const OSSL_DISPATCH composite_sig_functions[] = {
     { OSSL_FUNC_SIGNATURE_NEWCTX, (void (*)(void))composite_sig_newctx },
     { OSSL_FUNC_SIGNATURE_FREECTX, (void (*)(void))composite_sig_freectx },
@@ -316,5 +364,9 @@ const OSSL_DISPATCH composite_sig_functions[] = {
       (void (*)(void))composite_sig_verify_init },
     { OSSL_FUNC_SIGNATURE_DIGEST_VERIFY,
       (void (*)(void))composite_sig_digest_verify },
+    { OSSL_FUNC_SIGNATURE_GET_CTX_PARAMS,
+      (void (*)(void))composite_sig_get_ctx_params },
+    { OSSL_FUNC_SIGNATURE_GETTABLE_CTX_PARAMS,
+      (void (*)(void))composite_sig_gettable_ctx_params },
     { 0, NULL }
 };

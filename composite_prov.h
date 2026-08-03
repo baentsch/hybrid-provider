@@ -38,6 +38,7 @@
 
 #include <openssl/types.h>
 #include <openssl/core.h>
+#include <openssl/core_dispatch.h>
 #include <stddef.h>
 
 /* Whole-scheme domain separator (fixed ASCII, draft-19). Shared by every combo,
@@ -94,10 +95,12 @@ typedef struct composite_key_st {
     const char *trad_propq;     /* source for the classical component          */
 } COMPOSITE_KEY;
 
-/* Provider context — just the libctx the components are fetched from. */
+/* Provider context — the libctx the components are fetched from, plus the core
+ * BIO up-call the encoders write through. */
 typedef struct composite_prov_ctx_st {
     const OSSL_CORE_HANDLE *handle;
     OSSL_LIB_CTX *libctx;
+    OSSL_FUNC_BIO_write_ex_fn *bio_write_ex;
 } COMPOSITE_PROV_CTX;
 
 /*
@@ -109,12 +112,12 @@ typedef struct composite_prov_ctx_st {
  *   pq_priv_seed, tier)
  *
  * Labels/prehash/trad_md for the standardized rows are the draft-19 normative
- * constants (§ Table 2 for the RSA-PSS params); OIDs are the draft-19 §6 values
- * but left NULL until re-verified verbatim (they are only needed by the
- * encoders/AlgorithmIdentifier, not by keygen/sign/verify). This is a
- * representative starter set — the full standardized matrix (ML-DSA x {RSA-PSS,
- * RSA-PKCS1.5, ECDSA-P256/P384/P521/brainpool, Ed25519, Ed448}) is filled
- * alongside the OIDs.
+ * constants (§ Table 2 for the RSA-PSS params); OIDs are the draft-19 §6/§7
+ * values (base arc 1.3.6.1.5.5.7.6, PKIX alg), confirmed against the authoritative
+ * I-D text. This is a representative starter set — the full standardized matrix
+ * (ML-DSA x {RSA-PSS, RSA-PKCS1.5, ECDSA-P256/P384/P521/brainpool, Ed25519,
+ * Ed448}) is filled the same way. The experimental row keeps oid = NULL pending
+ * the chosen experimental arc.
  *
  * NB the domain-separator content in `label` (ASCII string vs the OID's DER) and
  * the ML-DSA context value MUST be confirmed against draft-19 before claiming
@@ -123,19 +126,24 @@ typedef struct composite_prov_ctx_st {
 #define COMPOSITE_SIG_LIST(X)                                                  \
   /* --- standardized (LAMPS Composite ML-DSA) --- */                         \
   X(mldsa44_ecdsa_p256, "mldsa44_ecdsa_p256", "ML-DSA-44", "EC", "P-256",     \
-      NULL, "COMPSIG-MLDSA44-ECDSA-P256-SHA256", "SHA256", "SHA256", 1,       \
+      "1.3.6.1.5.5.7.6.40", "COMPSIG-MLDSA44-ECDSA-P256-SHA256",             \
+      "SHA256", "SHA256", 1,                                                   \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa65_rsa3072_pss, "mldsa65_rsa3072_pss", "ML-DSA-65", "RSA-PSS", NULL, \
-      NULL, "COMPSIG-MLDSA65-RSA3072-PSS-SHA512", "SHA512", "SHA256", 1,      \
+      "1.3.6.1.5.5.7.6.41", "COMPSIG-MLDSA65-RSA3072-PSS-SHA512",            \
+      "SHA512", "SHA256", 1,                                                   \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa65_ed25519, "mldsa65_ed25519", "ML-DSA-65", "ED25519", NULL,         \
-      NULL, "COMPSIG-MLDSA65-Ed25519-SHA512", "SHA512", NULL, 1,              \
+      "1.3.6.1.5.5.7.6.48", "COMPSIG-MLDSA65-Ed25519-SHA512",                \
+      "SHA512", NULL, 1,                                                       \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa87_ecdsa_p384, "mldsa87_ecdsa_p384", "ML-DSA-87", "EC", "P-384",     \
-      NULL, "COMPSIG-MLDSA87-ECDSA-P384-SHA512", "SHA512", "SHA512", 1,       \
+      "1.3.6.1.5.5.7.6.49", "COMPSIG-MLDSA87-ECDSA-P384-SHA512",             \
+      "SHA512", "SHA512", 1,                                                   \
       COMPOSITE_TIER_STANDARD)                                                 \
   X(mldsa87_ed448, "mldsa87_ed448", "ML-DSA-87", "ED448", NULL,               \
-      NULL, "COMPSIG-MLDSA87-Ed448-SHAKE256", "SHAKE256", NULL, 1,            \
+      "1.3.6.1.5.5.7.6.51", "COMPSIG-MLDSA87-Ed448-SHAKE256",                \
+      "SHAKE256", NULL, 1,                                                     \
       COMPOSITE_TIER_STANDARD)                                                 \
   /* --- experimental (non-ML-DSA PQ; DISJOINT arc; non-normative label) ---  \
    * Illustrative single row — proves the family is generic over the PQ        \
@@ -169,6 +177,15 @@ COMPOSITE_SIG_LIST(COMPOSITE_KMGMT_EXTERN)
 #undef COMPOSITE_KMGMT_EXTERN
 
 extern const OSSL_DISPATCH composite_sig_functions[];
+
+/* SubjectPublicKeyInfo encoders (composite_encoder.c). */
+extern const OSSL_DISPATCH composite_spki_der_encoder_functions[];
+extern const OSSL_DISPATCH composite_spki_pem_encoder_functions[];
+
+/* Build the raw-concat composite public key blob: pqPub || tradPub (draft-19
+ * order), component sizes fixed per OID. Caller frees *out. */
+int composite_encode_pub_blob(COMPOSITE_KEY *key, unsigned char **out,
+                              size_t *outlen);
 
 /* --- Combiner (composite_sig.c) ---
  *

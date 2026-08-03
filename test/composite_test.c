@@ -15,10 +15,36 @@
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/provider.h>
+#include <openssl/x509.h>
 #include <openssl/err.h>
 #include "composite_prov.h"
 
 static int tests, passed, failed, skipped;
+
+/* Self-signed X.509 round-trip: exercises the composite OID registration and the
+ * signature's AlgorithmIdentifier getter (one-shot X509_sign, NULL md). */
+static int x509_selfsign_ok(OSSL_LIB_CTX *ctx, EVP_PKEY *key)
+{
+    X509 *cert = X509_new_ex(ctx, NULL);
+    X509_NAME *nm;
+    int ok = 0;
+
+    if (cert != NULL
+            && X509_set_version(cert, X509_VERSION_3)
+            && ASN1_INTEGER_set(X509_get_serialNumber(cert), 1)
+            && X509_gmtime_adj(X509_getm_notBefore(cert), 0) != NULL
+            && X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) != NULL
+            && X509_set_pubkey(cert, key)
+            && (nm = X509_get_subject_name(cert)) != NULL
+            && X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
+                                          (unsigned char *)"composite", -1, -1, 0)
+            && X509_set_issuer_name(cert, nm)
+            && X509_sign(cert, key, NULL) != 0
+            && X509_verify(cert, key) == 1)
+        ok = 1;
+    X509_free(cert);
+    return ok;
+}
 
 static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
 {
@@ -78,7 +104,15 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
         goto done;
     }
     ERR_clear_error();
-    printf("PASS (sig=%zu)\n", siglen);
+
+    /* Where an OID is assigned, exercise the X.509 AlgorithmIdentifier path. */
+    if (info->oid != NULL && !x509_selfsign_ok(ctx, key)) {
+        printf("FAIL (X509 self-sign/verify)\n");
+        ERR_print_errors_fp(stdout);
+        failed++;
+        goto done;
+    }
+    printf("PASS (sig=%zu%s)\n", siglen, info->oid ? ", x509" : "");
     passed++;
 done:
     OPENSSL_free(sig);

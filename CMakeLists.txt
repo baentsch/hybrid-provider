@@ -207,6 +207,7 @@ if(HYBRID_COMPOSITE)
         composite_prov.c
         composite_keymgmt.c
         composite_sig.c
+        composite_encoder.c
     )
     target_include_directories(composite-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
     target_link_libraries(composite-provider PRIVATE OpenSSL::Crypto)
