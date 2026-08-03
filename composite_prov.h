@@ -49,6 +49,9 @@
  * (draft-19 "RSA3072"). Shared by keymgmt keygen and the tests. */
 #define COMPOSITE_RSA_TRAD_BITS 3072
 
+/* ML-DSA private key is serialized as its 32-byte seed (draft-19, all levels). */
+#define COMPOSITE_MLDSA_SEED_BYTES 32
+
 /* Tier — governs OID arc + wire-format contract; must never be blurred. */
 enum {
     COMPOSITE_TIER_STANDARD = 0,  /* ML-DSA only; IANA/LAMPS OID; normative */
@@ -190,6 +193,11 @@ extern const OSSL_DISPATCH composite_spki_pem_encoder_functions[];
 /* SubjectPublicKeyInfo DER decoder (composite_decoder.c). */
 extern const OSSL_DISPATCH composite_spki_der_decoder_functions[];
 
+/* PrivateKeyInfo (PKCS#8) encoders + decoder. */
+extern const OSSL_DISPATCH composite_pkcs8_der_encoder_functions[];
+extern const OSSL_DISPATCH composite_pkcs8_pem_encoder_functions[];
+extern const OSSL_DISPATCH composite_pkcs8_der_decoder_functions[];
+
 /* Build the raw-concat composite public key blob: pqPub || tradPub (draft-19
  * order), component sizes fixed per OID. Caller frees *out. */
 int composite_encode_pub_blob(COMPOSITE_KEY *key, unsigned char **out,
@@ -202,6 +210,11 @@ void composite_keymgmt_free(COMPOSITE_KEY *key);
 int composite_key_load_pub(COMPOSITE_KEY *key,
                            const unsigned char *pqpub, size_t pqlen,
                            const unsigned char *tradpub, size_t tradlen);
+/* Rebuild both private components from their raw split (pqPriv then tradPriv);
+ * pqPriv is the ML-DSA seed for the standardized combos. */
+int composite_key_load_prv(COMPOSITE_KEY *key,
+                           const unsigned char *pqpriv, size_t pqlen,
+                           const unsigned char *tradpriv, size_t tradlen);
 
 /* --- Combiner (composite_sig.c) ---
  *

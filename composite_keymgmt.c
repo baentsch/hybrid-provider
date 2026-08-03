@@ -278,6 +278,51 @@ int composite_key_load_pub(COMPOSITE_KEY *key,
     return ok;
 }
 
+/* Rebuild one classical private component: raw for Ed, DER (i2d_PrivateKey) for
+ * EC/RSA — symmetric with the encoder's component_priv(). */
+static EVP_PKEY *load_trad_priv(OSSL_LIB_CTX *libctx,
+                                const COMPOSITE_SIG_INFO *info,
+                                const unsigned char *priv, size_t len)
+{
+    if (strcmp(info->trad_alg, "ED25519") == 0
+            || strcmp(info->trad_alg, "ED448") == 0)
+        return EVP_PKEY_new_raw_private_key_ex(libctx, info->trad_alg,
+                                               "provider=default", priv, len);
+    {
+        const unsigned char *pp = priv;
+
+        return d2i_AutoPrivateKey_ex(NULL, &pp, (long)len, libctx,
+                                     "provider=default");
+    }
+}
+
+int composite_key_load_prv(COMPOSITE_KEY *key,
+                           const unsigned char *pqpriv, size_t pqlen,
+                           const unsigned char *tradpriv, size_t tradlen)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
+                                                 key->pq_propq);
+    /* Standardized combos serialize the ML-DSA private key as its seed; any
+     * other PQ component uses its raw private octet. */
+    const char *pqparam = key->info->pq_priv_seed
+                              ? OSSL_PKEY_PARAM_ML_DSA_SEED
+                              : OSSL_PKEY_PARAM_PRIV_KEY;
+    OSSL_PARAM p[2];
+    int ok = 0;
+
+    p[0] = OSSL_PARAM_construct_octet_string(pqparam, (void *)pqpriv, pqlen);
+    p[1] = OSSL_PARAM_construct_end();
+    if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
+            && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_KEYPAIR, p) > 0
+            && (key->trad_key = load_trad_priv(key->libctx, key->info,
+                                               tradpriv, tradlen)) != NULL) {
+        key->state = COMPOSITE_HAVE_PRVKEY;
+        ok = 1;
+    }
+    EVP_PKEY_CTX_free(c);
+    return ok;
+}
+
 /*
  * Per-algorithm keymgmt instances — generated from the master list, each binding
  * its NEW/GEN_INIT to the matching info-table row (the hybrid family's pattern).

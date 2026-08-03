@@ -70,7 +70,11 @@ static const OSSL_ALGORITHM composite_signatures[] = {
     { nm, "provider=composite,output=der,structure=SubjectPublicKeyInfo",     \
       composite_spki_der_encoder_functions, "composite SPKI DER encoder" },   \
     { nm, "provider=composite,output=pem,structure=SubjectPublicKeyInfo",     \
-      composite_spki_pem_encoder_functions, "composite SPKI PEM encoder" },
+      composite_spki_pem_encoder_functions, "composite SPKI PEM encoder" },   \
+    { nm, "provider=composite,output=der,structure=PrivateKeyInfo",           \
+      composite_pkcs8_der_encoder_functions, "composite PKCS8 DER encoder" }, \
+    { nm, "provider=composite,output=pem,structure=PrivateKeyInfo",           \
+      composite_pkcs8_pem_encoder_functions, "composite PKCS8 PEM encoder" },
 static const OSSL_ALGORITHM composite_encoders[] = {
     COMPOSITE_SIG_LIST(COMPOSITE_ENC_REG)
     { NULL, NULL, NULL, NULL }
@@ -79,7 +83,9 @@ static const OSSL_ALGORITHM composite_encoders[] = {
 
 #define COMPOSITE_DEC_REG(cf, nm, ...) \
     { nm, "provider=composite,input=der,structure=SubjectPublicKeyInfo",      \
-      composite_spki_der_decoder_functions, "composite SPKI DER decoder" },
+      composite_spki_der_decoder_functions, "composite SPKI DER decoder" },   \
+    { nm, "provider=composite,input=der,structure=PrivateKeyInfo",            \
+      composite_pkcs8_der_decoder_functions, "composite PKCS8 DER decoder" },
 static const OSSL_ALGORITHM composite_decoders[] = {
     COMPOSITE_SIG_LIST(COMPOSITE_DEC_REG)
     { NULL, NULL, NULL, NULL }

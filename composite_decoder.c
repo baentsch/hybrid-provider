@@ -189,3 +189,91 @@ const OSSL_DISPATCH composite_spki_der_decoder_functions[] = {
     { OSSL_FUNC_DECODER_DECODE, (void (*)(void))composite_decode },
     { 0, NULL }
 };
+
+/* --- PKCS#8 (PrivateKeyInfo) decoder --- */
+
+static int composite_dec_does_selection_priv(void *provctx, int selection)
+{
+    return selection == 0
+        || (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0;
+}
+
+/* Fixed PQ private length: the ML-DSA seed (standardized) or, for an
+ * experimental raw-priv combo, the component's raw private size. */
+static size_t pq_priv_len(COMPOSITE_KEY *key)
+{
+    EVP_PKEY_CTX *c;
+    EVP_PKEY *t = NULL;
+    size_t n = 0;
+
+    if (key->info->pq_priv_seed)
+        return COMPOSITE_MLDSA_SEED_BYTES;
+    c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
+                                   key->pq_propq);
+    if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &t) > 0)
+        EVP_PKEY_get_octet_string_param(t, OSSL_PKEY_PARAM_PRIV_KEY, NULL, 0, &n);
+    EVP_PKEY_free(t);
+    EVP_PKEY_CTX_free(c);
+    return n;
+}
+
+static int composite_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
+                               OSSL_CALLBACK *data_cb, void *data_cbarg,
+                               OSSL_PASSPHRASE_CALLBACK *pw_cb, void *pw_cbarg)
+{
+    COMPOSITE_DEC_CTX *ctx = vctx;
+    unsigned char *der = NULL;
+    const unsigned char *p, *priv = NULL;
+    size_t derlen = 0, pqn;
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    const ASN1_OBJECT *alg_oid = NULL;
+    int privlen = 0, idx, ret = 1;
+    char oidbuf[COMPOSITE_OID_TXT_MAX];
+    COMPOSITE_KEY *key = NULL;
+
+    if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
+        goto end;
+    p = der;
+    if ((p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, (long)derlen)) == NULL) {
+        ERR_clear_error();
+        goto end;
+    }
+    /* privateKey OCTET STRING content = the raw composite blob (single-wrap). */
+    if (!PKCS8_pkey_get0(&alg_oid, &priv, &privlen, NULL, p8)
+            || OBJ_obj2txt(oidbuf, sizeof(oidbuf), alg_oid, 1) <= 0)
+        goto end;
+    if ((idx = index_for_oid(oidbuf)) < 0)
+        goto end;
+
+    key = composite_keymgmt_new_by_index(ctx->provctx, (size_t)idx);
+    if (key == NULL) {
+        ret = 0;
+        goto end;
+    }
+    pqn = pq_priv_len(key);
+    if (pqn == 0 || pqn >= (size_t)privlen) {
+        ret = 0;
+        goto end;
+    }
+    if (!composite_key_load_prv(key, priv, pqn, priv + pqn,
+                                (size_t)privlen - pqn)) {
+        ret = 0;
+        goto end;
+    }
+    ret = handback(&key, idx, data_cb, data_cbarg);
+end:
+    if (key != NULL)
+        composite_keymgmt_free(key);
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    OPENSSL_free(der);
+    return ret;
+}
+
+const OSSL_DISPATCH composite_pkcs8_der_decoder_functions[] = {
+    { OSSL_FUNC_DECODER_NEWCTX, (void (*)(void))composite_dec_newctx },
+    { OSSL_FUNC_DECODER_FREECTX, (void (*)(void))composite_dec_freectx },
+    { OSSL_FUNC_DECODER_DOES_SELECTION,
+      (void (*)(void))composite_dec_does_selection_priv },
+    { OSSL_FUNC_DECODER_DECODE, (void (*)(void))composite_decode_p8 },
+    { 0, NULL }
+};

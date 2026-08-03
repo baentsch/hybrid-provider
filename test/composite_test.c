@@ -103,6 +103,57 @@ static int x509_selfsign_ok(OSSL_LIB_CTX *ctx, EVP_PKEY *key)
     return ok;
 }
 
+/* Encode the PRIVATE key to DER PKCS#8, decode it back, and sign with the decoded
+ * key + verify with the original — exercises the PKCS#8 encoder/decoder and the
+ * private-component (ML-DSA seed) reconstruction. */
+static int pkcs8_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
+                              EVP_PKEY *key)
+{
+    const unsigned char msg[] = "composite PKCS8 encode/decode round-trip";
+    unsigned char *der = NULL, *sig = NULL;
+    size_t derlen = 0, siglen = 0;
+    EVP_PKEY *dec = NULL;
+    OSSL_ENCODER_CTX *ec = NULL;
+    OSSL_DECODER_CTX *dc = NULL;
+    EVP_MD_CTX *m = NULL;
+    const unsigned char *p;
+    int ok = 0;
+
+    ec = OSSL_ENCODER_CTX_new_for_pkey(key, EVP_PKEY_KEYPAIR, "DER",
+                                       "PrivateKeyInfo", "provider=composite");
+    if (ec == NULL || OSSL_ENCODER_to_data(ec, &der, &derlen) <= 0)
+        goto end;
+    dc = OSSL_DECODER_CTX_new_for_pkey(&dec, "DER", "PrivateKeyInfo", info->name,
+                                       EVP_PKEY_KEYPAIR, ctx, "provider=composite");
+    p = der;
+    if (dc == NULL || OSSL_DECODER_from_data(dc, &p, &derlen) <= 0 || dec == NULL)
+        goto end;
+
+    /* Sign with the decoded private key, verify with the original. */
+    m = EVP_MD_CTX_new();
+    if (m == NULL
+            || EVP_DigestSignInit_ex(m, NULL, NULL, ctx, "provider=composite",
+                                     dec, NULL) <= 0
+            || EVP_DigestSign(m, NULL, &siglen, msg, sizeof(msg) - 1) <= 0
+            || (sig = OPENSSL_malloc(siglen)) == NULL
+            || EVP_DigestSign(m, sig, &siglen, msg, sizeof(msg) - 1) <= 0)
+        goto end;
+    EVP_MD_CTX_free(m);
+    m = EVP_MD_CTX_new();
+    ok = m != NULL
+        && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=composite",
+                                   key, NULL) > 0
+        && EVP_DigestVerify(m, sig, siglen, msg, sizeof(msg) - 1) == 1;
+end:
+    OPENSSL_free(der);
+    OPENSSL_free(sig);
+    EVP_MD_CTX_free(m);
+    EVP_PKEY_free(dec);
+    OSSL_ENCODER_CTX_free(ec);
+    OSSL_DECODER_CTX_free(dc);
+    return ok;
+}
+
 static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
 {
     const unsigned char msg[] = "composite provider EVP round-trip";
@@ -176,8 +227,15 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
             failed++;
             goto done;
         }
+        if (!pkcs8_roundtrip_ok(ctx, info, key)) {
+            printf("FAIL (PKCS8 encode/decode round-trip)\n");
+            ERR_print_errors_fp(stdout);
+            failed++;
+            goto done;
+        }
     }
-    printf("PASS (sig=%zu%s)\n", siglen, info->oid ? ", x509, spki" : "");
+    printf("PASS (sig=%zu%s)\n", siglen,
+           info->oid ? ", x509, spki, pkcs8" : "");
     passed++;
 done:
     OPENSSL_free(sig);
