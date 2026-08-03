@@ -154,6 +154,31 @@ end:
     return ok;
 }
 
+/* Export the key to OSSL_PARAMs and re-import it, then compare (exercises the
+ * keymgmt import/export + match; OID-independent, so runs for every combo). */
+static int params_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
+                               EVP_PKEY *key)
+{
+    OSSL_PARAM *params = NULL;
+    EVP_PKEY *copy = NULL;
+    EVP_PKEY_CTX *fc = NULL;
+    int ok = 0;
+
+    if (EVP_PKEY_todata(key, EVP_PKEY_KEYPAIR, &params) <= 0 || params == NULL)
+        goto end;
+    fc = EVP_PKEY_CTX_new_from_name(ctx, info->name, "provider=composite");
+    if (fc == NULL || EVP_PKEY_fromdata_init(fc) <= 0
+            || EVP_PKEY_fromdata(fc, &copy, EVP_PKEY_KEYPAIR, params) <= 0
+            || copy == NULL)
+        goto end;
+    ok = EVP_PKEY_eq(key, copy) == 1;
+end:
+    OSSL_PARAM_free(params);
+    EVP_PKEY_free(copy);
+    EVP_PKEY_CTX_free(fc);
+    return ok;
+}
+
 static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
 {
     const unsigned char msg[] = "composite provider EVP round-trip";
@@ -213,6 +238,14 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     }
     ERR_clear_error();
 
+    /* Raw-param export/import round-trip (OID-independent). */
+    if (!params_roundtrip_ok(ctx, info, key)) {
+        printf("FAIL (todata/fromdata round-trip)\n");
+        ERR_print_errors_fp(stdout);
+        failed++;
+        goto done;
+    }
+
     /* Where an OID is assigned, exercise the X.509 + SPKI encode/decode paths. */
     if (info->oid != NULL) {
         if (!x509_selfsign_ok(ctx, key)) {
@@ -234,7 +267,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
             goto done;
         }
     }
-    printf("PASS (sig=%zu%s)\n", siglen,
+    printf("PASS (sig=%zu, params%s)\n", siglen,
            info->oid ? ", x509, spki, pkcs8" : "");
     passed++;
 done:

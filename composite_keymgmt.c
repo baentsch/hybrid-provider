@@ -16,6 +16,7 @@
 #include <openssl/core_names.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
+#include <openssl/param_build.h>
 #include <openssl/x509.h>
 #include <string.h>
 
@@ -323,6 +324,156 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
     return ok;
 }
 
+/* --- match + import/export (todata/fromdata, cross-provider param transfer) --- */
+
+static int composite_key_match(const void *va, const void *vb, int selection)
+{
+    const COMPOSITE_KEY *a = va, *b = vb;
+
+    if (a->info != b->info)
+        return 0;
+    if ((selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
+        return 1;
+    if ((a->pq_key == NULL) != (b->pq_key == NULL))
+        return 0;
+    if (a->pq_key == NULL)
+        return 1;
+    return EVP_PKEY_eq(a->pq_key, b->pq_key) == 1
+        && EVP_PKEY_eq(a->trad_key, b->trad_key) == 1;
+}
+
+/* Fixed PQ public / private split lengths (component sizes are fixed per OID). */
+static size_t discover_pq_pub_len(COMPOSITE_KEY *key)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
+                                                 key->pq_propq);
+    EVP_PKEY *t = NULL;
+    size_t n = 0;
+
+    if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &t) > 0)
+        EVP_PKEY_get_octet_string_param(t, OSSL_PKEY_PARAM_PUB_KEY, NULL, 0, &n);
+    EVP_PKEY_free(t);
+    EVP_PKEY_CTX_free(c);
+    return n;
+}
+
+static size_t discover_pq_priv_len(COMPOSITE_KEY *key)
+{
+    EVP_PKEY_CTX *c;
+    EVP_PKEY *t = NULL;
+    size_t n = 0;
+
+    if (key->info->pq_priv_seed)
+        return COMPOSITE_MLDSA_SEED_BYTES;
+    c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg, key->pq_propq);
+    if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &t) > 0)
+        EVP_PKEY_get_octet_string_param(t, OSSL_PKEY_PARAM_PRIV_KEY, NULL, 0, &n);
+    EVP_PKEY_free(t);
+    EVP_PKEY_CTX_free(c);
+    return n;
+}
+
+static int import_pub_blob(COMPOSITE_KEY *key, const unsigned char *blob,
+                           size_t len)
+{
+    size_t pqn = discover_pq_pub_len(key);
+
+    return pqn != 0 && pqn < len
+        && composite_key_load_pub(key, blob, pqn, blob + pqn, len - pqn);
+}
+
+static int import_prv_blob(COMPOSITE_KEY *key, const unsigned char *blob,
+                           size_t len)
+{
+    size_t pqn = discover_pq_priv_len(key);
+
+    return pqn != 0 && pqn < len
+        && composite_key_load_prv(key, blob, pqn, blob + pqn, len - pqn);
+}
+
+static const OSSL_PARAM composite_imexport_types[] = {
+    OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PUB_KEY, NULL, 0),
+    OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_PRIV_KEY, NULL, 0),
+    OSSL_PARAM_END
+};
+
+static const OSSL_PARAM *composite_imexport_types_fn(int selection)
+{
+    return (selection & OSSL_KEYMGMT_SELECT_KEYPAIR) != 0
+        ? composite_imexport_types : NULL;
+}
+
+static int composite_import(void *vkey, int selection, const OSSL_PARAM params[])
+{
+    COMPOSITE_KEY *key = vkey;
+    const OSSL_PARAM *p;
+    const void *data;
+    size_t len;
+
+    if (key == NULL || (selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
+        return 0;
+    if ((selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0
+            && (p = OSSL_PARAM_locate_const(params,
+                                            OSSL_PKEY_PARAM_PRIV_KEY)) != NULL) {
+        if (OSSL_PARAM_get_octet_string_ptr(p, &data, &len) != 1)
+            return 0;
+        return import_prv_blob(key, data, len);
+    }
+    if ((p = OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_PUB_KEY)) != NULL) {
+        if (OSSL_PARAM_get_octet_string_ptr(p, &data, &len) != 1)
+            return 0;
+        return import_pub_blob(key, data, len);
+    }
+    return 0;
+}
+
+static int composite_export(void *vkey, int selection, OSSL_CALLBACK *cb,
+                            void *cbarg)
+{
+    COMPOSITE_KEY *key = vkey;
+    OSSL_PARAM_BLD *bld;
+    OSSL_PARAM *params = NULL;
+    unsigned char *pub = NULL, *prv = NULL;
+    size_t publen = 0, prvlen = 0;
+    int ret = 0;
+
+    if (key == NULL || (selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0
+            || key->state < COMPOSITE_HAVE_PUBKEY)
+        return 0;
+    if ((bld = OSSL_PARAM_BLD_new()) == NULL)
+        return 0;
+
+    if ((selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0) {
+        if (!composite_encode_pub_blob(key, &pub, &publen)
+                || !OSSL_PARAM_BLD_push_octet_string(bld, OSSL_PKEY_PARAM_PUB_KEY,
+                                                     pub, publen))
+            goto err;
+    }
+    if ((selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0
+            && key->state >= COMPOSITE_HAVE_PRVKEY) {
+        if (!composite_encode_priv_blob(key, &prv, &prvlen)
+                || !OSSL_PARAM_BLD_push_octet_string(bld,
+                                                     OSSL_PKEY_PARAM_PRIV_KEY,
+                                                     prv, prvlen))
+            goto err;
+    }
+    if ((params = OSSL_PARAM_BLD_to_param(bld)) == NULL)
+        goto err;
+    ret = cb(params, cbarg);
+err:
+    if (params != NULL) {
+        OSSL_PARAM *pp = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_PRIV_KEY);
+
+        if (pp != NULL && pp->data != NULL)
+            OPENSSL_cleanse(pp->data, pp->data_size);
+    }
+    OSSL_PARAM_free(params);
+    OSSL_PARAM_BLD_free(bld);
+    OPENSSL_clear_free(prv, prvlen);
+    OPENSSL_free(pub);
+    return ret;
+}
+
 /*
  * Per-algorithm keymgmt instances — generated from the master list, each binding
  * its NEW/GEN_INIT to the matching info-table row (the hybrid family's pattern).
@@ -342,6 +493,13 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
         { OSSL_FUNC_KEYMGMT_LOAD, (void (*)(void))composite_key_load },        \
         { OSSL_FUNC_KEYMGMT_FREE, (void (*)(void))composite_key_free },        \
         { OSSL_FUNC_KEYMGMT_HAS, (void (*)(void))composite_key_has },          \
+        { OSSL_FUNC_KEYMGMT_MATCH, (void (*)(void))composite_key_match },      \
+        { OSSL_FUNC_KEYMGMT_IMPORT, (void (*)(void))composite_import },        \
+        { OSSL_FUNC_KEYMGMT_IMPORT_TYPES,                                     \
+          (void (*)(void))composite_imexport_types_fn },                      \
+        { OSSL_FUNC_KEYMGMT_EXPORT, (void (*)(void))composite_export },        \
+        { OSSL_FUNC_KEYMGMT_EXPORT_TYPES,                                     \
+          (void (*)(void))composite_imexport_types_fn },                      \
         { OSSL_FUNC_KEYMGMT_GET_PARAMS,                                        \
           (void (*)(void))composite_get_params },                             \
         { OSSL_FUNC_KEYMGMT_GETTABLE_PARAMS,                                   \

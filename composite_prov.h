@@ -202,6 +202,10 @@ extern const OSSL_DISPATCH composite_pkcs8_der_decoder_functions[];
  * order), component sizes fixed per OID. Caller frees *out. */
 int composite_encode_pub_blob(COMPOSITE_KEY *key, unsigned char **out,
                               size_t *outlen);
+/* Build the raw-concat composite private key blob: pqPriv || tradPriv (pqPriv is
+ * the ML-DSA seed for standardized combos). Caller frees *out (clear). */
+int composite_encode_priv_blob(COMPOSITE_KEY *key, unsigned char **out,
+                               size_t *outlen);
 
 /* Keymgmt helpers used by the decoder (composite_keymgmt.c). */
 COMPOSITE_KEY *composite_keymgmt_new_by_index(void *provctx, size_t idx);

@@ -255,8 +255,8 @@ static int component_pq_priv(EVP_PKEY *pq, const COMPOSITE_SIG_INFO *info,
     return 1;
 }
 
-static int encode_priv_blob(COMPOSITE_KEY *key, unsigned char **out,
-                            size_t *outlen)
+int composite_encode_priv_blob(COMPOSITE_KEY *key, unsigned char **out,
+                               size_t *outlen)
 {
     unsigned char *pqbuf = NULL, *trbuf = NULL, *buf = NULL;
     size_t pqlen = 0, trlen = 0;
@@ -291,7 +291,7 @@ static PKCS8_PRIV_KEY_INFO *key_to_p8info(COMPOSITE_KEY *key)
 
     if (key->info->oid == NULL
             || (oid = OBJ_txt2obj(key->info->oid, 1)) == NULL
-            || !encode_priv_blob(key, &blob, &bloblen)
+            || !composite_encode_priv_blob(key, &blob, &bloblen)
             || (p8 = PKCS8_PRIV_KEY_INFO_new()) == NULL)
         goto err;
     /* Transfers ownership of oid and blob to p8. */
