@@ -700,6 +700,28 @@ preference:
    (Entrust OID arc + BC's combiner if it differs), kept disjoint from the
    draft-19 standardized rows — fits the two-tier design.
 
+### Phase-2 interop status — draft-19 KAT interop ACHIEVED (2026-08)
+
+Option 1 above is **done**: `test/composite_kat_test` imports the draft-19
+reference public keys and verifies the reference signatures from the draft's own
+`testvectors.json` (`lamps-wg/draft-composite-sigs`, distilled into
+`test/composite_kat.txt`). **5/5 standardized combos verify** — real cross-
+implementation interop, since verify recomputes `M'` and checks both component
+signatures against bytes we did not produce. This is the strongest validation
+available short of a live peer, and it's the authoritative source (the reference
+impl that generated the draft's vectors). Suite 18/18.
+
+Reaching 5/5 caught two defects a self-consistent test can never see:
+- **Our bug:** `trad_md` for the ECDSA-P384 component must be the curve-native
+  **SHA-384**, not the SHA-512 in the combo name (that is only `PH(M)`). Fixed.
+- **A reference doc-vs-code inconsistency (NOT ours):** for
+  `id-MLDSA87-ECDSA-P384-SHA512`, `labelsTable.md` documents the label as
+  `COMPSIG-MLDSA87-P384-SHA512` (no `ECDSA`), but `generate_test_vectors.py` — which
+  produced the KATs — uses `COMPSIG-MLDSA87-ECDSA-P384-SHA512`. The KATs match the
+  code, so the doc table is wrong for that row (and by inspection the sibling
+  `MLDSA87-ECDSA-{BP384,P521}` rows). Report to the draft editors out of band
+  (see issue #6). We follow the code/KATs, which are authoritative.
+
 ### Phase-2 open items
 - [ ] Enumerate the exact composite matrix + OIDs against
   `draft-ietf-lamps-pq-composite-sigs-19` (bounded: ML-DSA × {RSA-PSS, RSA-PKCS1.5,
@@ -707,9 +729,12 @@ preference:
 - [x] Confirm the LAMPS revision Bouncy Castle currently tracks — **done**: BC 1.85
   is on the Entrust OID arc (`…80.9.1`), an earlier draft than -19; see "Phase-2
   interop status" above. Our impl targets draft-19.
-- [ ] Decide the BC-interop path (hold-for-RFC / draft-19 peer / BC-compat tier);
-  if pursuing a BC-compat tier, first pin BC's exact combiner (prefix/label vs
-  OID-DER domain separator, prehash, single- vs double-wrap PKCS#8).
+- [x] Validate against a draft-19 peer — **done** via the reference KAT vectors
+  (`test/composite_kat_test`, 5/5). BC interop remains optional: hold for BC's RFC
+  update, or add a BC-compat tier only if near-term BC interop is required (then
+  first pin BC's exact combiner).
+- [ ] Report the reference doc-vs-code label inconsistency (MLDSA87-ECDSA-P384 in
+  `labelsTable.md`) to the draft editors, out of band.
 - [ ] **Cede-to-default path:** design composite to defer to the default provider's
   native composite once OpenSSL ships it (openssl#26121), mirroring the MLX-to-default
   deferral. Gate the whole family behind a build flag (default off).
