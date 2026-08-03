@@ -45,6 +45,10 @@
  * standardized and experimental; the per-combo `label` differentiates them. */
 #define COMPOSITE_SIG_PREFIX "CompositeAlgorithmSignatures2025"
 
+/* The traditional RSA component in the standardized RSA-PSS combo is RSA-3072
+ * (draft-19 "RSA3072"). Shared by keymgmt keygen and the tests. */
+#define COMPOSITE_RSA_TRAD_BITS 3072
+
 /* Tier — governs OID arc + wire-format contract; must never be blurred. */
 enum {
     COMPOSITE_TIER_STANDARD = 0,  /* ML-DSA only; IANA/LAMPS OID; normative */

@@ -49,11 +49,13 @@ static int composite_dec_does_selection(void *provctx, int selection)
         || (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0;
 }
 
-#define COMPOSITE_MAX_KEY_DER (1024 * 1024)
+#define COMPOSITE_MAX_KEY_DER  (1024 * 1024)   /* 1 MiB cap on decoder input */
+#define COMPOSITE_DEC_READ_CHUNK  4096          /* initial read buffer; doubles */
+#define COMPOSITE_OID_TXT_MAX  128              /* room for a dotted-decimal OID */
 static int read_all(COMPOSITE_DEC_CTX *ctx, OSSL_CORE_BIO *cin,
                     unsigned char **out, size_t *outlen)
 {
-    size_t cap = 4096, len = 0, n = 0;
+    size_t cap = COMPOSITE_DEC_READ_CHUNK, len = 0, n = 0;
     unsigned char *buf = OPENSSL_malloc(cap), *tmp;
 
     if (buf == NULL || ctx->bio_read_ex == NULL) {
@@ -140,7 +142,7 @@ static int composite_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     X509_PUBKEY *xpk = NULL;
     ASN1_OBJECT *alg_oid = NULL;
     int pklen = 0, idx, ret = 1;           /* default: not ours, continue chain */
-    char oidbuf[128];
+    char oidbuf[COMPOSITE_OID_TXT_MAX];
     COMPOSITE_KEY *key = NULL;
 
     if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)

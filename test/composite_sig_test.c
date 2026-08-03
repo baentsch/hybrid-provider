@@ -45,8 +45,8 @@ static EVP_PKEY *keygen_trad(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     if (strcmp(info->trad_alg, "ED25519") == 0
             || strcmp(info->trad_alg, "ED448") == 0)
         return EVP_PKEY_Q_keygen(ctx, p, info->trad_alg);
-    /* RSA / RSA-PSS: a plain 3072-bit RSA key, PSS applied at signing time. */
-    return EVP_PKEY_Q_keygen(ctx, p, "RSA", (size_t)3072);
+    /* RSA / RSA-PSS: a plain RSA key, PSS applied at signing time. */
+    return EVP_PKEY_Q_keygen(ctx, p, "RSA", (size_t)COMPOSITE_RSA_TRAD_BITS);
 }
 
 static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)

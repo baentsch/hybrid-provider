@@ -31,6 +31,10 @@
 #include <string.h>
 #include <stdint.h>
 
+/* draft-19 uses SHAKE256 with a fixed 64-byte (512-bit) output for the one XOF
+ * prehash (the Ed448 combo); a fixed-length digest just uses its natural size. */
+#define COMPOSITE_XOF_PH_BYTES 64
+
 /* PH(M): PREFIX || label || 0x00 (empty ctx) || digest(prehash, M). */
 static int build_mprime(const COMPOSITE_SIG_INFO *info, OSSL_LIB_CTX *libctx,
                         const unsigned char *msg, size_t msglen,
@@ -49,7 +53,7 @@ static int build_mprime(const COMPOSITE_SIG_INFO *info, OSSL_LIB_CTX *libctx,
             || EVP_DigestUpdate(mc, msg, msglen) <= 0)
         goto end;
     if ((EVP_MD_get_flags(md) & EVP_MD_FLAG_XOF) != 0) {
-        phlen = 64;                       /* draft's fixed XOF output (SHAKE256) */
+        phlen = COMPOSITE_XOF_PH_BYTES;
         if (EVP_DigestFinalXOF(mc, ph, phlen) <= 0)
             goto end;
     } else {

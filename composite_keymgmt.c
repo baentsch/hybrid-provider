@@ -97,12 +97,27 @@ static int composite_get_params(void *vkey, OSSL_PARAM params[])
         if (!OSSL_PARAM_set_int(p, mx))
             return 0;
     }
+    /* Report the PQ component's key size; composite "bits" is otherwise ill-
+     * defined and the PQ half dominates. */
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_BITS);
-    if (p != NULL && !OSSL_PARAM_set_int(p, 256))
-        return 0;
+    if (p != NULL) {
+        int bits = k->pq_key != NULL ? EVP_PKEY_get_bits(k->pq_key) : 0;
+
+        if (!OSSL_PARAM_set_int(p, bits))
+            return 0;
+    }
+    /* Composite security is bounded by the weaker component — derive it, don't
+     * hardcode (it differs per combo: ML-DSA-44/65/87 -> ~128/192/256). */
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_SECURITY_BITS);
-    if (p != NULL && !OSSL_PARAM_set_int(p, 128))
-        return 0;
+    if (p != NULL) {
+        int spq = k->pq_key != NULL ? EVP_PKEY_get_security_bits(k->pq_key) : 0;
+        int str = k->trad_key != NULL
+                      ? EVP_PKEY_get_security_bits(k->trad_key) : 0;
+        int sec = spq == 0 ? str : (str == 0 ? spq : (spq < str ? spq : str));
+
+        if (!OSSL_PARAM_set_int(p, sec))
+            return 0;
+    }
     /* One-shot signer: empty mandatory digest -> "UNDEF" (see hybrid family). */
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_MANDATORY_DIGEST);
     if (p != NULL && !OSSL_PARAM_set_utf8_string(p, ""))
@@ -126,8 +141,8 @@ static EVP_PKEY *gen_trad(OSSL_LIB_CTX *libctx, const COMPOSITE_SIG_INFO *info)
     if (strcmp(info->trad_alg, "ED25519") == 0
             || strcmp(info->trad_alg, "ED448") == 0)
         return EVP_PKEY_Q_keygen(libctx, p, info->trad_alg);
-    /* RSA / RSA-PSS: a plain 3072-bit RSA key; PSS applied at signing time. */
-    return EVP_PKEY_Q_keygen(libctx, p, "RSA", (size_t)3072);
+    /* RSA / RSA-PSS: a plain RSA key; PSS applied at signing time. */
+    return EVP_PKEY_Q_keygen(libctx, p, "RSA", (size_t)COMPOSITE_RSA_TRAD_BITS);
 }
 
 static void *composite_gen_init_info(void *provctx,

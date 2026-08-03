@@ -23,6 +23,8 @@
 
 static int tests, passed, failed, skipped;
 
+#define CERT_VALIDITY_SECS  (365L * 24 * 60 * 60)   /* one year */
+
 /* Encode the public key to DER SPKI, decode it back, and verify a signature made
  * by the original key with the *decoded* key — exercises the encoder, decoder and
  * public-component reconstruction. */
@@ -88,7 +90,7 @@ static int x509_selfsign_ok(OSSL_LIB_CTX *ctx, EVP_PKEY *key)
             && X509_set_version(cert, X509_VERSION_3)
             && ASN1_INTEGER_set(X509_get_serialNumber(cert), 1)
             && X509_gmtime_adj(X509_getm_notBefore(cert), 0) != NULL
-            && X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) != NULL
+            && X509_gmtime_adj(X509_getm_notAfter(cert), CERT_VALIDITY_SECS) != NULL
             && X509_set_pubkey(cert, key)
             && (nm = X509_get_subject_name(cert)) != NULL
             && X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
