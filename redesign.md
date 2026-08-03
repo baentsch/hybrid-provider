@@ -666,12 +666,50 @@ composite_decoder.c     DER + PEM decode by composite OID
   decode + verify. Both directions. Plus KAT vectors from the drafts/oqsprovider.
 - PQ primitives via EVP from {oqsprovider | default}; classic from default only.
 
+### Phase-2 interop status — BouncyCastle vs draft-19 (checked 2026-08)
+
+**BouncyCastle does NOT yet implement draft-19; our code is aligned to draft-19
+and is therefore *ahead* of BC, not wrong.** The blocker is the OID arc:
+
+| | OID arc | id-MLDSA44-ECDSA-P256-SHA256 |
+| --- | --- | --- |
+| **draft-19** (our impl) | PKIX `1.3.6.1.5.5.7.6` | `…6.40` |
+| **BouncyCastle 1.85** | Entrust `2.16.840.1.114027.80.9.1` | `…9.1.3` |
+| BouncyCastle 1.79–1.83 | Entrust `2.16.840.1.114027.80.8.1` | `…8.1.4` |
+
+- Verified against the raw I-D text: the string `114027` does **not** appear in
+  draft-19; its ASN.1 module assigns `pkix(7) alg(6) 40`. Our OIDs +
+  `CompositeAlgorithmSignatures2025` prefix + `COMPSIG-…` labels match draft-19.
+- BC is still on the Entrust arc (pre-IANA/PKIX assignment, ~draft-13/14 era; BC
+  itself moved `…80.8.1` → `…80.9.1` between releases, tracking the draft but
+  lagging the final arc).
+- **Consequence:** current BC ↔ our draft-19 code will not interop out of the box
+  — the AlgorithmIdentifier OIDs differ, and the signing construction *may* also
+  differ (some pre-final drafts used the **OID DER** as the domain separator, not
+  the ASCII label). OID mismatch confirmed; BC's exact combiner not yet confirmed.
+
+**Decision: do NOT retrofit to BC's older draft.** Chasing a moving pre-final BC
+means matching a construction that is about to change. Options, in order of
+preference:
+1. Hold on draft-19; validate against a **draft-19 peer** — OpenSSL-native
+   composite once openssl#26121 lands, or a reference implementation / draft KAT
+   vectors — rather than BC.
+2. Wait for BC to track the **final RFC** (draft-19 is past IETF LC), then interop
+   as-is.
+3. Only if near-term BC interop is required: add a **BC-compatibility tier**
+   (Entrust OID arc + BC's combiner if it differs), kept disjoint from the
+   draft-19 standardized rows — fits the two-tier design.
+
 ### Phase-2 open items
 - [ ] Enumerate the exact composite matrix + OIDs against
   `draft-ietf-lamps-pq-composite-sigs-19` (bounded: ML-DSA × {RSA-PSS, RSA-PKCS1.5,
   ECDSA, Ed25519, Ed448}) and cross-check oqsprovider `main`.
-- [ ] Confirm the LAMPS revision Bouncy Castle currently tracks (spec is at -19,
-  past IETF Last Call, so churn risk is low but pin it before coding the combiner).
+- [x] Confirm the LAMPS revision Bouncy Castle currently tracks — **done**: BC 1.85
+  is on the Entrust OID arc (`…80.9.1`), an earlier draft than -19; see "Phase-2
+  interop status" above. Our impl targets draft-19.
+- [ ] Decide the BC-interop path (hold-for-RFC / draft-19 peer / BC-compat tier);
+  if pursuing a BC-compat tier, first pin BC's exact combiner (prefix/label vs
+  OID-DER domain separator, prehash, single- vs double-wrap PKCS#8).
 - [ ] **Cede-to-default path:** design composite to defer to the default provider's
   native composite once OpenSSL ships it (openssl#26121), mirroring the MLX-to-default
   deferral. Gate the whole family behind a build flag (default off).
