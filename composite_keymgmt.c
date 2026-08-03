@@ -24,7 +24,7 @@
 
 static void *composite_key_new(void *provctx, const COMPOSITE_SIG_INFO *info)
 {
-    COMPOSITE_PROV_CTX *pc = provctx;
+    HYBRID_PROV_CTX *pc = provctx;
     COMPOSITE_KEY *k = OPENSSL_zalloc(sizeof(*k));
 
     if (k == NULL)

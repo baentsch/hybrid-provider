@@ -164,11 +164,13 @@ int main(void)
         h = OSSL_PROVIDER_load(hctx, "hybrid");
         if (h != NULL)
             OSSL_PROVIDER_get_capabilities(h, "TLS-SIGALG", count_cb, &n);
+        /* At least the hybrid sigalgs; more when built with the composite
+         * capability (HYBRID_COMPOSITE), which advertises its own combos too. */
         tests++;
-        printf("\nhybrid provider advertises %d TLS-SIGALGs (expect %d) ... %s\n",
+        printf("\nhybrid provider advertises %d TLS-SIGALGs (expect >= %d) ... %s\n",
                n, (int)HYBRID_SIG_ALG_COUNT,
-               n == (int)HYBRID_SIG_ALG_COUNT ? "PASS" : "FAIL");
-        if (n == (int)HYBRID_SIG_ALG_COUNT)
+               n >= (int)HYBRID_SIG_ALG_COUNT ? "PASS" : "FAIL");
+        if (n >= (int)HYBRID_SIG_ALG_COUNT)
             passed++;
         else
             failed++;

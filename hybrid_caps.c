@@ -6,6 +6,9 @@
 #include "hybrid_prov.h"
 #include <openssl/core_names.h>
 #include <openssl/prov_ssl.h>   /* TLS1_3_VERSION */
+#ifdef HYBRID_COMPOSITE
+# include "composite_prov.h"
+#endif
 
 /*
  * TLS group capabilities for the hybrid KEMs.
@@ -178,6 +181,10 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
             if (!cb(hybrid_param_sigalg_list[i], arg))
                 return 0;
         }
+#ifdef HYBRID_COMPOSITE
+        if (!composite_get_capabilities(provctx, capability, cb, arg))
+            return 0;   /* also advertise the composite TLS SignatureSchemes */
+#endif
         return 1;
     }
 

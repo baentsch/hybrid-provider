@@ -22,13 +22,13 @@
 #include <string.h>
 
 typedef struct {
-    COMPOSITE_PROV_CTX *provctx;
+    HYBRID_PROV_CTX *provctx;
     OSSL_FUNC_BIO_read_ex_fn *bio_read_ex;
 } COMPOSITE_DEC_CTX;
 
 static void *composite_dec_newctx(void *provctx)
 {
-    COMPOSITE_PROV_CTX *pctx = provctx;
+    HYBRID_PROV_CTX *pctx = provctx;
     COMPOSITE_DEC_CTX *ctx = OPENSSL_zalloc(sizeof(*ctx));
 
     if (ctx != NULL) {

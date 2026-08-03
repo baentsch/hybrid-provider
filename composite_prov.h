@@ -40,6 +40,8 @@
 #include <openssl/core.h>
 #include <openssl/core_dispatch.h>
 #include <stddef.h>
+#include "hybrid_prov.h"   /* composite is a capability OF the hybrid provider;
+                            * it shares HYBRID_PROV_CTX (libctx + BIO up-calls). */
 
 /* Whole-scheme domain separator (fixed ASCII, draft-19). Shared by every combo,
  * standardized and experimental; the per-combo `label` differentiates them. */
@@ -101,15 +103,6 @@ typedef struct composite_key_st {
     const char *pq_propq;       /* source for the PQ component                  */
     const char *trad_propq;     /* source for the classical component          */
 } COMPOSITE_KEY;
-
-/* Provider context — the libctx the components are fetched from, plus the core
- * BIO up-call the encoders write through. */
-typedef struct composite_prov_ctx_st {
-    const OSSL_CORE_HANDLE *handle;
-    OSSL_LIB_CTX *libctx;
-    OSSL_FUNC_BIO_write_ex_fn *bio_write_ex;
-    OSSL_FUNC_BIO_read_ex_fn *bio_read_ex;
-} COMPOSITE_PROV_CTX;
 
 /*
  * Master composite-signature list — single source of truth (mirrors
@@ -200,6 +193,10 @@ extern const OSSL_DISPATCH composite_spki_der_decoder_functions[];
 extern const OSSL_DISPATCH composite_pkcs8_der_encoder_functions[];
 extern const OSSL_DISPATCH composite_pkcs8_pem_encoder_functions[];
 extern const OSSL_DISPATCH composite_pkcs8_der_decoder_functions[];
+
+/* TLS 1.3 signature-algorithm capabilities (composite_caps.c). */
+int composite_get_capabilities(void *provctx, const char *capability,
+                               OSSL_CALLBACK *cb, void *arg);
 
 /* Build the raw-concat composite public key blob: pqPub || tradPub (draft-19
  * order), component sizes fixed per OID. Caller frees *out. */

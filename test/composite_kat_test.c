@@ -90,7 +90,7 @@ static void check(OSSL_LIB_CTX *ctx, int have_mldsa, const char *name,
     /* Import the reference public key (raw concat pqPub||tradPub). */
     p[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY, pk, pklen);
     p[1] = OSSL_PARAM_construct_end();
-    fc = EVP_PKEY_CTX_new_from_name(ctx, name, "provider=composite");
+    fc = EVP_PKEY_CTX_new_from_name(ctx, name, "provider=hybrid");
     if (fc == NULL || EVP_PKEY_fromdata_init(fc) <= 0
             || EVP_PKEY_fromdata(fc, &key, EVP_PKEY_PUBLIC_KEY, p) <= 0
             || key == NULL) {
@@ -102,7 +102,7 @@ static void check(OSSL_LIB_CTX *ctx, int have_mldsa, const char *name,
 
     m = EVP_MD_CTX_new();
     if (m == NULL
-            || EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=composite",
+            || EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=hybrid",
                                        key, NULL) <= 0) {
         printf("FAIL (verify init)\n");
         ERR_print_errors_fp(stdout);
@@ -140,8 +140,8 @@ int main(int argc, char **argv)
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
     if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "composite") == NULL) {
-        fprintf(stderr, "failed to load default/composite providers\n");
+            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+        fprintf(stderr, "failed to load default/hybrid providers\n");
         return 1;
     }
     ERR_clear_error();

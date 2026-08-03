@@ -42,7 +42,7 @@ static int spki_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
     int ok = 0;
 
     if (m == NULL
-            || EVP_DigestSignInit_ex(m, NULL, NULL, ctx, "provider=composite",
+            || EVP_DigestSignInit_ex(m, NULL, NULL, ctx, "provider=hybrid",
                                      key, NULL) <= 0
             || EVP_DigestSign(m, NULL, &siglen, msg, sizeof(msg) - 1) <= 0
             || (sig = OPENSSL_malloc(siglen)) == NULL
@@ -51,13 +51,13 @@ static int spki_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
 
     ec = OSSL_ENCODER_CTX_new_for_pkey(key, EVP_PKEY_PUBLIC_KEY, "DER",
                                        "SubjectPublicKeyInfo",
-                                       "provider=composite");
+                                       "provider=hybrid");
     if (ec == NULL || OSSL_ENCODER_to_data(ec, &der, &derlen) <= 0)
         goto end;
 
     dc = OSSL_DECODER_CTX_new_for_pkey(&dec, "DER", "SubjectPublicKeyInfo",
                                        info->name, EVP_PKEY_PUBLIC_KEY, ctx,
-                                       "provider=composite");
+                                       "provider=hybrid");
     p = der;
     if (dc == NULL || OSSL_DECODER_from_data(dc, &p, &derlen) <= 0 || dec == NULL)
         goto end;
@@ -65,7 +65,7 @@ static int spki_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
     EVP_MD_CTX_free(m);
     m = EVP_MD_CTX_new();
     ok = m != NULL
-        && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=composite",
+        && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=hybrid",
                                    dec, NULL) > 0
         && EVP_DigestVerify(m, sig, siglen, msg, sizeof(msg) - 1) == 1;
 end:
@@ -120,11 +120,11 @@ static int pkcs8_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
     int ok = 0;
 
     ec = OSSL_ENCODER_CTX_new_for_pkey(key, EVP_PKEY_KEYPAIR, "DER",
-                                       "PrivateKeyInfo", "provider=composite");
+                                       "PrivateKeyInfo", "provider=hybrid");
     if (ec == NULL || OSSL_ENCODER_to_data(ec, &der, &derlen) <= 0)
         goto end;
     dc = OSSL_DECODER_CTX_new_for_pkey(&dec, "DER", "PrivateKeyInfo", info->name,
-                                       EVP_PKEY_KEYPAIR, ctx, "provider=composite");
+                                       EVP_PKEY_KEYPAIR, ctx, "provider=hybrid");
     p = der;
     if (dc == NULL || OSSL_DECODER_from_data(dc, &p, &derlen) <= 0 || dec == NULL)
         goto end;
@@ -132,7 +132,7 @@ static int pkcs8_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
     /* Sign with the decoded private key, verify with the original. */
     m = EVP_MD_CTX_new();
     if (m == NULL
-            || EVP_DigestSignInit_ex(m, NULL, NULL, ctx, "provider=composite",
+            || EVP_DigestSignInit_ex(m, NULL, NULL, ctx, "provider=hybrid",
                                      dec, NULL) <= 0
             || EVP_DigestSign(m, NULL, &siglen, msg, sizeof(msg) - 1) <= 0
             || (sig = OPENSSL_malloc(siglen)) == NULL
@@ -141,7 +141,7 @@ static int pkcs8_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
     EVP_MD_CTX_free(m);
     m = EVP_MD_CTX_new();
     ok = m != NULL
-        && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=composite",
+        && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=hybrid",
                                    key, NULL) > 0
         && EVP_DigestVerify(m, sig, siglen, msg, sizeof(msg) - 1) == 1;
 end:
@@ -166,7 +166,7 @@ static int params_roundtrip_ok(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info
 
     if (EVP_PKEY_todata(key, EVP_PKEY_KEYPAIR, &params) <= 0 || params == NULL)
         goto end;
-    fc = EVP_PKEY_CTX_new_from_name(ctx, info->name, "provider=composite");
+    fc = EVP_PKEY_CTX_new_from_name(ctx, info->name, "provider=hybrid");
     if (fc == NULL || EVP_PKEY_fromdata_init(fc) <= 0
             || EVP_PKEY_fromdata(fc, &copy, EVP_PKEY_KEYPAIR, params) <= 0
             || copy == NULL)
@@ -193,7 +193,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
            info->tier == COMPOSITE_TIER_EXPERIMENTAL ? "(exp)" : "(std)");
     fflush(stdout);
 
-    gctx = EVP_PKEY_CTX_new_from_name(ctx, info->name, "provider=composite");
+    gctx = EVP_PKEY_CTX_new_from_name(ctx, info->name, "provider=hybrid");
     if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
             || EVP_PKEY_keygen(gctx, &key) <= 0) {
         printf("SKIP (components unavailable)\n");
@@ -203,7 +203,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
 
     m = EVP_MD_CTX_new();
     if (m == NULL
-            || EVP_DigestSignInit_ex(m, NULL, NULL, ctx, "provider=composite",
+            || EVP_DigestSignInit_ex(m, NULL, NULL, ctx, "provider=hybrid",
                                      key, NULL) <= 0
             || EVP_DigestSign(m, NULL, &siglen, msg, sizeof(msg) - 1) <= 0
             || (sig = OPENSSL_malloc(siglen)) == NULL
@@ -216,7 +216,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     EVP_MD_CTX_free(m);
     m = EVP_MD_CTX_new();
     if (m == NULL
-            || EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=composite",
+            || EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=hybrid",
                                        key, NULL) <= 0
             || EVP_DigestVerify(m, sig, siglen, msg, sizeof(msg) - 1) != 1) {
         printf("FAIL (verify)\n");
@@ -229,7 +229,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     EVP_MD_CTX_free(m);
     m = EVP_MD_CTX_new();
     if (m != NULL
-            && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=composite",
+            && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, "provider=hybrid",
                                        key, NULL) > 0
             && EVP_DigestVerify(m, sig, siglen, msg, sizeof(msg) - 1) == 1) {
         printf("FAIL (tampered signature verified)\n");
@@ -286,8 +286,8 @@ int main(void)
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
     if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "composite") == NULL) {
-        fprintf(stderr, "failed to load default/composite providers\n");
+            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+        fprintf(stderr, "failed to load default/hybrid providers\n");
         return 1;
     }
     OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier */

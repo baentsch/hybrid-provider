@@ -30,6 +30,11 @@ endif()
 # KEMs have an assigned OID, and the format uses OQS's private OID arc.
 option(HYBRID_KEM_ENCODERS "Build encoders/decoders for hybrid KEM key files" OFF)
 
+# Composite (LAMPS) signature family — issue #6. Per the packaging decision
+# (redesign.md Phase 2) composite is a build-flag-gated *capability of the hybrid
+# provider* (not a separate module), default OFF.
+option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" OFF)
+
 # Provider shared library
 add_library(hybrid-provider MODULE
     hybrid_prov.c
@@ -44,6 +49,16 @@ target_include_directories(hybrid-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(hybrid-provider PRIVATE OpenSSL::Crypto)
 if(HYBRID_KEM_ENCODERS)
     target_compile_definitions(hybrid-provider PRIVATE HYBRID_KEM_ENCODERS)
+endif()
+if(HYBRID_COMPOSITE)
+    target_sources(hybrid-provider PRIVATE
+        composite_keymgmt.c
+        composite_sig.c
+        composite_encoder.c
+        composite_decoder.c
+        composite_caps.c
+    )
+    target_compile_definitions(hybrid-provider PRIVATE HYBRID_COMPOSITE)
 endif()
 # No SUFFIX override: an OpenSSL provider is a CMake MODULE library, whose
 # default suffix is already the right one per platform (.so on Linux/macOS,
@@ -190,13 +205,11 @@ set_tests_properties(hybrid_matrix_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
-# Composite (LAMPS) signature family — issue #6. Per the packaging decision
-# (redesign.md Phase 2) composite is a build-flag-gated capability in this
-# provider, default OFF. First slice: the generic combiner (composite_sig.c) and
-# its self-consistency test; the provider module (keymgmt/registration) follows.
-option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" OFF)
+# Composite (LAMPS) tests — the composite family itself is compiled into the
+# hybrid provider above (HYBRID_COMPOSITE). These just exercise it; they load
+# "provider=hybrid" and need the hybrid module built with -DHYBRID_COMPOSITE.
 if(HYBRID_COMPOSITE)
-    # Combiner self-consistency test (no provider registration).
+    # Combiner self-consistency test (drives composite_sig.c directly).
     add_executable(composite_sig_test test/composite_sig_test.c composite_sig.c)
     target_include_directories(composite_sig_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
     target_link_libraries(composite_sig_test PRIVATE OpenSSL::Crypto)
@@ -205,27 +218,11 @@ if(HYBRID_COMPOSITE)
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 
-    # Composite provider module — keygen + sign/verify. Like hybrid above, no
-    # SUFFIX override: the MODULE default suffix is already correct per platform.
-    add_library(composite-provider MODULE
-        composite_prov.c
-        composite_keymgmt.c
-        composite_sig.c
-        composite_encoder.c
-        composite_decoder.c
-    )
-    target_include_directories(composite-provider PRIVATE ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(composite-provider PRIVATE OpenSSL::Crypto)
-    set_target_properties(composite-provider PROPERTIES
-        PREFIX ""
-        OUTPUT_NAME "composite"
-    )
-
-    # Provider-level test: drive composite through EVP by name.
+    # Provider-level test: drive composite through EVP by name (provider=hybrid).
     add_executable(composite_test test/composite_test.c)
     target_include_directories(composite_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
     target_link_libraries(composite_test PRIVATE OpenSSL::Crypto)
-    add_dependencies(composite_test composite-provider)
+    add_dependencies(composite_test hybrid-provider)
     add_test(NAME composite_test COMMAND composite_test)
     set_tests_properties(composite_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
@@ -236,7 +233,7 @@ if(HYBRID_COMPOSITE)
     add_executable(composite_kat_test test/composite_kat_test.c)
     target_include_directories(composite_kat_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
     target_link_libraries(composite_kat_test PRIVATE OpenSSL::Crypto)
-    add_dependencies(composite_kat_test composite-provider)
+    add_dependencies(composite_kat_test hybrid-provider)
     add_test(NAME composite_kat_test
         COMMAND composite_kat_test ${CMAKE_SOURCE_DIR}/test/composite_kat.txt)
     set_tests_properties(composite_kat_test PROPERTIES

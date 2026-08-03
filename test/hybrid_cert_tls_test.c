@@ -2,20 +2,24 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * End-to-end hybrid-signature certificate over TLS 1.3 (in-process, memory BIOs).
+ * End-to-end PQ-hybrid / composite signature certificate over TLS 1.3 (in-process,
+ * memory BIOs).
  *
- * For each hybrid signature whose components are available, generate a key and a
- * self-signed certificate signed with that hybrid key, run a TLS 1.3 handshake
- * where the server authenticates with that certificate and the client verifies
- * it, and assert that (a) the handshake completes, (b) the client accepts the
- * chain (X509_V_OK), and (c) the CertificateVerify was made with the hybrid
- * signature algorithm (SSL_get_peer_signature_type_nid == the hybrid NID).
+ * For each signature whose components are available, generate a key and a
+ * self-signed certificate signed with that key, run a TLS 1.3 handshake where the
+ * server authenticates with that certificate and the client verifies it, and
+ * assert that (a) the handshake completes, (b) the client accepts the chain
+ * (X509_V_OK), and (c) the CertificateVerify was made with that signature
+ * algorithm (SSL_get_peer_signature_type_nid == the algorithm's NID).
  *
- * Exercises the whole chain wired up for this: the TLS-SIGALG capability
- * (hybrid_caps.c), the signature AlgorithmIdentifier (hybrid_sig.c), and the OID
- * registration at provider init (hybrid_prov.c). Uses the ML-DSA hybrids, whose
- * PQ base is the default provider's ML-DSA (OpenSSL 3.5+), so no oqsprovider is
- * needed; each algorithm self-skips if its components are unavailable (e.g. 3.4).
+ * The test is provider-parametrized and covers both families with one code path:
+ *   - hybrid (`provider=hybrid`): the ML-DSA hybrids, oqsprovider not needed.
+ *   - composite (`provider=hybrid`): the LAMPS composite ML-DSA combos, only
+ *     when the composite provider is built (-DHYBRID_COMPOSITE) and loadable.
+ * Exercises the whole chain: the TLS-SIGALG capability (hybrid_caps.c /
+ * composite_caps.c), the signature AlgorithmIdentifier, and the OID registration
+ * at provider init. Each entry self-skips when its provider or components are
+ * unavailable (e.g. composite off, or no ML-DSA on 3.4).
  */
 #include <stdio.h>
 #include <string.h>
@@ -27,15 +31,24 @@
 
 static int tests, passed, failed, skipped;
 
-static const char *algs[] = {
-    "p256_mldsa44", "rsa3072_mldsa44", "p384_mldsa65", "p521_mldsa87",
+static const struct { const char *propq; const char *alg; } algs[] = {
+    { "provider=hybrid",    "p256_mldsa44" },
+    { "provider=hybrid",    "rsa3072_mldsa44" },
+    { "provider=hybrid",    "p384_mldsa65" },
+    { "provider=hybrid",    "p521_mldsa87" },
+    /* Composite (LAMPS) — self-skip unless the composite provider is loaded. */
+    { "provider=hybrid", "mldsa44_ecdsa_p256" },
+    { "provider=hybrid", "mldsa65_rsa3072_pss" },
+    { "provider=hybrid", "mldsa65_ed25519" },
+    { "provider=hybrid", "mldsa87_ecdsa_p384" },
+    { "provider=hybrid", "mldsa87_ed448" },
 };
 
-/* Generate a hybrid keypair + self-signed cert signed with the hybrid key. */
-static int make_hybrid_cert(OSSL_LIB_CTX *libctx, const char *alg,
-                            EVP_PKEY **pkey_out, X509 **cert_out)
+/* Generate a keypair + self-signed cert signed with that key (one-shot). */
+static int make_cert(OSSL_LIB_CTX *libctx, const char *propq, const char *alg,
+                     EVP_PKEY **pkey_out, X509 **cert_out)
 {
-    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, alg, "provider=hybrid");
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, alg, propq);
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
     X509_NAME *name;
@@ -89,7 +102,7 @@ static int pump(SSL *server, SSL *client)
     return 0;
 }
 
-static void check(OSSL_LIB_CTX *libctx, const char *alg)
+static void check(OSSL_LIB_CTX *libctx, const char *propq, const char *alg)
 {
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
@@ -99,11 +112,11 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg)
     int nid = 0, want_nid = OBJ_sn2nid(alg);
 
     tests++;
-    printf("  %-22s hybrid cert over TLS 1.3 ... ", alg);
+    printf("  %-22s cert over TLS 1.3 ... ", alg);
     fflush(stdout);
 
-    if (!make_hybrid_cert(libctx, alg, &pkey, &cert)) {
-        printf("SKIP (components unavailable)\n");
+    if (!make_cert(libctx, propq, alg, &pkey, &cert)) {
+        printf("SKIP (provider/components unavailable)\n");
         skipped++; tests--;
         ERR_clear_error();
         goto done;
@@ -174,11 +187,13 @@ int main(void)
         fprintf(stderr, "failed to load default/hybrid providers\n");
         return 1;
     }
+    /* Composite is a capability of the hybrid provider (build-flag-gated); its
+     * entries self-skip when hybrid was built without -DHYBRID_COMPOSITE. */
 
-    printf("hybrid-signature certificates over TLS 1.3\n");
-    printf("==========================================\n");
+    printf("PQ-hybrid / composite signature certificates over TLS 1.3\n");
+    printf("========================================================\n");
     for (i = 0; i < sizeof(algs) / sizeof(algs[0]); i++)
-        check(ctx, algs[i]);
+        check(ctx, algs[i].propq, algs[i].alg);
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
