@@ -25,6 +25,7 @@
 #include <openssl/core_names.h>
 #include <openssl/provider.h>
 #include <openssl/err.h>
+#include "composite_prov.h"   /* composite_sig_table: map KAT name -> PQ component */
 
 static int tests, passed, failed, skipped;
 
@@ -48,11 +49,26 @@ static unsigned char *hexdec(const char *h, size_t *outlen)
     return b;
 }
 
-/* Is ML-DSA available from the default provider? (No on 3.4.) */
-static int default_has_mldsa(OSSL_LIB_CTX *ctx)
+/* Look up a combo's table row by its registered name. */
+static const COMPOSITE_SIG_INFO *find_info(const char *name)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, "ML-DSA-44",
-                                                 "provider=default");
+    size_t i;
+
+    for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
+        if (strcmp(composite_sig_table[i].name, name) == 0)
+            return &composite_sig_table[i];
+    return NULL;
+}
+
+/*
+ * Is this combo's PQ component available? Probed per row from the table
+ * (info->pq_alg) rather than hardwired to one ML-DSA level, so the gate tracks
+ * whichever PQ algorithms the default provider actually offers (none on 3.4, and
+ * correctly distinguishing e.g. ML-DSA-44 vs -65 vs -87 as they land).
+ */
+static int pq_available(OSSL_LIB_CTX *ctx, const char *pq_alg)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, pq_alg, "provider=default");
     int ok = c != NULL && EVP_PKEY_keygen_init(c) > 0;
 
     EVP_PKEY_CTX_free(c);
@@ -60,9 +76,10 @@ static int default_has_mldsa(OSSL_LIB_CTX *ctx)
     return ok;
 }
 
-static void check(OSSL_LIB_CTX *ctx, int have_mldsa, const char *name,
+static void check(OSSL_LIB_CTX *ctx, const char *name,
                   const char *msgh, const char *pkh, const char *sigh)
 {
+    const COMPOSITE_SIG_INFO *info = find_info(name);
     unsigned char *msg = NULL, *pk = NULL, *sig = NULL;
     size_t msglen = 0, pklen = 0, siglen = 0;
     EVP_PKEY_CTX *fc = NULL;
@@ -74,8 +91,13 @@ static void check(OSSL_LIB_CTX *ctx, int have_mldsa, const char *name,
     printf("  %-22s verify reference sig ... ", name);
     fflush(stdout);
 
-    if (!have_mldsa) {
-        printf("SKIP (no default ML-DSA)\n");
+    if (info == NULL) {
+        printf("FAIL (KAT name not in composite table)\n");
+        failed++;
+        return;
+    }
+    if (!pq_available(ctx, info->pq_alg)) {
+        printf("SKIP (%s unavailable)\n", info->pq_alg);
         skipped++; tests--;
         return;
     }
@@ -135,7 +157,6 @@ int main(int argc, char **argv)
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
-    int have_mldsa;
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
@@ -145,7 +166,6 @@ int main(int argc, char **argv)
         return 1;
     }
     ERR_clear_error();
-    have_mldsa = default_has_mldsa(ctx);
 
     if ((f = fopen(katfile, "r")) == NULL) {
         fprintf(stderr, "cannot open KAT file: %s\n", katfile);
@@ -164,7 +184,7 @@ int main(int argc, char **argv)
         pkh = strtok_r(NULL, " \t\r\n", &save);
         sigh = strtok_r(NULL, " \t\r\n", &save);
         if (name && msgh && pkh && sigh)
-            check(ctx, have_mldsa, name, msgh, pkh, sigh);
+            check(ctx, name, msgh, pkh, sigh);
     }
     free(line);
     fclose(f);

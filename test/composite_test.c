@@ -2,14 +2,20 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Composite (LAMPS) provider test (issue #6): drive the composite provider
- * through the public EVP API by name — keygen, one-shot EVP_DigestSign /
- * EVP_DigestVerify, and a tamper check — for every row in the master table.
- * Standardized ML-DSA combos need only the default provider; the experimental
- * tier needs oqsprovider; each combo self-skips when its components are absent.
+ * Composite (LAMPS) provider test: drive the composite provider through the
+ * public EVP API by name — keygen, one-shot EVP_DigestSign / EVP_DigestVerify,
+ * and a tamper check — for every row in the master table. Standardized ML-DSA
+ * combos need only the default provider; the experimental tier needs oqsprovider;
+ * each combo self-skips when its components are absent.
  *
- * Proves the provider wiring (keymgmt + signature dispatch + registration). Wire-
- * format interop is a separate, external matter (Bouncy Castle / OpenSSL-native).
+ * Proves the provider wiring (keymgmt + signature dispatch + registration) at the
+ * C/EVP level. TWO deliberately-out-of-scope items:
+ *  - TODO(#15): also drive composite through the `openssl` command line for
+ *    end-to-end stack coverage (cert/CMS/TLS), as hybrid_scenarios.sh does for
+ *    the hybrid paths.
+ *  - Cross-implementation wire-format interop (vs the draft-19 reference) is
+ *    covered separately by composite_kat_test; interop against Bouncy Castle /
+ *    a future OpenSSL-native composite is external and version-dependent.
  */
 #include <stdio.h>
 #include <string.h>

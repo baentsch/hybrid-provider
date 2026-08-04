@@ -151,8 +151,17 @@ int main(void)
             failed++;
         }
     }
-    /* Self-check: the hybrid provider actually advertises the sigalgs. Use a
-     * fresh libctx (default + hybrid only) so this doesn't perturb `adv`. */
+    /*
+     * Self-check: the hybrid provider actually advertises the sigalgs. Use a
+     * fresh libctx (default + hybrid only) so this doesn't perturb `adv`.
+     *
+     * This test is deliberately advertisement/code-point *parity* only — it
+     * guards the tls_codepoint table values against drift from the live
+     * default/oqsprovider capabilities. Real functional use of those code points
+     * (a group actually negotiated / a sigalg actually used for CertificateVerify
+     * over a completed TLS 1.3 handshake) is covered by hybrid_tls_test and
+     * hybrid_cert_tls_test.
+     */
     {
         OSSL_LIB_CTX *hctx = OSSL_LIB_CTX_new();
         OSSL_PROVIDER *h;
