@@ -2,14 +2,11 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Composite (LAMPS) key management (issue #6). Each composite key holds a PQ
- * component + a classical component as EVP_PKEYs; keygen generates both via the
- * public EVP API (PQ from {oqsprovider|default} by tier, classical from default).
- *
- * First slice: keygen + descriptor params only (enough for EVP sign/verify). The
- * empty mandatory-digest advertises the one-shot contract so DigestSign/CMS pick
- * the one-shot path — same convention as the hybrid family. Import/export and the
- * DER encoders/decoders (for serialization + Bouncy Castle interop) follow.
+ * Composite (LAMPS) key management. Each composite key holds a PQ component + a
+ * classical component as EVP_PKEYs; keygen generates both via the public EVP API,
+ * each half sourced from whichever provider the config selects (see
+ * composite_key_new). The empty mandatory-digest advertises the one-shot contract
+ * so DigestSign/CMS pick the one-shot path — same convention as the hybrid family.
  */
 #include "composite_prov.h"
 #include <openssl/core_dispatch.h>
@@ -31,12 +28,21 @@ static void *composite_key_new(void *provctx, const COMPOSITE_SIG_INFO *info)
         return NULL;
     k->libctx = pc != NULL ? pc->libctx : NULL;
     k->info = info;
-    /* Tier-based component sourcing (config-overridable later): standardized
-     * ML-DSA from the default provider, experimental research sigs from
-     * oqsprovider; classical always from default. */
-    k->pq_propq = info->tier == COMPOSITE_TIER_EXPERIMENTAL
-                      ? "provider=oqsprovider" : "provider=default";
-    k->trad_propq = "provider=default";
+    /*
+     * Component sourcing is config-driven: the provider's pq-propquery /
+     * classic-propquery keys (HYBRID_PROV_CTX, shared with the hybrid family)
+     * select which provider supplies each half — no algorithm origin is
+     * hardcoded. Absent config, the classical half resolves from the default
+     * provider, and the PQ half from the default provider for the standardized
+     * ML-DSA combos (whose seed-based private key needs it) or from whichever
+     * loaded provider offers it for the experimental research sigs.
+     */
+    k->pq_propq = pc != NULL && pc->pq_propq != NULL
+                      ? pc->pq_propq
+                      : (info->tier == COMPOSITE_TIER_EXPERIMENTAL
+                             ? NULL : "provider=default");
+    k->trad_propq = pc != NULL && pc->classic_propq != NULL
+                        ? pc->classic_propq : "provider=default";
     k->state = COMPOSITE_HAVE_NOKEYS;
     return k;
 }
@@ -133,10 +139,9 @@ typedef struct {
     const COMPOSITE_SIG_INFO *info;
 } COMPOSITE_GEN_CTX;
 
-static EVP_PKEY *gen_trad(OSSL_LIB_CTX *libctx, const COMPOSITE_SIG_INFO *info)
+static EVP_PKEY *gen_trad(OSSL_LIB_CTX *libctx, const COMPOSITE_SIG_INFO *info,
+                          const char *p)
 {
-    const char *p = "provider=default";
-
     if (strcmp(info->trad_alg, "EC") == 0)
         return EVP_PKEY_Q_keygen(libctx, p, "EC", info->trad_group);
     if (strcmp(info->trad_alg, "ED25519") == 0
@@ -171,7 +176,7 @@ static void *composite_gen(void *vgctx, OSSL_CALLBACK *cb, void *cbarg)
             || EVP_PKEY_keygen(pctx, &k->pq_key) <= 0)
         goto err;
     EVP_PKEY_CTX_free(pctx);
-    if ((k->trad_key = gen_trad(k->libctx, g->info)) == NULL)
+    if ((k->trad_key = gen_trad(k->libctx, g->info, k->trad_propq)) == NULL)
         goto err2;
     k->state = COMPOSITE_HAVE_PRVKEY;
     return k;
@@ -224,13 +229,12 @@ void composite_keymgmt_free(COMPOSITE_KEY *key)
 }
 
 /* Rebuild one classical public component from its raw bytes. */
-static EVP_PKEY *load_trad_pub(OSSL_LIB_CTX *libctx,
+static EVP_PKEY *load_trad_pub(OSSL_LIB_CTX *libctx, const char *propq,
                                const COMPOSITE_SIG_INFO *info,
                                const unsigned char *pub, size_t len)
 {
     if (strcmp(info->trad_alg, "EC") == 0) {
-        EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(libctx, "EC",
-                                                     "provider=default");
+        EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(libctx, "EC", propq);
         EVP_PKEY *k = NULL;
         OSSL_PARAM p[3];
 
@@ -247,7 +251,7 @@ static EVP_PKEY *load_trad_pub(OSSL_LIB_CTX *libctx,
     if (strcmp(info->trad_alg, "ED25519") == 0
             || strcmp(info->trad_alg, "ED448") == 0)
         return EVP_PKEY_new_raw_public_key_ex(libctx, info->trad_alg,
-                                              "provider=default", pub, len);
+                                              propq, pub, len);
     /* RSA / RSA-PSS: raw form is i2d_PublicKey (RSAPublicKey) DER. */
     {
         const unsigned char *pp = pub;
@@ -270,8 +274,9 @@ int composite_key_load_pub(COMPOSITE_KEY *key,
     p[1] = OSSL_PARAM_construct_end();
     if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
             && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_PUBLIC_KEY, p) > 0
-            && (key->trad_key = load_trad_pub(key->libctx, key->info,
-                                              tradpub, tradlen)) != NULL) {
+            && (key->trad_key = load_trad_pub(key->libctx, key->trad_propq,
+                                              key->info, tradpub,
+                                              tradlen)) != NULL) {
         key->state = COMPOSITE_HAVE_PUBKEY;
         ok = 1;
     }
@@ -281,19 +286,18 @@ int composite_key_load_pub(COMPOSITE_KEY *key,
 
 /* Rebuild one classical private component: raw for Ed, DER (i2d_PrivateKey) for
  * EC/RSA — symmetric with the encoder's component_priv(). */
-static EVP_PKEY *load_trad_priv(OSSL_LIB_CTX *libctx,
+static EVP_PKEY *load_trad_priv(OSSL_LIB_CTX *libctx, const char *propq,
                                 const COMPOSITE_SIG_INFO *info,
                                 const unsigned char *priv, size_t len)
 {
     if (strcmp(info->trad_alg, "ED25519") == 0
             || strcmp(info->trad_alg, "ED448") == 0)
         return EVP_PKEY_new_raw_private_key_ex(libctx, info->trad_alg,
-                                               "provider=default", priv, len);
+                                               propq, priv, len);
     {
         const unsigned char *pp = priv;
 
-        return d2i_AutoPrivateKey_ex(NULL, &pp, (long)len, libctx,
-                                     "provider=default");
+        return d2i_AutoPrivateKey_ex(NULL, &pp, (long)len, libctx, propq);
     }
 }
 
@@ -315,8 +319,9 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
     p[1] = OSSL_PARAM_construct_end();
     if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
             && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_KEYPAIR, p) > 0
-            && (key->trad_key = load_trad_priv(key->libctx, key->info,
-                                               tradpriv, tradlen)) != NULL) {
+            && (key->trad_key = load_trad_priv(key->libctx, key->trad_propq,
+                                               key->info, tradpriv,
+                                               tradlen)) != NULL) {
         key->state = COMPOSITE_HAVE_PRVKEY;
         ok = 1;
     }

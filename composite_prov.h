@@ -4,13 +4,10 @@
  *
  * Composite (LAMPS) signature family — shared types + master info table.
  *
- * SCAFFOLD (issue #6): this header fixes the *shape* of the composite family;
- * the keymgmt/sig/encoder/decoder .c files follow. Composite is a build-flag-
- * gated capability *inside this provider* (default off), NOT a separate module —
- * see redesign.md "Phase 2 — Composite (LAMPS), later".
+ * Composite is a build-flag-gated capability *inside this provider*
+ * (-DHYBRID_COMPOSITE), NOT a separate module.
  *
- * Construction (draft-ietf-lamps-pq-composite-sigs-19 — verify verbatim before
- * the combiner lands):
+ * Construction (draft-ietf-lamps-pq-composite-sigs-19):
  *     M' = COMPOSITE_SIG_PREFIX || label || len(ctx) || ctx || PH(M)
  *     pqSig   = PQ.Sign(pqSK,   M', ctx = label)
  *     tradSig = Trad.Sign(tradSK, M')
@@ -21,17 +18,12 @@
  *     component sizes are fixed per OID, so the split is unambiguous.
  *
  * The combiner is GENERIC over the PQ component: everything ML-DSA-specific lives
- * in a table row, so the family can span research PQ sigs (experimental tier),
- * mirroring the oqs-hybrid matrix. Two tiers, never blurred:
- *   - standardized : PQ = ML-DSA only, IANA/LAMPS OID arc, byte-exact vs Bouncy
- *                    Castle / future OpenSSL-native composite. Ceded to default
- *                    once OpenSSL ships it (openssl#26121), like MLX today.
- *   - experimental : any other PQ sig, DISJOINT experimental OID arc, non-
- *                    normative labels, interop only with ourselves / oqsprovider.
- *
- * OPEN (see redesign.md Phase-2 open items): the `oid` values are left NULL until
- * enumerated from the draft-19 IANA registry (standardized) and the chosen
- * experimental arc (matching oqsprovider main if it defines composite combos).
+ * in a table row, so the family can span research PQ sigs (experimental tier).
+ * Two tiers, never blurred:
+ *   - standardized : PQ = ML-DSA only, IANA/LAMPS OID arc; byte-exact against the
+ *                    draft-19 reference vectors. Ceded to the default provider if
+ *                    OpenSSL ships native composite (openssl#26121), like MLX.
+ *   - experimental : any other PQ sig, DISJOINT OID arc, non-normative labels.
  */
 #ifndef HYBRID_COMPOSITE_PROV_H
 #define HYBRID_COMPOSITE_PROV_H
@@ -93,9 +85,10 @@ typedef struct {
 
 /*
  * Composite key: a PQ component + a classical component, sourced by EVP.
- * pq_propq steers the PQ component to {oqsprovider|default}; classical is always
- * the default provider. Parallels HYBRID_KEY (duplicated per #6's "no shared
- * combiner abstraction" — clarity over reuse for the format-specific layers).
+ * pq_propq / trad_propq select the provider for each half (config-driven, see
+ * composite_key_new). Parallels HYBRID_KEY: kept a distinct type because the
+ * composite serialization (raw concat, ML-DSA seed) and combiner differ from the
+ * hybrid concat-signature layout, so the format-specific layers are not shared.
  */
 typedef struct composite_key_st {
     OSSL_LIB_CTX *libctx;
