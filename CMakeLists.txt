@@ -30,6 +30,24 @@ endif()
 # KEMs have an assigned OID, and the format uses OQS's private OID arc.
 option(HYBRID_KEM_ENCODERS "Build encoders/decoders for hybrid KEM key files" OFF)
 
+# Composite (LAMPS) signature family. A build-flag-gated *capability of the hybrid
+# provider* (not a separate module). Default ON: this provider exists to carry
+# pre-standardization algorithms, so the composite family ships by default and is
+# expected to be turned off (or removed) once OpenSSL's default provider offers
+# native composite signatures.
+option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" ON)
+# Composite requires OpenSSL 3.5+ — because of the SEED, not ML-DSA availability as
+# such. ML-DSA the algorithm exists on 3.4 too (via oqsprovider), but draft-19
+# mandates the composite private key BE the ML-DSA 32-byte seed, and retaining /
+# serializing that seed uses OpenSSL's ML-DSA seed API (OSSL_PKEY_PARAM_ML_DSA_SEED),
+# added in 3.5. On 3.4 that symbol is not even declared (composite would not
+# compile) and there is no standard seed plumbing to form a conformant composite
+# private key regardless of which provider supplies ML-DSA. So force off below 3.5.
+if(HYBRID_COMPOSITE AND OPENSSL_VERSION VERSION_LESS 3.5)
+    message(STATUS "HYBRID_COMPOSITE needs OpenSSL 3.5+ (ML-DSA seed API); disabling on ${OPENSSL_VERSION}")
+    set(HYBRID_COMPOSITE OFF)
+endif()
+
 # Provider shared library
 add_library(hybrid-provider MODULE
     hybrid_prov.c
@@ -45,10 +63,23 @@ target_link_libraries(hybrid-provider PRIVATE OpenSSL::Crypto)
 if(HYBRID_KEM_ENCODERS)
     target_compile_definitions(hybrid-provider PRIVATE HYBRID_KEM_ENCODERS)
 endif()
+if(HYBRID_COMPOSITE)
+    target_sources(hybrid-provider PRIVATE
+        composite_keymgmt.c
+        composite_sig.c
+        composite_encoder.c
+        composite_decoder.c
+        composite_caps.c
+    )
+    target_compile_definitions(hybrid-provider PRIVATE HYBRID_COMPOSITE)
+endif()
+# No SUFFIX override: an OpenSSL provider is a CMake MODULE library, whose
+# default suffix is already the right one per platform (.so on Linux/macOS,
+# .dll on Windows) — matching what OpenSSL's loader looks for. PREFIX "" just
+# drops the "lib" so the module is hybrid.so, not libhybrid.so.
 set_target_properties(hybrid-provider PROPERTIES
     PREFIX ""
     OUTPUT_NAME "hybrid"
-    SUFFIX ".so"
 )
 
 # Test executable
@@ -186,6 +217,42 @@ add_test(NAME hybrid_matrix_test COMMAND hybrid_matrix_test)
 set_tests_properties(hybrid_matrix_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
+
+# Composite (LAMPS) tests — the composite family itself is compiled into the
+# hybrid provider above (HYBRID_COMPOSITE). These just exercise it; they load
+# "provider=hybrid" and need the hybrid module built with -DHYBRID_COMPOSITE.
+if(HYBRID_COMPOSITE)
+    # Combiner self-consistency test (drives composite_sig.c directly).
+    add_executable(composite_sig_test test/composite_sig_test.c composite_sig.c)
+    target_include_directories(composite_sig_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_sig_test PRIVATE OpenSSL::Crypto)
+    add_test(NAME composite_sig_test COMMAND composite_sig_test)
+    set_tests_properties(composite_sig_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # Provider-level test: drive composite through EVP by name (provider=hybrid).
+    add_executable(composite_test test/composite_test.c)
+    target_include_directories(composite_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_test hybrid-provider)
+    add_test(NAME composite_test COMMAND composite_test)
+    set_tests_properties(composite_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # KAT interop: verify the draft-19 reference test vectors (real cross-impl
+    # check against lamps-wg/draft-composite-sigs, distilled into composite_kat.txt).
+    add_executable(composite_kat_test test/composite_kat_test.c)
+    target_include_directories(composite_kat_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_kat_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_kat_test hybrid-provider)
+    add_test(NAME composite_kat_test
+        COMMAND composite_kat_test ${CMAKE_SOURCE_DIR}/test/composite_kat.txt)
+    set_tests_properties(composite_kat_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+endif()
 
 # Separate-process CLI TLS interop for Frodo/BIKE/HQC hybrids: the hybrid
 # provider (configured via cnf with component-providers/component-path) drives

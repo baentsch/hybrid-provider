@@ -14,28 +14,70 @@ headers.
 
 ## Supported Algorithms
 
+The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
+`hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`) — those tables are
+the single source of truth. Names, OIDs and TLS code points match their origins:
+the MLX hybrids follow the OpenSSL default provider, and every OQS-legacy hybrid
+follows [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
+byte-for-byte (verified by the interop tests).
+
+A hybrid is only usable when *both* components resolve: ML-KEM/ML-DSA from the
+default provider (OpenSSL 3.5+) or oqsprovider (3.4.x), and the research bases
+(FrodoKEM, BIKE, HQC, Falcon, MAYO, UOV, SNOVA, MQOM2) from oqsprovider only.
+
 ### Hybrid KEMs
 
-| Algorithm | Components | Wire-format compatible with |
-|---|---|---|
-| `X25519MLKEM768` | X25519 + ML-KEM-768 | OpenSSL default provider |
-| `X448MLKEM1024` | X448 + ML-KEM-1024 | OpenSSL default provider |
-| `SecP256r1MLKEM768` | ECDH P-256 + ML-KEM-768 | OpenSSL default provider |
-| `SecP384r1MLKEM1024` | ECDH P-384 + ML-KEM-1024 | OpenSSL default provider |
-
-KEM hybrids match the byte layout of OpenSSL's built-in MLX KEM
-(draft-ietf-tls-ecdhe-mlkem) for full interoperability.
-
-### Hybrid Signatures
+**MLX — byte-compatible with OpenSSL's built-in MLX KEM**
+(draft-ietf-tls-ecdhe-mlkem), interoperable with the default provider:
 
 | Algorithm | Components |
 |---|---|
-| `ed25519mldsa44` | Ed25519 + ML-DSA-44 |
-| `ed25519mldsa65` | Ed25519 + ML-DSA-65 |
-| `ed448mldsa87` | Ed448 + ML-DSA-87 |
-| `p256mldsa44` | ECDSA P-256 + ML-DSA-44 |
-| `p256mldsa65` | ECDSA P-256 + ML-DSA-65 |
-| `p384mldsa87` | ECDSA P-384 + ML-DSA-87 |
+| `X25519MLKEM768` | X25519 + ML-KEM-768 |
+| `X448MLKEM1024` | X448 + ML-KEM-1024 |
+| `SecP256r1MLKEM768` | ECDH P-256 + ML-KEM-768 |
+| `SecP384r1MLKEM1024` | ECDH P-384 + ML-KEM-1024 |
+
+**OQS-legacy hybrids** — oqsprovider naming/wire format. ML-KEM variants compose
+from the default provider or oqsprovider; FrodoKEM/BIKE/HQC need oqsprovider:
+
+| Family | Algorithms |
+|---|---|
+| ML-KEM | `x25519_mlkem512`, `p256_mlkem512`, `bp256_mlkem512`, `p384_mlkem768`, `x448_mlkem768`, `bp384_mlkem768`, `p521_mlkem1024`, `bp512_mlkem1024` |
+| FrodoKEM | `p256_frodo640aes`, `x25519_frodo640aes`, `p256_frodo640shake`, `x25519_frodo640shake`, `p384_frodo976aes`, `x448_frodo976aes`, `p384_frodo976shake`, `x448_frodo976shake`, `p521_frodo1344aes`, `p521_frodo1344shake` |
+| BIKE | `p256_bikel1`, `x25519_bikel1`, `p384_bikel3`, `x448_bikel3`, `p521_bikel5` |
+| HQC | `p256_hqc1`, `x25519_hqc1`, `p384_hqc3`, `x448_hqc3`, `p521_hqc5` |
+
+### Hybrid Signatures
+
+Classical component first (ECDSA on the named curve, or RSA-3072), PQ component
+second; wire format matches oqsprovider (`uint32` classical-length prefix,
+classical signature, PQ signature). The ML-DSA hybrids compose from the default
+provider or oqsprovider; the research families need oqsprovider.
+
+| Family | Algorithms |
+|---|---|
+| ML-DSA | `p256_mldsa44`, `rsa3072_mldsa44`, `p384_mldsa65`, `p521_mldsa87` |
+| Falcon | `p256_falcon512`, `rsa3072_falcon512`, `p521_falcon1024` |
+| Falcon-padded | `p256_falconpadded512`, `rsa3072_falconpadded512`, `p521_falconpadded1024` |
+| MAYO | `p256_mayo1`, `p256_mayo2`, `p384_mayo3`, `p521_mayo5` |
+| UOV | `p256_OV_Is_pkc`, `p256_OV_Ip_pkc`, `p256_OV_Is_pkc_skc`, `p256_OV_Ip_pkc_skc` |
+| SNOVA | `p256_snova2454`, `p256_snova2454esk`, `p256_snova37172`, `p384_snova2455`, `p521_snova2965` |
+| MQOM2 | `p256_mqom2cat1gf16fastr5`, `p384_mqom2cat3gf16fastr5`, `p521_mqom2cat5gf16fastr5` |
+
+### Composite signatures (LAMPS) — optional, `-DHYBRID_COMPOSITE`
+
+An implementation of composite ML-DSA
+(draft-ietf-lamps-pq-composite-sigs), built as a **capability of this provider**
+(not a separate module) when configured with `-DHYBRID_COMPOSITE=ON`. Unlike the
+concatenation hybrids above, composite uses the draft's message-representative
+construction (`M' = prefix || label || len(ctx) || ctx || PH(M)`) and raw-concat
+serialization, and is validated against the draft's reference test vectors
+(`composite_kat_test`).
+
+| Tier | Algorithms |
+|---|---|
+| Standardized (ML-DSA) | `mldsa44_ecdsa_p256`, `mldsa65_rsa3072_pss`, `mldsa65_ed25519`, `mldsa87_ecdsa_p384`, `mldsa87_ed448` |
+| Experimental (other PQ) | `exp_mayo2_ecdsa_p256` |
 
 ## Key Principles
 
@@ -67,6 +109,16 @@ This produces `hybrid.so` in the build directory.
 | Option | Default | Effect |
 |--------|---------|--------|
 | `HYBRID_KEM_ENCODERS` | `OFF` | Build encoders/decoders for hybrid **KEM** key files (SPKI + PKCS8) |
+| `HYBRID_COMPOSITE` | `ON` | Build the composite (LAMPS) ML-DSA signature family into the provider |
+
+`HYBRID_COMPOSITE` compiles the composite signatures (see
+[above](#composite-signatures-lamps--optional--dhybrid_composite)) into the same
+`hybrid.so` — there is no separate composite module. It is **on by default**:
+carrying pre-standardization algorithms is the point of this provider, so the
+composite family ships by default (adding the composite keymgmt, signer,
+encoders/decoders and TLS-SIGALG capability, plus the `composite_*` tests) and is
+expected to be turned off once OpenSSL's default provider offers native composite
+signatures. Configure with `-DHYBRID_COMPOSITE=OFF` to exclude it.
 
 `HYBRID_KEM_ENCODERS` mirrors oqsprovider's `OQS_KEM_ENCODERS` option, and off for
 the same reasons: KEM keys are usually ephemeral, and only the hybrid KEMs that
@@ -98,24 +150,33 @@ LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./hybrid_tls_test
 - **Signature self-consistency** — keygen, sign, verify within the hybrid
   provider
 - **Signature wrong-message rejection** — verify fails on tampered messages
-- **Cross-provider ML-KEM composition** — if `bcrust_provider` is on the module
-  path, the suite additionally composes each hybrid's ML-KEM component from
-  [bcrust-provider](https://github.com/baentsch/bcrustprovider) (via the
-  `?provider=bcrust` component query) and verifies both self-consistency and
-  interop with the default provider's native MLX hybrid. This proves a
-  bcrust-sourced ML-KEM is wire-compatible.
+- **Cross-provider ML-KEM composition** — when `oqsprovider` is on the module
+  path, the suite additionally composes each hybrid's ML-KEM component from it
+  (via the `?provider=oqsprovider` component query) and verifies both
+  self-consistency and interop with the default provider's native MLX hybrid,
+  proving the oqsprovider-sourced ML-KEM is wire-compatible.
 - **Cross-provider ML-DSA composition** — likewise, the ML-DSA component of each
-  hybrid signature is composed from `bcrust_provider` and/or `oqsprovider` (when
-  present) and verified for sign/verify round-trip. The default provider has no
-  hybrid signatures, so there is no native counterpart to interop against —
-  these are self-consistency checks. Note oqsprovider exposes its standalone
-  ML-DSA on OpenSSL 3.5+ (unlike its ML-KEM, which it disables there), so the
-  oqs ML-DSA composition runs on 3.5.6.
+  hybrid signature is composed from `oqsprovider` (when present) and verified for
+  sign/verify round-trip. The default provider has no hybrid signatures, so there
+  is no native counterpart to interop against — these are self-consistency
+  checks. oqsprovider keeps its standalone ML-DSA enabled on OpenSSL 3.5+ (unlike
+  its ML-KEM, which it disables there), so the oqs ML-DSA composition runs on 3.5.
 
-Each cross-provider block is skipped (not failed) when its provider is not on
-the module path, so the baseline suite is 28/28; it grows to 42/42 with
-bcrust-provider and 48/48 with both bcrust-provider and oqsprovider. To enable a
-block, symlink the provider's `.so` into the module directory.
+Each cross-provider block is skipped (not failed) when oqsprovider is not on the
+module path, so the suite passes with the default provider alone and gains the
+oqsprovider composition checks when it is present. To enable those, symlink
+`oqsprovider.so` into the module directory (see `test/setup_oqs_interop.sh`).
+
+Beyond `hybrid_test`, `ctest` runs the rest of the suite: signature certificates
+over TLS 1.3 (`hybrid_cert_tls_test`), config-driven component selection
+(`hybrid_config_test`), private component contexts for Frodo/BIKE/HQC
+(`hybrid_compctx_test`), SPKI/PKCS8 and raw-param round-trips
+(`hybrid_encode_test`, `hybrid_param_test`), CMS SignedData (`hybrid_cms_test`),
+TLS code-point parity (`hybrid_capability_test`), provider coexistence
+(`hybrid_coexist_test`), the full cross-version matrix vs oqsprovider
+(`hybrid_matrix_test`), and — with `-DHYBRID_COMPOSITE` — the composite combiner,
+provider and draft-19 KAT tests (`composite_sig_test`, `composite_test`,
+`composite_kat_test`). Each self-skips cleanly when its prerequisites are absent.
 
 `hybrid_tls_test` verifies **TLS 1.3 handshake interop**: an in-process
 handshake between two `OSSL_LIB_CTX`s connected by memory BIOs, with one peer
@@ -142,7 +203,7 @@ command-line tool, with provider selection via flags or a config file:
 ```sh
 test/hybrid_scenarios.sh all                       # info + TLS handshakes
 test/hybrid_scenarios.sh --hybrid-provider hybrid tls
-test/hybrid_scenarios.sh --extra-provider bcrust_provider --pq-provider bcrust info
+test/hybrid_scenarios.sh --extra-provider oqsprovider --pq-provider oqsprovider info
 test/hybrid_scenarios.sh --use-config tls          # drive via generated openssl.cnf
 test/hybrid_scenarios.sh config > my.cnf           # emit the openssl.cnf
 test/hybrid_scenarios.sh --config settings.conf all
@@ -202,8 +263,8 @@ algorithm itself is selected:
 [hybrid_sect]
 module            = /path/to/hybrid.so
 activate          = 1
-pq-propquery      = ?provider=bcrust   # ML-KEM / ML-DSA component
-classic-propquery = ?provider=default  # X25519 / EC / Ed component
+pq-propquery      = ?provider=oqsprovider   # ML-KEM / ML-DSA component
+classic-propquery = ?provider=default       # X25519 / EC component
 ```
 
 Each defaults to the key's normal property query when unset, so behaviour is
@@ -240,7 +301,7 @@ peer) by `test/hybrid_scenarios.sh tls-compctx`.
 ## Benchmark
 
 `hybrid_bench` times `X25519MLKEM768` (keygen, encapsulate, decapsulate) across
-four configurations, skipping any the running OpenSSL/provider mix can't
+three configurations, skipping any the running OpenSSL/provider mix can't
 satisfy:
 
 1. **default provider** — OpenSSL's native MLX hybrid (needs 3.5+)
@@ -249,9 +310,12 @@ satisfy:
 3. **hybrid provider** — X25519 from the default provider, ML-KEM from
    [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) (needs
    OpenSSL 3.4.x + oqsprovider)
-4. **hybrid provider** — X25519 from the default provider, ML-KEM from
-   [bcrust-provider](https://github.com/baentsch/bcrustprovider) (any OpenSSL
-   3.2+, since bcrust-provider ships its own ML-KEM)
+
+It additionally times a representative slice of the wider inventory — ML-KEM,
+FrodoKEM and HQC hybrid KEMs, and ML-DSA, Falcon, MAYO and SNOVA hybrid
+signatures — with the PQ component sourced from the default provider and, when
+present, oqsprovider. The classical half always comes from the default provider,
+so paired rows isolate the PQ implementation.
 
 ```sh
 cd build
@@ -260,10 +324,9 @@ LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./hybrid_bench [iteration
 
 The optional `iterations` argument sets the number of operations to time
 (default 1000). Set `BENCH_DEBUG=1` to print errors for skipped configurations.
-The benchmark loads `oqsprovider` and `bcrust_provider` from the module search
-path if present, so symlink their `.so` files into the module directory to
-enable configurations 3 and 4. Note that bcrust-provider's algorithms advertise
-the property `provider=bcrust` even though the module loads as `bcrust_provider`.
+The benchmark loads `oqsprovider` from the module search path if present, so
+symlink its `.so` into the module directory to enable configuration 3 and the
+oqsprovider PQ rows.
 
 ### Why the configurations span two OpenSSL versions
 
@@ -271,71 +334,17 @@ oqsprovider intentionally disables its standalone ML-KEM when the default
 provider already ships it (OpenSSL 3.5+), so configuration 3 must run against an
 OpenSSL **3.4.x** build (where the default provider has no ML-KEM and
 oqsprovider supplies it). Configurations 1 and 2 conversely require the native
-MLX hybrid and ML-KEM that only exist in 3.5+. bcrust-provider implements its
-own ML-KEM, so configuration 4 runs on either. The benchmark is therefore run
-once per OpenSSL version and the results combined; on 3.4.x, configurations 3
-and 4 give a head-to-head ML-KEM comparison in the same environment.
+MLX hybrid and ML-KEM that only exist in 3.5+. The benchmark is therefore run
+once per OpenSSL version and the results combined. (oqsprovider keeps its
+standalone *ML-DSA* enabled on 3.5+, unlike ML-KEM, so the default-vs-oqs
+signature comparison runs in a single 3.5+ process.)
 
-### Sample results (3000 iterations, ms/op)
-
-| Configuration | OpenSSL | keygen | encaps | decaps |
-|---|---|---|---|---|
-| default provider (native MLX) | 3.5.6 | 0.062 | 0.072 | 0.055 |
-| hybrid provider (X25519 + ML-KEM from default) | 3.5.6 | 0.056 | 0.071 | 0.055 |
-| hybrid provider (X25519 default, ML-KEM **bcrust**) | 3.5.6 | 0.061 | 0.085 | 0.063 |
-| hybrid provider (X25519 default, ML-KEM **oqsprovider**) | 3.4.2 | 0.041 | 0.067 | 0.041 |
-| hybrid provider (X25519 default, ML-KEM **bcrust**) | 3.4.2 | 0.061 | 0.087 | 0.065 |
-
-Configurations 1 and 2 are statistically identical: the hybrid provider's
-EVP-based composition adds **no measurable overhead** over OpenSSL's built-in
-MLX hybrid. The cleanest ML-KEM-implementation comparison is the third row
-versus the second, both on 3.5.6 in the same process: bcrust-provider's
-pure-Rust ML-KEM (auto-vectorised bc-rust) trails OpenSSL's native ML-KEM
-(hand-written AVX2 NTT) by ~20% on encapsulate and ~15% on decapsulate, with
-keygen within noise. On 3.4.2, oqsprovider (liboqs, hand-tuned AVX2) and bcrust
-run side-by-side, with liboqs fastest. In all cases the hybrid provider
-transparently composes sub-algorithms sourced from *different* providers into a
-single key.
-
-### Hybrid signatures
-
-`hybrid_bench` also times all six hybrid signatures (keygen / sign / verify),
-with the ML-DSA component sourced from the default provider and, when present,
-from bcrust-provider and oqsprovider. The classical half always comes from the
-default provider, so each group of rows isolates the ML-DSA implementation.
-
-Sample results on OpenSSL 3.5.6 (2000 iterations, ms/op):
-
-| Hybrid | ML-DSA source | keygen | sign | verify |
-|---|---|---|---|---|
-| ed25519mldsa44 | default | 0.111 | 0.516 | 0.182 |
-| | bcrust | 0.093 | 0.145 | 0.134 |
-| | oqsprovider | 0.054 | 0.087 | 0.110 |
-| ed25519mldsa65 | default | 0.171 | 0.802 | 0.231 |
-| | bcrust | 0.133 | 0.218 | 0.173 |
-| | oqsprovider | 0.073 | 0.125 | 0.128 |
-| ed448mldsa87 | default | 0.380 | 1.083 | 0.404 |
-| | bcrust | 0.348 | 0.426 | 0.323 |
-| | oqsprovider | 0.240 | 0.300 | 0.243 |
-| p256mldsa44 | default | 0.101 | 0.507 | 0.151 |
-| | bcrust | 0.083 | 0.143 | 0.106 |
-| | oqsprovider | 0.043 | 0.083 | 0.080 |
-| p256mldsa65 | default | 0.163 | 0.831 | 0.207 |
-| | bcrust | 0.130 | 0.221 | 0.144 |
-| | oqsprovider | 0.061 | 0.122 | 0.096 |
-| p384mldsa87 | default | 0.879 | 1.624 | 0.801 |
-| | bcrust | 0.847 | 0.959 | 0.723 |
-| | oqsprovider | 0.737 | 0.809 | 0.638 |
-
-Unlike its ML-KEM, oqsprovider keeps its ML-DSA enabled on 3.5+, so all three
-sources run in the same 3.5.6 process. The ordering is consistent — oqsprovider
-(hand-tuned AVX2) fastest, bcrust (auto-vectorised pure Rust) next, default
-slowest — with the gap largest on **sign** (rejection sampling dominates) and
-smaller on keygen/verify. This inverts the ML-KEM picture, because OpenSSL 3.5.6
-has an optimised ML-KEM but a still-scalar ML-DSA signing path. The bcrust and
-oqsprovider figures are essentially OpenSSL-version-independent (the same on
-3.4.2 within noise, since each uses its own ML-DSA); only the default-provider
-rows are 3.5.6-specific, as 3.4.x has no ML-DSA at all.
+Comparing configurations 1 and 2 isolates the composition cost: the hybrid
+provider's EVP-based composition adds no measurable overhead over OpenSSL's
+built-in MLX hybrid — the time is spent in the underlying primitives, not the
+glue. The remaining configurations compare component implementations (e.g.
+default-provider vs oqsprovider ML-KEM/ML-DSA) in the same process. Run
+`hybrid_bench` in your own environment for numbers.
 
 ## Usage
 
@@ -350,7 +359,10 @@ OSSL_PROVIDER_load(libctx, "hybrid");
 EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "X25519MLKEM768", NULL);
 
 /* Signature */
-EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "ed25519mldsa44", NULL);
+EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "p256_mldsa44", NULL);
+
+/* Composite signature (only when built with -DHYBRID_COMPOSITE) */
+EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "mldsa44_ecdsa_p256", NULL);
 ```
 
 ### Mixing sub-algorithms from different providers

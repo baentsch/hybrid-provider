@@ -564,9 +564,87 @@ abstraction — duplication accepted for clarity). Full LAMPS matrix:
 - Composite ML-DSA — draft-ietf-lamps-pq-composite-**sigs**
 - Composite ML-KEM — draft-ietf-lamps-pq-composite-**kem**
 
-Distinct from hybrid: **single assigned OID per combination**,
-**SEQUENCE-of-components** serialization (not byte-concat), and a
-**domain-separated combiner** with a fixed per-OID label for signatures.
+Distinct from hybrid: **single assigned OID per combination** and a
+**domain-separated combiner**. Per **draft-19** the serialization is **raw
+concatenation** — `pubkey = mldsaPK || tradPK`, `privkey = mldsaSeed || tradSK`,
+`sig = mldsaSig || tradSig`, the concatenation wrapped in a single SPKI BIT
+STRING / `OneAsymmetricKey` OCTET STRING under the composite OID (component sizes
+are fixed per OID, so the split is unambiguous). The layout is close to the
+hybrid concat layout; the distinguishers are the single OID and the signed
+message representative:
+
+```
+M' = Prefix || Label || len(ctx) || ctx || PH(M)
+  Prefix = "CompositeAlgorithmSignatures2025"   (fixed ASCII)
+  Label  = per-combo, e.g. "COMPSIG-MLDSA44-ECDSA-P256-SHA256"
+  PH     = per-combo prehash (SHA-256/512, SHAKE256, …)
+mldsaSig = ML-DSA.Sign(mldsaSK, M', ctx=Label)   tradSig = Trad.Sign(tradSK, M')
+```
+
+### Phase-2 packaging decision (2026-08) — capability here, not a separate provider
+
+**Decision: composite ships as a build-flag-gated capability *inside this
+provider* (default on), as a cleanly-removable module — not a separate
+`composite.so`, not a separate repo.** The `composite_*` files stay a distinct
+family (own OIDs, ASN.1, domain-separated combiner — no shared *combiner*
+abstraction), but reuse the generic two-`EVP_PKEY` key plumbing and the
+config-selected PQ / classic component sourcing.
+
+Rationale:
+
+- **Composite is stabilizing, not churning.** `draft-ietf-lamps-pq-composite-sigs`
+  is at **-19** (Apr 2026), already past **IETF Last Call** and in IESG review
+  toward Proposed Standard; the matrix is bounded (ML-DSA × {RSA-PSS, RSA-PKCS1.5,
+  ECDSA, Ed25519, Ed448}). So there is no blast-radius / "stability-coupling" case
+  for isolating it in its own `.so`.
+- **Hybrid is the family that grows,** not composite: each NIST additional-signature
+  on-ramp alg oqsprovider lands (Round 3, May 2026: FAEST, HAWK, MAYO, MQOM, QR-UOV,
+  SDitH, SNOVA, SQIsign, UOV) becomes a new hybrid combo here. Hybrid is the
+  long-term differentiator worth a stable standalone identity; composite is bounded.
+- **Deployment-surface isolation needs only a build flag,** not a second provider:
+  the M8 hybrid-backend build simply omits composite (the `HYBRID_KEM_ENCODERS`
+  precedent). Shared core → a separate provider would just duplicate the skeleton.
+- **Composite is transitional — treat it like the MLX KEMs.** OpenSSL is tracking a
+  native implementation (issue [openssl#26121](https://github.com/openssl/openssl/issues/26121),
+  triaged feature, gated on its ML-DSA/PKI work). So design composite as a
+  **gap-filler that cedes to the default provider's composite once it ships**, exactly
+  as hybrid cedes MLX to default today. A build-flagged module is as cheap to remove
+  later as a separate provider would be.
+
+Would only flip to a separate `.so` if composite ever needed a materially different
+release cadence — a locked spec + build-flag gating removes that.
+
+### Phase-2 design: generic over the PQ component, two-tier
+
+The combiner is generic — nothing about `M'` or the concat serialization needs
+ML-DSA specifically. So composite is **info-table-driven, exactly like the hybrid
+master list** (`COMPOSITE_SIG_LIST`): one row per combination, the combiner reads
+the row and delegates to both components via EVP with **zero ML-DSA hardcoding**.
+This makes composite span research PQ sigs (Falcon/MAYO/SLH-DSA/on-ramp round-3)
+the same way the hybrid matrix does — experimentation over the same growing PQ set.
+
+A row = `{ pq_alg, trad_alg, trad_group, oid, label, prehash, pq_priv_form, tier }`.
+Per-row (not hardcoded): `label` + `prehash` (normative constants for ML-DSA combos),
+`pq_priv_form` (ML-DSA stores the draft's 32-byte **seed**; other PQ sigs use their
+raw private form), and `tier`.
+
+**Firm two-tier split — never blurred:**
+
+| Tier | PQ component | OID arc | Wire contract |
+| --- | --- | --- | --- |
+| **standardized** | ML-DSA only | IANA/LAMPS registered | byte-exact vs BouncyCastle / future OpenSSL-native; normative |
+| **experimental** | any other PQ sig | a **distinct experimental arc** | non-normative; interop only with ourselves / oqsprovider-if-it-matches |
+
+Why the split is load-bearing:
+- **Cede-to-default stays symmetric with hybrid.** When OpenSSL ships native
+  composite (ML-DSA only, openssl#26121) we cede *exactly* the standardized subset
+  and keep the experimental one — the MLX-to-default move again. A shared OID arc
+  would make that impossible to do cleanly.
+- **No collision.** Experimental combos can never be mistaken for a standards-track
+  OID; a peer that only knows the standard set simply won't resolve ours.
+
+Experimental rows reuse the same `Prefix` (whole-scheme domain separator) with our
+own, explicitly non-normative `label`s.
 
 ### Phase-2 files (proposed)
 ```
@@ -584,11 +662,74 @@ composite_decoder.c     DER + PEM decode by composite OID
   decode + verify. Both directions. Plus KAT vectors from the drafts/oqsprovider.
 - PQ primitives via EVP from {oqsprovider | default}; classic from default only.
 
+### Phase-2 interop status — BouncyCastle vs draft-19 (checked 2026-08)
+
+**BouncyCastle does NOT yet implement draft-19; our code is aligned to draft-19
+and is therefore *ahead* of BC, not wrong.** The blocker is the OID arc:
+
+| | OID arc | id-MLDSA44-ECDSA-P256-SHA256 |
+| --- | --- | --- |
+| **draft-19** (our impl) | PKIX `1.3.6.1.5.5.7.6` | `…6.40` |
+| **BouncyCastle 1.85** | Entrust `2.16.840.1.114027.80.9.1` | `…9.1.3` |
+| BouncyCastle 1.79–1.83 | Entrust `2.16.840.1.114027.80.8.1` | `…8.1.4` |
+
+- Verified against the raw I-D text: the string `114027` does **not** appear in
+  draft-19; its ASN.1 module assigns `pkix(7) alg(6) 40`. Our OIDs +
+  `CompositeAlgorithmSignatures2025` prefix + `COMPSIG-…` labels match draft-19.
+- BC is still on the Entrust arc (pre-IANA/PKIX assignment, ~draft-13/14 era; BC
+  itself moved `…80.8.1` → `…80.9.1` between releases, tracking the draft but
+  lagging the final arc).
+- **Consequence:** current BC ↔ our draft-19 code will not interop out of the box
+  — the AlgorithmIdentifier OIDs differ, and the signing construction *may* also
+  differ (some pre-final drafts used the **OID DER** as the domain separator, not
+  the ASCII label). OID mismatch confirmed; BC's exact combiner not yet confirmed.
+
+**Decision: do NOT retrofit to BC's older draft.** Chasing a moving pre-final BC
+means matching a construction that is about to change. Options, in order of
+preference:
+1. Hold on draft-19; validate against a **draft-19 peer** — OpenSSL-native
+   composite once openssl#26121 lands, or a reference implementation / draft KAT
+   vectors — rather than BC.
+2. Wait for BC to track the **final RFC** (draft-19 is past IETF LC), then interop
+   as-is.
+3. Only if near-term BC interop is required: add a **BC-compatibility tier**
+   (Entrust OID arc + BC's combiner if it differs), kept disjoint from the
+   draft-19 standardized rows — fits the two-tier design.
+
+### Phase-2 interop status — draft-19 KAT interop ACHIEVED (2026-08)
+
+Cross-implementation interop is by KAT: `test/composite_kat_test` imports the
+draft-19 reference public keys and verifies the reference signatures from the
+draft's own `testvectors.json` (`lamps-wg/draft-composite-sigs`, distilled into
+`test/composite_kat.txt`). This is real cross-implementation interop — verify
+recomputes `M'` and checks both component signatures against bytes we did not
+produce — against the authoritative source (the reference impl that generated the
+draft's vectors), the strongest validation short of a live peer.
+
+Known upstream inconsistency: `labelsTable.md` drops the `ECDSA-` infix for the
+ECDSA combos (e.g. `COMPSIG-MLDSA87-P384-SHA512`), whereas `algParams.md` and the
+`generate_test_vectors.py` that produced the KATs keep it
+(`COMPSIG-MLDSA87-ECDSA-P384-SHA512`). We follow `algParams.md`/the KATs, which
+are authoritative; the doc inconsistency is reported to the draft editors out of
+band.
+
 ### Phase-2 open items
-- [ ] Exact composite matrix + OIDs from oqsprovider `main` (LAMPS combos) — not
-  yet enumerated.
-- [ ] Which LAMPS draft revision Bouncy Castle currently tracks (affects the sig
-  combiner + OIDs).
+- [ ] Enumerate the exact composite matrix + OIDs against
+  `draft-ietf-lamps-pq-composite-sigs-19` (bounded: ML-DSA × {RSA-PSS, RSA-PKCS1.5,
+  ECDSA, Ed25519, Ed448}) and cross-check oqsprovider `main`.
+- [x] Confirm the LAMPS revision Bouncy Castle currently tracks — **done**: BC 1.85
+  is on the Entrust OID arc (`…80.9.1`), an earlier draft than -19; see "Phase-2
+  interop status" above. Our impl targets draft-19.
+- [x] Validate against a draft-19 peer — **done** via the reference KAT vectors
+  (`test/composite_kat_test`, 5/5). BC interop remains optional: hold for BC's RFC
+  update, or add a BC-compat tier only if near-term BC interop is required (then
+  first pin BC's exact combiner).
+- [ ] Report the reference doc-vs-code label inconsistency (MLDSA87-ECDSA-P384 in
+  `labelsTable.md`) to the draft editors, out of band.
+- [ ] **Experimental OID arc:** pick the arc for the non-ML-DSA experimental combos —
+  match oqsprovider `main` if it defines composite combos (for interop, as we match
+  its hybrid OIDs), else assign our own experimental arc. Must be disjoint from the
+  IANA/LAMPS standardized arc.
 - [ ] Internal order — assumption: composite sig before composite KEM, encoders
   alongside each.
 
