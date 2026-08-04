@@ -109,13 +109,16 @@ This produces `hybrid.so` in the build directory.
 | Option | Default | Effect |
 |--------|---------|--------|
 | `HYBRID_KEM_ENCODERS` | `OFF` | Build encoders/decoders for hybrid **KEM** key files (SPKI + PKCS8) |
-| `HYBRID_COMPOSITE` | `OFF` | Build the composite (LAMPS) ML-DSA signature family into the provider |
+| `HYBRID_COMPOSITE` | `ON` | Build the composite (LAMPS) ML-DSA signature family into the provider |
 
 `HYBRID_COMPOSITE` compiles the composite signatures (see
 [above](#composite-signatures-lamps--optional--dhybrid_composite)) into the same
-`hybrid.so` — there is no separate composite module. It is off by default while
-the draft is not yet an RFC; when enabled it adds the composite keymgmt, signer,
-encoders/decoders and TLS-SIGALG capability, plus the `composite_*` tests.
+`hybrid.so` — there is no separate composite module. It is **on by default**:
+carrying pre-standardization algorithms is the point of this provider, so the
+composite family ships by default (adding the composite keymgmt, signer,
+encoders/decoders and TLS-SIGALG capability, plus the `composite_*` tests) and is
+expected to be turned off once OpenSSL's default provider offers native composite
+signatures. Configure with `-DHYBRID_COMPOSITE=OFF` to exclude it.
 
 `HYBRID_KEM_ENCODERS` mirrors oqsprovider's `OQS_KEM_ENCODERS` option, and off for
 the same reasons: KEM keys are usually ephemeral, and only the hybrid KEMs that

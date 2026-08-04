@@ -30,10 +30,12 @@ endif()
 # KEMs have an assigned OID, and the format uses OQS's private OID arc.
 option(HYBRID_KEM_ENCODERS "Build encoders/decoders for hybrid KEM key files" OFF)
 
-# Composite (LAMPS) signature family — issue #6. Per the packaging decision
-# (redesign.md Phase 2) composite is a build-flag-gated *capability of the hybrid
-# provider* (not a separate module), default OFF.
-option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" OFF)
+# Composite (LAMPS) signature family. A build-flag-gated *capability of the hybrid
+# provider* (not a separate module). Default ON: this provider exists to carry
+# pre-standardization algorithms, so the composite family ships by default and is
+# expected to be turned off (or removed) once OpenSSL's default provider offers
+# native composite signatures.
+option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" ON)
 
 # Provider shared library
 add_library(hybrid-provider MODULE

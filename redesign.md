@@ -565,15 +565,13 @@ abstraction — duplication accepted for clarity). Full LAMPS matrix:
 - Composite ML-KEM — draft-ietf-lamps-pq-composite-**kem**
 
 Distinct from hybrid: **single assigned OID per combination** and a
-**domain-separated combiner**. NB per **draft-19** (verify verbatim before
-coding — earlier drafts differed): the serialization is **raw concatenation**,
-*not* the ASN.1 SEQUENCE-of-components earlier revisions used —
-`pubkey = mldsaPK || tradPK`, `privkey = mldsaSeed || tradSK`,
+**domain-separated combiner**. Per **draft-19** the serialization is **raw
+concatenation** — `pubkey = mldsaPK || tradPK`, `privkey = mldsaSeed || tradSK`,
 `sig = mldsaSig || tradSig`, the concatenation wrapped in a single SPKI BIT
-STRING / `OneAsymmetricKey` OCTET STRING under the composite OID (component
-sizes are fixed per OID, so the split is unambiguous). Component sizes fixed per
-OID means this is *closer* to the hybrid concat layout than expected; the real
-distinguishers are the single OID and the signed message representative:
+STRING / `OneAsymmetricKey` OCTET STRING under the composite OID (component sizes
+are fixed per OID, so the split is unambiguous). The layout is close to the
+hybrid concat layout; the distinguishers are the single OID and the signed
+message representative:
 
 ```
 M' = Prefix || Label || len(ctx) || ctx || PH(M)
@@ -586,15 +584,13 @@ mldsaSig = ML-DSA.Sign(mldsaSK, M', ctx=Label)   tradSig = Trad.Sign(tradSK, M')
 ### Phase-2 packaging decision (2026-08) — capability here, not a separate provider
 
 **Decision: composite ships as a build-flag-gated capability *inside this
-provider* (default off), as a cleanly-removable module — not a separate
+provider* (default on), as a cleanly-removable module — not a separate
 `composite.so`, not a separate repo.** The `composite_*` files stay a distinct
 family (own OIDs, ASN.1, domain-separated combiner — no shared *combiner*
 abstraction), but reuse the generic two-`EVP_PKEY` key plumbing and the
-`{oqsprovider|default}`-PQ / `default`-classic sourcing rule.
+config-selected PQ / classic component sourcing.
 
-Rationale (an earlier draft argued the opposite on a *false* premise — that
-composite was the volatile churner and hybrid the frozen dependency; both are
-inverted):
+Rationale:
 
 - **Composite is stabilizing, not churning.** `draft-ietf-lamps-pq-composite-sigs`
   is at **-19** (Apr 2026), already past **IETF Last Call** and in IESG review
@@ -702,25 +698,20 @@ preference:
 
 ### Phase-2 interop status — draft-19 KAT interop ACHIEVED (2026-08)
 
-Option 1 above is **done**: `test/composite_kat_test` imports the draft-19
-reference public keys and verifies the reference signatures from the draft's own
-`testvectors.json` (`lamps-wg/draft-composite-sigs`, distilled into
-`test/composite_kat.txt`). **5/5 standardized combos verify** — real cross-
-implementation interop, since verify recomputes `M'` and checks both component
-signatures against bytes we did not produce. This is the strongest validation
-available short of a live peer, and it's the authoritative source (the reference
-impl that generated the draft's vectors). Suite 18/18.
+Cross-implementation interop is by KAT: `test/composite_kat_test` imports the
+draft-19 reference public keys and verifies the reference signatures from the
+draft's own `testvectors.json` (`lamps-wg/draft-composite-sigs`, distilled into
+`test/composite_kat.txt`). This is real cross-implementation interop — verify
+recomputes `M'` and checks both component signatures against bytes we did not
+produce — against the authoritative source (the reference impl that generated the
+draft's vectors), the strongest validation short of a live peer.
 
-Reaching 5/5 caught two defects a self-consistent test can never see:
-- **Our bug:** `trad_md` for the ECDSA-P384 component must be the curve-native
-  **SHA-384**, not the SHA-512 in the combo name (that is only `PH(M)`). Fixed.
-- **A reference doc-vs-code inconsistency (NOT ours):** for
-  `id-MLDSA87-ECDSA-P384-SHA512`, `labelsTable.md` documents the label as
-  `COMPSIG-MLDSA87-P384-SHA512` (no `ECDSA`), but `generate_test_vectors.py` — which
-  produced the KATs — uses `COMPSIG-MLDSA87-ECDSA-P384-SHA512`. The KATs match the
-  code, so the doc table is wrong for that row (and by inspection the sibling
-  `MLDSA87-ECDSA-{BP384,P521}` rows). Report to the draft editors out of band
-  (see issue #6). We follow the code/KATs, which are authoritative.
+Known upstream inconsistency: `labelsTable.md` drops the `ECDSA-` infix for the
+ECDSA combos (e.g. `COMPSIG-MLDSA87-P384-SHA512`), whereas `algParams.md` and the
+`generate_test_vectors.py` that produced the KATs keep it
+(`COMPSIG-MLDSA87-ECDSA-P384-SHA512`). We follow `algParams.md`/the KATs, which
+are authoritative; the doc inconsistency is reported to the draft editors out of
+band.
 
 ### Phase-2 open items
 - [ ] Enumerate the exact composite matrix + OIDs against
@@ -735,9 +726,6 @@ Reaching 5/5 caught two defects a self-consistent test can never see:
   first pin BC's exact combiner).
 - [ ] Report the reference doc-vs-code label inconsistency (MLDSA87-ECDSA-P384 in
   `labelsTable.md`) to the draft editors, out of band.
-- [ ] **Cede-to-default path:** design composite to defer to the default provider's
-  native composite once OpenSSL ships it (openssl#26121), mirroring the MLX-to-default
-  deferral. Gate the whole family behind a build flag (default off).
 - [ ] **Experimental OID arc:** pick the arc for the non-ML-DSA experimental combos —
   match oqsprovider `main` if it defines composite combos (for interop, as we match
   its hybrid OIDs), else assign our own experimental arc. Must be disjoint from the
