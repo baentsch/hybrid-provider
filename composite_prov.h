@@ -85,6 +85,10 @@ typedef struct {
                              /* though the label says SHA512); NULL = pure (Ed)  */
     int         pq_priv_seed;/* 1: PQ priv serialized as seed (ML-DSA 32B); 0 raw*/
     int         tier;        /* COMPOSITE_TIER_STANDARD | _EXPERIMENTAL         */
+    int         tls_codepoint;/* TLS SignatureScheme code point (0 = none), the  */
+                             /* single source consumed by composite_caps.c —     */
+                             /* mirrors HYBRID_SIG_INFO.tls_codepoint            */
+    int         security_bits;/* strength lookup (ML-DSA 44/65/87 -> 128/192/256)*/
 } COMPOSITE_SIG_INFO;
 
 /*
@@ -110,56 +114,54 @@ typedef struct composite_key_st {
  * thunks and provider registration. To add a combo, add exactly one row.
  *
  * X(cfield, name, pq_alg, trad_alg, trad_group, oid, label, prehash, trad_md,
- *   pq_priv_seed, tier)
+ *   pq_priv_seed, tier, tls_codepoint, security_bits)
  *
- * Labels/prehash/trad_md for the standardized rows are the draft-19 normative
- * constants (§ Table 2 for the RSA-PSS params); OIDs are the draft-19 §6/§7
- * values (base arc 1.3.6.1.5.5.7.6, PKIX alg), confirmed against the authoritative
- * I-D text. This is a representative starter set — the full standardized matrix
- * (ML-DSA x {RSA-PSS, RSA-PKCS1.5, ECDSA-P256/P384/P521/brainpool, Ed25519,
- * Ed448}) is filled the same way. The experimental row keeps oid = NULL pending
- * the chosen experimental arc.
- *
- * NB the domain-separator content in `label` (ASCII string vs the OID's DER) and
- * the ML-DSA context value MUST be confirmed against draft-19 before claiming
- * interop; self-consistent sign/verify does not exercise that choice.
+ * oid/label/prehash/trad_md are the draft-19 values from src/algParams.md; every
+ * standardized row is verified against the draft's reference signatures by
+ * test/composite_kat_test. The `tls_codepoint` values are provisional
+ * (draft-reddy-tls-composite-mldsa, still TBD in IANA) and are the single source
+ * read by composite_caps.c; `security_bits` is the ML-DSA level's strength. This
+ * is a representative starter set; the full standardized matrix (ML-DSA x
+ * {RSA-PSS, RSA-PKCS1.5, ECDSA-P256/P384/P521/brainpool, Ed25519, Ed448}) is
+ * filled the same way. The experimental row keeps oid = NULL (disjoint arc).
  */
 #define COMPOSITE_SIG_LIST(X)                                                  \
   /* --- standardized (LAMPS Composite ML-DSA) --- */                         \
   X(mldsa44_ecdsa_p256, "mldsa44_ecdsa_p256", "ML-DSA-44", "EC", "P-256",     \
       "1.3.6.1.5.5.7.6.40", "COMPSIG-MLDSA44-ECDSA-P256-SHA256",             \
       "SHA256", "SHA256", 1,                                                   \
-      COMPOSITE_TIER_STANDARD)                                                 \
+      COMPOSITE_TIER_STANDARD, 0x0907, 128)                                    \
   X(mldsa65_rsa3072_pss, "mldsa65_rsa3072_pss", "ML-DSA-65", "RSA-PSS", NULL, \
       "1.3.6.1.5.5.7.6.41", "COMPSIG-MLDSA65-RSA3072-PSS-SHA512",            \
       "SHA512", "SHA256", 1,                                                   \
-      COMPOSITE_TIER_STANDARD)                                                 \
+      COMPOSITE_TIER_STANDARD, 0x0910, 192)                                    \
   X(mldsa65_ed25519, "mldsa65_ed25519", "ML-DSA-65", "ED25519", NULL,         \
       "1.3.6.1.5.5.7.6.48", "COMPSIG-MLDSA65-Ed25519-SHA512",                \
       "SHA512", NULL, 1,                                                       \
-      COMPOSITE_TIER_STANDARD)                                                 \
+      COMPOSITE_TIER_STANDARD, 0x090B, 192)                                    \
   X(mldsa87_ecdsa_p384, "mldsa87_ecdsa_p384", "ML-DSA-87", "EC", "P-384",     \
-      /* trad_md is the curve-native ECDSA hash (P-384 -> SHA-384), NOT the SHA-512
-       * in the name (that is only PH(M)). Confirmed via KATs. Label keeps "ECDSA"
-       * per generate_test_vectors.py (labelsTable.md doc wrongly drops it). */    \
+      /* trad_md is the curve-native ECDSA hash (P-384 -> SHA-384), NOT the    \
+       * SHA-512 in the name (that is only PH(M)); the label keeps the "ECDSA-"\
+       * infix (algParams.md), which labelsTable.md drops. */                  \
       "1.3.6.1.5.5.7.6.49", "COMPSIG-MLDSA87-ECDSA-P384-SHA512",              \
       "SHA512", "SHA384", 1,                                                   \
-      COMPOSITE_TIER_STANDARD)                                                 \
+      COMPOSITE_TIER_STANDARD, 0x0909, 256)                                    \
   X(mldsa87_ed448, "mldsa87_ed448", "ML-DSA-87", "ED448", NULL,               \
       "1.3.6.1.5.5.7.6.51", "COMPSIG-MLDSA87-Ed448-SHAKE256",                \
       "SHAKE256", NULL, 1,                                                     \
-      COMPOSITE_TIER_STANDARD)                                                 \
+      COMPOSITE_TIER_STANDARD, 0x0912, 256)                                    \
   /* --- experimental (non-ML-DSA PQ; DISJOINT arc; non-normative label) ---  \
    * Illustrative single row — proves the family is generic over the PQ        \
    * component. Extend with research sigs (Falcon/MAYO/SLH-DSA/on-ramp) as     \
-   * needed; sourced from oqsprovider via pq_propq. */                        \
+   * needed. No TLS code point (0): experimental combos are not TLS sigalgs. */\
   X(exp_mayo2_ecdsa_p256, "exp_mayo2_ecdsa_p256", "mayo2", "EC", "P-256",     \
       NULL, "COMPSIG-EXP-MAYO2-ECDSA-P256-SHA256", "SHA256", "SHA256", 0,     \
-      COMPOSITE_TIER_EXPERIMENTAL)
+      COMPOSITE_TIER_EXPERIMENTAL, 0, 128)
 
 /* Generate the info table from the master list. */
-#define COMPOSITE_SIG_ROW(cf, nm, pq, tr, grp, oid, lbl, ph, tmd, seed, tier) \
-    { nm, pq, tr, grp, oid, lbl, ph, tmd, seed, tier },
+#define COMPOSITE_SIG_ROW(cf, nm, pq, tr, grp, oid, lbl, ph, tmd, seed, tier,  \
+                          cp, sb)                                              \
+    { nm, pq, tr, grp, oid, lbl, ph, tmd, seed, tier, cp, sb },
 static const COMPOSITE_SIG_INFO composite_sig_table[] = {
     COMPOSITE_SIG_LIST(COMPOSITE_SIG_ROW)
 };
