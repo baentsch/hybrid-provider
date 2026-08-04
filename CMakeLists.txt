@@ -36,6 +36,14 @@ option(HYBRID_KEM_ENCODERS "Build encoders/decoders for hybrid KEM key files" OF
 # expected to be turned off (or removed) once OpenSSL's default provider offers
 # native composite signatures.
 option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" ON)
+# Composite is ML-DSA-based, and OpenSSL only ships ML-DSA from 3.5. On older
+# OpenSSL the composite sources don't even compile (no OSSL_PKEY_PARAM_ML_DSA_SEED
+# etc.), and there would be no ML-DSA to compose, so force it off below 3.5
+# regardless of the flag.
+if(HYBRID_COMPOSITE AND OPENSSL_VERSION VERSION_LESS 3.5)
+    message(STATUS "HYBRID_COMPOSITE needs OpenSSL 3.5+ (ML-DSA); disabling on ${OPENSSL_VERSION}")
+    set(HYBRID_COMPOSITE OFF)
+endif()
 
 # Provider shared library
 add_library(hybrid-provider MODULE
