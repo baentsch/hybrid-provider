@@ -147,8 +147,9 @@ static EVP_PKEY *gen_trad(OSSL_LIB_CTX *libctx, const COMPOSITE_SIG_INFO *info,
     if (strcmp(info->trad_alg, "ED25519") == 0
             || strcmp(info->trad_alg, "ED448") == 0)
         return EVP_PKEY_Q_keygen(libctx, p, info->trad_alg);
-    /* RSA / RSA-PSS: a plain RSA key; PSS applied at signing time. */
-    return EVP_PKEY_Q_keygen(libctx, p, "RSA", (size_t)COMPOSITE_RSA_TRAD_BITS);
+    /* RSA / RSA-PSS: a plain RSA key of the combo's modulus size; PKCS#1v1.5 vs
+     * PSS padding is chosen at signing time (see composite_sig.c trad_op). */
+    return EVP_PKEY_Q_keygen(libctx, p, "RSA", (size_t)info->trad_rsa_bits);
 }
 
 static void *composite_gen_init_info(void *provctx,

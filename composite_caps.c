@@ -31,8 +31,8 @@ typedef struct {
 
 /* Per-algorithm constants, generated in master-list order from the list's
  * tls_codepoint / security_bits columns. */
-#define COMPOSITE_CAPS_CONST_ROW(cf, nm, pq, tr, grp, oid, lbl, ph, tmd, seed,  \
-                                 tier, cp, sb)                                  \
+#define COMPOSITE_CAPS_CONST_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, ph, tmd,  \
+                                 seed, tier, cp, sb)                            \
     { (unsigned int)(cp), (unsigned int)(sb), TLS1_3_VERSION, 0 },
 static const COMPOSITE_TLS_SIGALG_CONSTANTS composite_sigalg_list[] = {
     COMPOSITE_SIG_LIST(COMPOSITE_CAPS_CONST_ROW)
@@ -65,8 +65,8 @@ static const COMPOSITE_TLS_SIGALG_CONSTANTS composite_sigalg_list[] = {
  * directly keeps sizeof() a compile-time length as in hybrid_caps.c. The
  * experimental row carries code point 0 and is skipped at advertisement time, so
  * its NULL oid entry is never handed to the callback. */
-#define COMPOSITE_CAPS_PARAM_ROW(cf, nm, pq, tr, grp, oid, lbl, ph, tmd, seed,  \
-                                 tier, cp, sb)                                  \
+#define COMPOSITE_CAPS_PARAM_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, ph, tmd,  \
+                                 seed, tier, cp, sb)                            \
     COMPOSITE_TLS_SIGALG_ENTRY(nm, oid, COMPOSITE_SIG_IDX_##cf),
 static const OSSL_PARAM composite_param_sigalg_list[][8] = {
     COMPOSITE_SIG_LIST(COMPOSITE_CAPS_PARAM_ROW)
