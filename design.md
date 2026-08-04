@@ -83,8 +83,8 @@ reads two optional keys from its config section:
 [hybrid_sect]
 module            = /path/to/hybrid.so
 activate          = 1
-pq-propquery      = ?provider=bcrust   # ML-KEM / ML-DSA component
-classic-propquery = ?provider=default  # X25519 / EC / Ed component
+pq-propquery      = ?provider=oqsprovider   # ML-KEM / ML-DSA component
+classic-propquery = ?provider=default       # X25519 / EC component
 ```
 
 When set, `pq-propquery` is used for every fetch of the PQ component (alg2) and
@@ -108,24 +108,23 @@ The provider dispatch table exposes:
 Hybrid algorithm pairings are defined at compile time with a table-driven
 approach. Each entry specifies:
 
+Component **sizes are not stored in the table** — they are discovered at runtime
+from the actual component algorithms (`hybrid_ensure_sizes`), so a new hybrid
+needs only its component identity, not hardcoded lengths. The table rows carry
+only identity plus the parameters that fix the wire format:
+
 ```c
 typedef struct {
     const char *hybrid_name;     /* e.g., "X25519MLKEM768" */
-    const char *alg1_name;       /* e.g., "X25519" */
+    const char *alg1_name;       /* e.g., "X25519" or "EC" */
     const char *alg1_group;      /* e.g., NULL (or "P-256" for EC) */
     int         alg1_is_kem;     /* 0 = key-exchange, 1 = native KEM */
-    const char *alg2_name;       /* e.g., "ML-KEM-768" */
-    const char *alg2_group;      /* e.g., NULL */
+    const char *alg2_name;       /* PQ KEM, e.g., "MLKEM768" */
+    const char *alg2_group;      /* NULL */
     int         alg2_is_kem;     /* always 1 for PQ KEMs */
-    int         alg1_slot;       /* 0 or 1: position in concatenation */
-    size_t      alg1_pubkey_bytes;
-    size_t      alg1_prvkey_bytes;
-    size_t      alg1_shsec_bytes;
-    size_t      alg1_ctext_bytes;  /* 0 if key-exchange (pubkey used) */
-    size_t      alg2_pubkey_bytes;
-    size_t      alg2_prvkey_bytes;
-    size_t      alg2_shsec_bytes;
-    size_t      alg2_ctext_bytes;
+    int         alg2_slot;       /* 0 or 1: position of PQ share in concatenation */
+    int         tls_codepoint;   /* TLS group code point, 0 if none */
+    const char *oid;             /* X.509 OID, or NULL if not key-file encodable */
 } HYBRID_KEM_INFO;
 ```
 
@@ -133,19 +132,20 @@ For signatures:
 
 ```c
 typedef struct {
-    const char *hybrid_name;     /* e.g., "ed25519_mldsa65" */
-    const char *alg1_name;       /* e.g., "ED25519" */
-    const char *alg2_name;       /* e.g., "ML-DSA-65" */
-    size_t      alg1_pubkey_bytes;
-    size_t      alg1_prvkey_bytes;
-    size_t      alg1_sig_bytes;
-    size_t      alg2_pubkey_bytes;
-    size_t      alg2_prvkey_bytes;
-    size_t      alg2_sig_bytes;
+    const char *hybrid_name;     /* e.g., "p256_mldsa44" */
+    const char *alg1_name;       /* "EC" or "RSA" (no EdDSA) */
+    const char *alg1_group;      /* EC group (e.g. "P-256"), or NULL for RSA-3072 */
+    const char *alg2_name;       /* PQ, e.g. "MLDSA44" */
+    int         nist_level;      /* PQ NIST level -> classical digest choice */
+    const char *oid;             /* X.509 OID (used by encoders/decoders) */
+    int         tls_codepoint;   /* TLS SignatureScheme code point (0 if none) */
 } HYBRID_SIG_INFO;
 ```
 
-### Initial KEM algorithms (matching OpenSSL default provider wire format)
+### KEM algorithms
+
+The MLX hybrids below match the OpenSSL default provider's wire format
+(draft-ietf-tls-ecdhe-mlkem) and are the interop baseline:
 
 | Hybrid Name          | Component 1 | Component 2   | Slot Order         |
 |----------------------|-------------|---------------|--------------------|
@@ -154,19 +154,40 @@ typedef struct {
 | SecP256r1MLKEM768    | EC P-256    | ML-KEM-768    | EC first           |
 | SecP384r1MLKEM1024   | EC P-384    | ML-KEM-1024   | EC first           |
 
-### Initial Signature algorithms
+Beyond these, the provider registers the full oqsprovider-compatible hybrid-KEM
+matrix — ML-KEM (incl. brainpool curves), FrodoKEM, BIKE and HQC combinations —
+matching oqsprovider's names, OIDs and TLS code points. The authoritative list
+is `HYBRID_KEM_LIST` in `hybrid_prov.h`; the README enumerates them.
 
-OpenSSL has no built-in hybrid signatures, so the provider defines its own
-naming (classical component first, PQ component second):
+### Signature algorithms
+
+OpenSSL has no built-in hybrid signatures, so the provider uses oqsprovider's
+naming and wire format (classical component first, PQ component second). The
+classical component is ECDSA on the named curve or RSA-3072 — there are **no**
+EdDSA concatenation hybrids. The core ML-DSA set:
 
 | Hybrid Name      | Component 1     | Component 2 |
 |------------------|-----------------|-------------|
-| ed25519mldsa44   | Ed25519         | ML-DSA-44   |
-| ed25519mldsa65   | Ed25519         | ML-DSA-65   |
-| ed448mldsa87     | Ed448           | ML-DSA-87   |
-| p256mldsa44      | ECDSA P-256     | ML-DSA-44   |
-| p256mldsa65      | ECDSA P-256     | ML-DSA-65   |
-| p384mldsa87      | ECDSA P-384     | ML-DSA-87   |
+| p256_mldsa44     | ECDSA P-256     | ML-DSA-44   |
+| rsa3072_mldsa44  | RSA-3072        | ML-DSA-44   |
+| p384_mldsa65     | ECDSA P-384     | ML-DSA-65   |
+| p521_mldsa87     | ECDSA P-521     | ML-DSA-87   |
+
+The full matrix additionally pairs the same classical curves with the research
+PQ signatures from oqsprovider — Falcon (incl. padded), MAYO, UOV, SNOVA and
+MQOM2. The authoritative list is `HYBRID_SIG_LIST` in `hybrid_prov.h`.
+
+### Composite signatures (LAMPS)
+
+An optional, build-flag-gated (`-DHYBRID_COMPOSITE`) capability *of this same
+provider* implements composite ML-DSA (draft-ietf-lamps-pq-composite-sigs).
+Unlike the concatenation hybrids, composite uses the draft's message
+representative `M' = prefix || label || len(ctx) || ctx || PH(M)` and raw-concat
+serialization, keyed off `COMPOSITE_SIG_LIST` in `composite_prov.h`. It is
+validated against the draft's published KAT vectors (`composite_kat_test`) and
+covers the standardized ML-DSA combos (e.g. `mldsa44_ecdsa_p256`,
+`mldsa65_rsa3072_pss`, `mldsa65_ed25519`, `mldsa87_ecdsa_p384`, `mldsa87_ed448`)
+plus a disjoint experimental arc. See `composite_prov.h` / redesign.md Phase 2.
 
 ## Hybrid Key Structure
 
@@ -298,31 +319,32 @@ exactly. From analysis of `mlx_kem.c`:
 
 ## Operation: Signature
 
+Wire format matches oqsprovider's hybrid signatures: a big-endian `uint32`
+length of the classical signature, then the classical signature, then the PQ
+signature (`ENCODE_UINT32(classical_len) || classical_sig || pq_sig`). This
+length prefix (rather than a fixed maximum slot) accommodates ECDSA's
+variable-length DER without padding. The classical component signs under a digest
+selected by the PQ component's NIST level (1 → SHA-256, 2/3 → SHA-384, 4/5 →
+SHA-512); the PQ component signs per its own scheme.
+
 ### Sign
 
 ```
-1. sig1 = EVP_DigestSign(key1, tbs, tbslen)   (classical, slot 0)
-2. sig2 = EVP_DigestSign(key2, tbs, tbslen)   (PQ, slot 1)
-3. Output: sig = sig1 || sig2
+1. sig1 = EVP_DigestSign(key1, tbs, tbslen)   (classical, alg1, digest per NIST level)
+2. sig2 = EVP_DigestSign(key2, tbs, tbslen)   (PQ, alg2)
+3. Output: sig = ENCODE_UINT32(len(sig1)) || sig1 || sig2
 ```
 
-Both sub-signatures are over the same `tbs` (to-be-signed) data. Unlike the KEM
-hybrids, signature hybrids always use alg1-first ordering (no slot swapping).
-
-The classical component's size in the concatenation is fixed at the maximum
-signature length (`alg1_sig_bytes`). EdDSA signatures are constant-length and
-fill it exactly. ECDSA signatures are variable-length DER, so the actual signature
-is written into the slot and the remaining bytes are left zeroed.
+Both sub-signatures are over the same `tbs` (to-be-signed) data. Signature
+hybrids always use alg1-first ordering (no slot swapping).
 
 ### Verify
 
 ```
-1. Split sig into sig1, sig2 by known sizes (sig1 = first alg1_sig_bytes)
-2. For ECDSA, parse the real DER length from sig1 before verifying
-   (the zero padding is ignored)
-3. ok1 = EVP_DigestVerify(key1, sig1, tbs, tbslen)
-4. ok2 = EVP_DigestVerify(key2, sig2, tbs, tbslen)
-5. Return success only if BOTH pass
+1. Read the uint32 classical length prefix; split into sig1, sig2 accordingly
+2. ok1 = EVP_DigestVerify(key1, sig1, tbs, tbslen)   (same digest as sign)
+3. ok2 = EVP_DigestVerify(key2, sig2, tbs, tbslen)
+4. Return success only if BOTH pass
 ```
 
 ### One-shot vs streaming
@@ -351,8 +373,8 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
 };
 
 static const OSSL_ALGORITHM hybrid_signatures[] = {
-    { "ed25519mldsa44", "provider=hybrid", hybrid_signature_functions, "..." },
-    { "p256mldsa65", "provider=hybrid", hybrid_signature_functions, "..." },
+    { "p256_mldsa44", "provider=hybrid", hybrid_signature_functions, "..." },
+    { "p384_mldsa65", "provider=hybrid", hybrid_signature_functions, "..." },
     ...
     { NULL, NULL, NULL, NULL }
 };
@@ -364,12 +386,18 @@ must know which algorithm variant to create.
 ### get_capabilities
 
 The provider reports `TLS-GROUP` capabilities (`hybrid_caps.c`) so its KEMs are
-negotiable in a TLS handshake. Only the three MLX hybrids with standardized
-codepoints (draft-ietf-tls-ecdhe-mlkem) are advertised — `X25519MLKEM768`
-(0x11EC), `SecP256r1MLKEM768` (0x11EB), `SecP384r1MLKEM1024` (0x11ED);
-`X448MLKEM1024` has no TLS codepoint and is reachable only via the KEM API.
+negotiable in a TLS handshake, and `TLS-SIGALG` capabilities so its hybrid (and,
+when built, composite) signatures are usable for TLS authentication. Every hybrid
+whose table row carries a non-zero `tls_codepoint` is advertised: the three MLX
+groups with standardized codepoints (draft-ietf-tls-ecdhe-mlkem —
+`X25519MLKEM768` 0x11EC, `SecP256r1MLKEM768` 0x11EB, `SecP384r1MLKEM1024`
+0x11ED) plus the oqsprovider-assigned code points for the OQS-legacy KEM and
+signature hybrids. `X448MLKEM1024` has no TLS codepoint and is reachable only via
+the KEM API. The code points are kept in lockstep with their origins by
+`hybrid_capability_test`, which compares them against the live default/oqsprovider
+capabilities.
 
-The groups are advertised under their **canonical names and codepoints**,
+The MLX groups are advertised under their **canonical names and codepoints**,
 identical to the default provider's. Because the default provider also
 advertises them, both implementations collide on the group name. Selection is
 therefore driven by property query: `?provider=hybrid` prefers the hybrid
@@ -391,21 +419,26 @@ CMake-based, linking against `libcrypto`:
 ```
 hybrid-provider/
 ├── CMakeLists.txt
-├── design.md
-├── CLAUDE.md
+├── design.md / redesign.md / CLAUDE.md / README.md
 ├── openssl/              ← reference checkout (not built)
-├── hybrid_prov.c         ← provider init, query_operation
+├── hybrid_prov.{c,h}     ← provider init, query_operation, shared types + tables
 ├── hybrid_keymgmt.c      ← keymgmt dispatch (hybrid keys)
 ├── hybrid_kem.c          ← KEM dispatch (encaps/decaps)
 ├── hybrid_sig.c          ← signature dispatch (sign/verify)
-├── hybrid_prov.h         ← shared types, HYBRID_KEY, info tables
-└── test/
-    ├── hybrid_test.c     ← interop tests against default provider
-    └── hybrid_bench.c    ← keygen/encaps/decaps benchmark vs default provider
+├── hybrid_caps.c         ← TLS-GROUP / TLS-SIGALG capability advertising
+├── hybrid_encoder.c      ← SPKI / PKCS8 encoders (DER + PEM)
+├── hybrid_decoder.c      ← SPKI / PKCS8 decoders
+├── composite_*.{c,h}     ← composite (LAMPS) family — only with -DHYBRID_COMPOSITE
+└── test/                 ← hybrid_test, hybrid_tls_test, hybrid_cert_tls_test,
+                            hybrid_encode/param/coexist/cms/matrix/capability
+                            tests, composite_* tests, hybrid_bench, and the
+                            hybrid_scenarios.sh CLI harness
 ```
 
-The build produces three artifacts: the `hybrid.so` provider module, the
-`hybrid_test` interop test, and the `hybrid_bench` benchmark.
+The build always produces the `hybrid.so` provider module and the test/benchmark
+executables; with `-DHYBRID_COMPOSITE=ON` the composite family is compiled into
+the same `hybrid.so` (no separate module) and its tests are added. `-DHYBRID_KEM_ENCODERS=ON`
+adds the hybrid-KEM key-file encoders/decoders.
 
 ## Interoperability Testing
 
