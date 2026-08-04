@@ -36,12 +36,15 @@ option(HYBRID_KEM_ENCODERS "Build encoders/decoders for hybrid KEM key files" OF
 # expected to be turned off (or removed) once OpenSSL's default provider offers
 # native composite signatures.
 option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" ON)
-# Composite is ML-DSA-based, and OpenSSL only ships ML-DSA from 3.5. On older
-# OpenSSL the composite sources don't even compile (no OSSL_PKEY_PARAM_ML_DSA_SEED
-# etc.), and there would be no ML-DSA to compose, so force it off below 3.5
-# regardless of the flag.
+# Composite requires OpenSSL 3.5+ — because of the SEED, not ML-DSA availability as
+# such. ML-DSA the algorithm exists on 3.4 too (via oqsprovider), but draft-19
+# mandates the composite private key BE the ML-DSA 32-byte seed, and retaining /
+# serializing that seed uses OpenSSL's ML-DSA seed API (OSSL_PKEY_PARAM_ML_DSA_SEED),
+# added in 3.5. On 3.4 that symbol is not even declared (composite would not
+# compile) and there is no standard seed plumbing to form a conformant composite
+# private key regardless of which provider supplies ML-DSA. So force off below 3.5.
 if(HYBRID_COMPOSITE AND OPENSSL_VERSION VERSION_LESS 3.5)
-    message(STATUS "HYBRID_COMPOSITE needs OpenSSL 3.5+ (ML-DSA); disabling on ${OPENSSL_VERSION}")
+    message(STATUS "HYBRID_COMPOSITE needs OpenSSL 3.5+ (ML-DSA seed API); disabling on ${OPENSSL_VERSION}")
     set(HYBRID_COMPOSITE OFF)
 endif()
 
