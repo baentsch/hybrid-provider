@@ -20,12 +20,26 @@ URL = ("https://raw.githubusercontent.com/lamps-wg/draft-composite-sigs/"
        + TAG + "/src/testvectors.json")
 
 # testvectors.json tcId -> the algorithm name this provider registers.
+# Full draft-19 standardized matrix (18 combos, OIDs .37 .. .54).
 NAMES = {
+    "id-MLDSA44-RSA2048-PSS-SHA256": "mldsa44_rsa2048_pss",
+    "id-MLDSA44-RSA2048-PKCS15-SHA256": "mldsa44_rsa2048_pkcs15",
+    "id-MLDSA44-Ed25519-SHA512": "mldsa44_ed25519",
     "id-MLDSA44-ECDSA-P256-SHA256": "mldsa44_ecdsa_p256",
     "id-MLDSA65-RSA3072-PSS-SHA512": "mldsa65_rsa3072_pss",
+    "id-MLDSA65-RSA3072-PKCS15-SHA512": "mldsa65_rsa3072_pkcs15",
+    "id-MLDSA65-RSA4096-PSS-SHA512": "mldsa65_rsa4096_pss",
+    "id-MLDSA65-RSA4096-PKCS15-SHA512": "mldsa65_rsa4096_pkcs15",
+    "id-MLDSA65-ECDSA-P256-SHA512": "mldsa65_ecdsa_p256",
+    "id-MLDSA65-ECDSA-P384-SHA512": "mldsa65_ecdsa_p384",
+    "id-MLDSA65-ECDSA-brainpoolP256r1-SHA512": "mldsa65_ecdsa_bp256",
     "id-MLDSA65-Ed25519-SHA512": "mldsa65_ed25519",
     "id-MLDSA87-ECDSA-P384-SHA512": "mldsa87_ecdsa_p384",
+    "id-MLDSA87-ECDSA-brainpoolP384r1-SHA512": "mldsa87_ecdsa_bp384",
     "id-MLDSA87-Ed448-SHAKE256": "mldsa87_ed448",
+    "id-MLDSA87-RSA3072-PSS-SHA512": "mldsa87_rsa3072_pss",
+    "id-MLDSA87-RSA4096-PSS-SHA512": "mldsa87_rsa4096_pss",
+    "id-MLDSA87-ECDSA-P521-SHA512": "mldsa87_ecdsa_p521",
 }
 
 

@@ -184,10 +184,12 @@ provider* implements composite ML-DSA (draft-ietf-lamps-pq-composite-sigs).
 Unlike the concatenation hybrids, composite uses the draft's message
 representative `M' = prefix || label || len(ctx) || ctx || PH(M)` and raw-concat
 serialization, keyed off `COMPOSITE_SIG_LIST` in `composite_prov.h`. It is
-validated against the draft's published KAT vectors (`composite_kat_test`) and
-covers the standardized ML-DSA combos (e.g. `mldsa44_ecdsa_p256`,
-`mldsa65_rsa3072_pss`, `mldsa65_ed25519`, `mldsa87_ecdsa_p384`, `mldsa87_ed448`)
-plus a disjoint experimental arc. See `composite_prov.h` / redesign.md Phase 2.
+validated against the draft's published KAT vectors (`composite_kat_test`). It
+implements the **full draft-19 standardized matrix** — 18 combos, OIDs
+`1.3.6.1.5.5.7.6.37`…`.54`: ML-DSA-44/65/87 paired with RSA-2048/3072/4096 (both
+RSA-PSS and RSA-PKCS#1 v1.5), ECDSA on P-256/P-384/P-521 and
+brainpoolP256r1/P384r1, and Ed25519/Ed448 — plus a disjoint experimental arc.
+See `composite_prov.h` / redesign.md Phase 2.
 
 ## Hybrid Key Structure
 
