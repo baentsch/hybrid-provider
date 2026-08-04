@@ -12,17 +12,39 @@
  * (X509_V_OK), and (c) the CertificateVerify was made with that signature
  * algorithm (SSL_get_peer_signature_type_nid == the algorithm's NID).
  *
- * The test is provider-parametrized and covers both families with one code path:
- *   - hybrid (`provider=hybrid`): the ML-DSA hybrids, oqsprovider not needed.
- *   - composite (`provider=hybrid`): the LAMPS composite ML-DSA combos, only
- *     when the composite provider is built (-DHYBRID_COMPOSITE) and loadable.
- * Exercises the whole chain: the TLS-SIGALG capability (hybrid_caps.c /
- * composite_caps.c), the signature AlgorithmIdentifier, and the OID registration
- * at provider init. Each entry self-skips when its provider or components are
- * unavailable (e.g. composite off, or no ML-DSA on 3.4).
+ * APPLICATION CONTEXT — the app libctx loads only `default` + `hybrid`; the
+ * hybrid provider sources its PQ base from a PRIVATE "default oqsprovider"
+ * component context (component-providers/component-path). This is deliberate and
+ * is what makes the research-signature hybrids testable here at all:
+ *   - ML-DSA hybrids and the LAMPS composite combos resolve from the default
+ *     provider directly.
+ *   - Falcon/MAYO/UOV/SNOVA/MQOM2 hybrids need an oqs-sourced PQ base; the hybrid
+ *     provider pulls it from its private component context, so oqsprovider does
+ *     NOT enter the app libctx.
+ *
+ * Why not co-load oqsprovider in the app libctx (issue #14): the hybrid provider
+ * and oqsprovider register the *same* hybrid keytype names. When both are in one
+ * libctx, libssl's add_provider_sigalgs() keeps a provider's TLS-SIGALG
+ * advertisement only if the unqualified EVP_KEYMGMT_fetch(keytype) resolves back
+ * to that same provider (ssl/t1_lib.c) — and for the shared names that fetch
+ * resolves to oqsprovider, so OUR advertisements are silently discarded. Since
+ * oqsprovider advertises the OV_Ip variants but not OV_Is, co-loading makes
+ * exactly the OV_Is certificates fail cert-type classification ("unknown
+ * certificate type"), while OV_Ip/Falcon/MAYO survive only because oqsprovider
+ * advertises them. Keeping oqsprovider in the hybrid provider's own libctx makes
+ * hybrid the sole advertiser in the app libctx, so every hybrid — OV_Is included
+ * — classifies and completes cert authentication. See issue #14.
+ *
+ * Exercises the whole chain for every row with a TLS code point: the TLS-SIGALG
+ * capability (hybrid_caps.c / composite_caps.c), the signature AlgorithmIdentifier,
+ * and the OID registration at provider init. Rows self-skip only when their
+ * components are genuinely absent (composite off, no ML-DSA on 3.4, or oqsprovider
+ * not on the module path for the research bases).
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
 #include <openssl/provider.h>
@@ -33,6 +55,50 @@
                                 * provider was built without composite) */
 
 static int tests, passed, failed, skipped;
+
+/*
+ * App libctx: default + hybrid only, with the hybrid provider configured to
+ * source its PQ components from a private "default oqsprovider" context. This
+ * keeps oqsprovider out of the app libctx (see the file header / issue #14) so
+ * the hybrid provider is the sole TLS-SIGALG advertiser for the shared hybrid
+ * names. module_dir defaults to OPENSSL_MODULES (where ctest points it).
+ */
+static OSSL_LIB_CTX *make_app_ctx(void)
+{
+    const char *module_dir = getenv("OPENSSL_MODULES");
+    char cnf[] = "/tmp/hybrid_cert_tls.XXXXXX";
+    OSSL_LIB_CTX *libctx = NULL;
+    int fd;
+    FILE *f;
+
+    if (module_dir == NULL)
+        module_dir = ".";
+    if ((fd = mkstemp(cnf)) < 0)
+        return NULL;
+    close(fd);
+    if ((f = fopen(cnf, "w")) == NULL) {
+        remove(cnf);
+        return NULL;
+    }
+    fprintf(f,
+            "openssl_conf = c\n"
+            "[c]\nproviders = p\n"
+            "[p]\ndefault = d\nhybrid = h\n"
+            "[d]\nactivate = 1\n"
+            "[h]\nmodule = %s/hybrid.so\nactivate = 1\n"
+            "component-providers = default oqsprovider\n"
+            "component-path = %s\n",
+            module_dir, module_dir);
+    fclose(f);
+
+    if ((libctx = OSSL_LIB_CTX_new()) != NULL
+            && !OSSL_LIB_CTX_load_config(libctx, cnf)) {
+        OSSL_LIB_CTX_free(libctx);
+        libctx = NULL;
+    }
+    remove(cnf);
+    return libctx;
+}
 
 /* Generate a keypair + self-signed cert signed with that key (one-shot). */
 static int make_cert(OSSL_LIB_CTX *libctx, const char *propq, const char *alg,
@@ -114,26 +180,9 @@ static void check(OSSL_LIB_CTX *libctx, const char *propq, const char *alg)
 
     sctx = SSL_CTX_new_ex(libctx, NULL, TLS_server_method());
     cctx = SSL_CTX_new_ex(libctx, NULL, TLS_client_method());
-    if (sctx == NULL || cctx == NULL)
-        goto fail;
-    if (SSL_CTX_use_certificate(sctx, cert) <= 0) {
-        /*
-         * libssl could not map this key type to a TLS certificate slot
-         * ("unknown certificate type"). Known for the UOV-Is variants
-         * (p256_OV_Is_pkc[/_skc]) — tracked in issue #14; their Ip siblings work.
-         * That is a libssl/base-provider limitation for the algorithm, not a
-         * hybrid-provider crypto failure, so surface it as a skip, not a red fail.
-         */
-        if (ERR_GET_REASON(ERR_peek_last_error())
-                == SSL_R_UNKNOWN_CERTIFICATE_TYPE) {
-            printf("SKIP (libssl: unsupported certificate type)\n");
-            skipped++; tests--;
-            ERR_clear_error();
-            goto done;
-        }
-        goto fail;
-    }
-    if (SSL_CTX_use_PrivateKey(sctx, pkey) <= 0
+    if (sctx == NULL || cctx == NULL
+            || SSL_CTX_use_certificate(sctx, cert) <= 0
+            || SSL_CTX_use_PrivateKey(sctx, pkey) <= 0
             || !SSL_CTX_set_min_proto_version(sctx, TLS1_3_VERSION)
             || !SSL_CTX_set_min_proto_version(cctx, TLS1_3_VERSION))
         goto fail;
@@ -183,33 +232,30 @@ done:
 
 int main(void)
 {
-    OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
-    const char *mods = getenv("OPENSSL_MODULES");
+    OSSL_LIB_CTX *ctx = make_app_ctx();
     size_t i;
 
-    if (mods != NULL)
-        OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
-        fprintf(stderr, "failed to load default/hybrid providers\n");
+    if (ctx == NULL) {
+        fprintf(stderr, "failed to build app libctx (default + hybrid)\n");
+        ERR_print_errors_fp(stderr);
         return 1;
     }
-    /* Optional: oqsprovider supplies the research PQ bases (Falcon/MAYO/UOV/…) so
-     * those hybrids get real TLS coverage too. We always fetch the composite/
-     * hybrid algorithm itself with a mandatory provider=hybrid query, so its
-     * competing hybrid names never collide. Absent, those rows self-skip.
-     * Composite is a build-flag-gated capability of the hybrid provider; its rows
-     * self-skip when hybrid was built without -DHYBRID_COMPOSITE. */
-    OSSL_PROVIDER_load(ctx, "oqsprovider");
+    /*
+     * The app libctx holds default + hybrid only; the hybrid provider sources
+     * its PQ base from a private "default oqsprovider" component context (see
+     * make_app_ctx() and the file header). Keeping oqsprovider out of the app
+     * libctx makes hybrid the sole TLS-SIGALG advertiser for the shared hybrid
+     * names, so every hybrid — OV_Is included — classifies as a TLS cert
+     * (issue #14). Rows still self-skip when their base is genuinely absent
+     * (oqsprovider not on the module path, or composite built out).
+     */
 
     printf("PQ-hybrid / composite signature certificates over TLS 1.3\n");
     printf("========================================================\n");
     /*
      * Drive the list from the master tables rather than a hand-kept static list:
      * every hybrid and composite signature that carries a TLS SignatureScheme
-     * code point (the ones usable for TLS CertificateVerify) is exercised. Each
-     * entry self-skips when its components or the composite build are absent, so
-     * this scales with the tables and covers far more than the ML-DSA core.
+     * code point is exercised.
      */
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         if (hybrid_sig_table[i].tls_codepoint != 0)
