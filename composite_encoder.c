@@ -381,3 +381,79 @@ const OSSL_DISPATCH composite_pkcs8_pem_encoder_functions[] = {
     { OSSL_FUNC_ENCODER_ENCODE, (void (*)(void))composite_encode_pkcs8_pem },
     { 0, NULL }
 };
+
+/* --- Human-readable text encoder (openssl pkey -text) --- */
+
+static int composite_text_block(BIO *mem, const char *label,
+                                const unsigned char *buf, size_t len)
+{
+    return BIO_printf(mem, "%s key material:\n", label) > 0
+           && ASN1_buf_print(mem, buf, len, 4) > 0;
+}
+
+static int composite_enc_does_selection_text(void *provctx, int selection)
+{
+    return (selection & OSSL_KEYMGMT_SELECT_KEYPAIR) != 0;
+}
+
+static int composite_encode_text(void *vctx, OSSL_CORE_BIO *cout,
+                                 const void *key,
+                                 const OSSL_PARAM key_abstract[], int selection,
+                                 OSSL_PASSPHRASE_CALLBACK *cb, void *cbarg)
+{
+    COMPOSITE_ENC_CTX *ctx = vctx;
+    COMPOSITE_KEY *ckey = (COMPOSITE_KEY *)key;
+    const COMPOSITE_SIG_INFO *info = ckey->info;
+    BIO *mem = NULL;
+    unsigned char *pqbuf = NULL, *trbuf = NULL;
+    size_t pqlen = 0, trlen = 0;
+    const char *tname;
+    int priv, ret = 0;
+    char *data = NULL;
+    long datalen;
+    size_t written = 0;
+
+    if (ctx->bio_write_ex == NULL)
+        return 0;
+    priv = (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0
+           && ckey->state >= COMPOSITE_HAVE_PRVKEY;
+
+    /* Component material, PQ then classical (the draft-19 concatenation order). */
+    if (priv) {
+        if (!component_priv(ckey->pq_key, &pqbuf, &pqlen)
+            || !component_priv(ckey->trad_key, &trbuf, &trlen))
+            goto end;
+    } else if (ckey->state < COMPOSITE_HAVE_PUBKEY
+            || !component_pub(ckey->pq_key, &pqbuf, &pqlen)
+            || !component_pub(ckey->trad_key, &trbuf, &trlen)) {
+        goto end;
+    }
+
+    tname = info->trad_group != NULL ? info->trad_group : info->trad_alg;
+    if ((mem = BIO_new(BIO_s_mem())) == NULL
+        || BIO_printf(mem, "%s composite %s key:\n", info->name,
+                      priv ? "private" : "public") <= 0
+        || !composite_text_block(mem, info->pq_alg, pqbuf, pqlen)
+        || !composite_text_block(mem, tname, trbuf, trlen))
+        goto end;
+
+    datalen = BIO_get_mem_data(mem, &data);
+    if (datalen <= 0)
+        goto end;
+    ret = ctx->bio_write_ex(cout, data, (size_t)datalen, &written)
+          && written == (size_t)datalen;
+end:
+    OPENSSL_clear_free(pqbuf, pqlen);
+    OPENSSL_clear_free(trbuf, trlen);
+    BIO_free(mem);
+    return ret;
+}
+
+const OSSL_DISPATCH composite_text_encoder_functions[] = {
+    { OSSL_FUNC_ENCODER_NEWCTX, (void (*)(void))composite_enc_newctx },
+    { OSSL_FUNC_ENCODER_FREECTX, (void (*)(void))composite_enc_freectx },
+    { OSSL_FUNC_ENCODER_DOES_SELECTION,
+      (void (*)(void))composite_enc_does_selection_text },
+    { OSSL_FUNC_ENCODER_ENCODE, (void (*)(void))composite_encode_text },
+    { 0, NULL }
+};

@@ -173,7 +173,9 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
     { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
       hybrid_pkcs8_der_encoder_functions, ds " PKCS8 DER encoder" },         \
     { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
-      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },
+      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },         \
+    { nm, "provider=hybrid,output=text",                                     \
+      hybrid_text_encoder_functions, ds " text encoder" },
 
 /*
  * KEM encoders. Gated by HYBRID_KEM_ENCODERS (off by default), mirroring
@@ -190,7 +192,9 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
     { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
       hybrid_pkcs8_der_encoder_functions, ds " PKCS8 DER encoder" },         \
     { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
-      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },
+      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },         \
+    { nm, "provider=hybrid,output=text",                                     \
+      hybrid_text_encoder_functions, ds " text encoder" },
 #endif
 
 #ifdef HYBRID_COMPOSITE
@@ -202,7 +206,9 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
     { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
       composite_pkcs8_der_encoder_functions, "composite PKCS8 DER encoder" },\
     { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
-      composite_pkcs8_pem_encoder_functions, "composite PKCS8 PEM encoder" },
+      composite_pkcs8_pem_encoder_functions, "composite PKCS8 PEM encoder" },\
+    { nm, "provider=hybrid,output=text",                                     \
+      composite_text_encoder_functions, "composite text encoder" },
 #endif
 static const OSSL_ALGORITHM hybrid_encoders[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_ENC_REG)

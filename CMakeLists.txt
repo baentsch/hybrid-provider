@@ -283,6 +283,17 @@ if(OPENSSL_CLI AND NOT WIN32)
                 --libpath ${_ossl_libdir}
                 --module-dir ${CMAKE_BINARY_DIR}
                 sig-certs)
+
+    # Cross-provider private-key file interop for the hybrid signatures: a key
+    # written by the hybrid provider is read back by oqsprovider and vice versa
+    # (shared names/OIDs/PKCS8 layout). Self-skips when oqsprovider.so is not on
+    # the module path. Composite is excluded (oqsprovider has no LAMPS).
+    add_test(NAME hybrid_scenarios_sig_interop
+        COMMAND ${CMAKE_SOURCE_DIR}/test/hybrid_scenarios.sh
+                --openssl ${OPENSSL_CLI}
+                --libpath ${_ossl_libdir}
+                --module-dir ${CMAKE_BINARY_DIR}
+                sig-interop)
 endif()
 
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually

@@ -148,6 +148,10 @@ Commands:
               provider; ML-DSA hybrids and LAMPS composite run from the default
               provider, the oqs-sourced research hybrids run when oqsprovider is
               on the module path and otherwise self-skip.
+  sig-interop Cross-provider private-key file interop for the hybrid signatures:
+              a key written by the hybrid provider is read by oqsprovider and
+              vice versa (shared names/OIDs/PKCS8 layout). Composite is excluded
+              (oqsprovider has no LAMPS). Self-skips without oqsprovider.
   config      Print the openssl.cnf for the current settings.
   all         Run info then tls.
 
@@ -202,7 +206,7 @@ while [ $# -gt 0 ]; do
         --use-config)         USE_CONFIG=1; shift;;
         --keep)               KEEP=1; shift;;
         -h|--help)            usage; exit 0;;
-        info|tls|tls-compctx|sig-certs|config|all)  COMMAND="$1"; shift;;
+        info|tls|tls-compctx|sig-certs|sig-interop|config|all)  COMMAND="$1"; shift;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
     esac
 done
@@ -656,16 +660,94 @@ cmd_sig_certs() {
 }
 
 # ========================================================================
+# sig-interop — cross-provider PRIVATE-key file interop for the hybrid signature
+# algorithms: a private key written by the hybrid provider must load in
+# oqsprovider and vice versa (shared algorithm names, OIDs, and on-disk PKCS8
+# byte layout). Composite (LAMPS) is intentionally excluded — oqsprovider does
+# not implement it, so its interop target is external (Bouncy Castle), verified
+# elsewhere. Self-skips when oqsprovider is not on the module path.
+# ========================================================================
+sig_interop_oqs_cnf() {   # echo path to a default + oqsprovider cnf
+    local cnf="$WORKDIR/interop_oqs.cnf"
+    if [ ! -f "$cnf" ]; then
+        cat > "$cnf" <<CNFEOF
+openssl_conf = osslcfg
+[osslcfg]
+providers = prov_sect
+[prov_sect]
+default = default_sect
+oqsprovider = oqs_sect
+[default_sect]
+activate = 1
+[oqs_sect]
+module = $MODULE_DIR/oqsprovider.$SOEXT
+activate = 1
+CNFEOF
+    fi
+    echo "$cnf"
+}
+
+# One algorithm: generate with each provider, then load each key with the OTHER
+# provider (pkey -pubout forces a full decode incl. the public key).
+# $1 = hybrid cnf, $2 = oqs cnf, $3 = algorithm name.
+sig_interop_one() {
+    local hcnf="$1" ocnf="$2" alg="$3" d="$WORKDIR/int_$3"
+    mkdir -p "$d"
+    if ! OPENSSL_CONF="$hcnf" "$OPENSSL_BIN" genpkey -algorithm "$alg" \
+            -out "$d/h.key" 2>/dev/null; then
+        note "$alg  (hybrid keygen unavailable — component base absent?)"; return
+    fi
+    if ! OPENSSL_CONF="$ocnf" "$OPENSSL_BIN" genpkey -algorithm "$alg" \
+            -out "$d/o.key" 2>/dev/null; then
+        note "$alg  (oqsprovider keygen unavailable)"; return
+    fi
+    if ! OPENSSL_CONF="$ocnf" "$OPENSSL_BIN" pkey -in "$d/h.key" -pubout \
+            -out /dev/null 2>"$d/e"; then
+        no "$alg  (hybrid-written key not readable by oqsprovider)"
+        grep -iE "error|unsup|not" "$d/e" | head -1 | sed 's/^/        /'; return
+    fi
+    if ! OPENSSL_CONF="$hcnf" "$OPENSSL_BIN" pkey -in "$d/o.key" -pubout \
+            -out /dev/null 2>"$d/e"; then
+        no "$alg  (oqsprovider-written key not readable by hybrid provider)"
+        grep -iE "error|unsup|not" "$d/e" | head -1 | sed 's/^/        /'; return
+    fi
+    ok "$alg  private-key file interop both ways ($(wc -c <"$d/h.key")/$(wc -c <"$d/o.key") bytes)"
+}
+
+cmd_sig_interop() {
+    if [ ! -f "$MODULE_DIR/oqsprovider.$SOEXT" ]; then
+        note "oqsprovider.$SOEXT not found in $MODULE_DIR — skipping sig-interop"
+        return
+    fi
+    hdr "Hybrid-signature private-key file interop: hybrid <-> oqsprovider"
+    local hcnf ocnf halgs oalgs alg
+    hcnf="$(sig_certs_cnf)"          # default + hybrid (+ private oqs component ctx)
+    ocnf="$(sig_interop_oqs_cnf)"    # default + oqsprovider
+    halgs="$(OPENSSL_CONF="$hcnf" "$OPENSSL_BIN" list -signature-algorithms 2>/dev/null \
+        | awk '/@ *hybrid/ { gsub(/^ +/, ""); print $1 }')"
+    # Space-padded set of names oqsprovider offers, for an intersection test
+    # (composite names are absent here, so they are skipped automatically).
+    oalgs=" $(OPENSSL_CONF="$ocnf" "$OPENSSL_BIN" list -signature-algorithms 2>/dev/null \
+        | awk '/@ *oqsprovider/ { gsub(/^ +/, ""); print $1 }' | tr '\n' ' ') "
+    for alg in $halgs; do
+        case "$oalgs" in
+            *" $alg "*) sig_interop_one "$hcnf" "$ocnf" "$alg";;
+        esac
+    done
+}
+
+# ========================================================================
 case "$COMMAND" in
     info)        cmd_info;;
     tls)         cmd_tls;;
     tls-compctx) cmd_tls_compctx;;
     sig-certs)   cmd_sig_certs;;
+    sig-interop) cmd_sig_interop;;
     config)      gen_config >/dev/null; cat "$WORKDIR/openssl.cnf";;
     all)         cmd_info; cmd_tls;;
 esac
 
-case "$COMMAND" in tls|tls-compctx|sig-certs|all)
+case "$COMMAND" in tls|tls-compctx|sig-certs|sig-interop|all)
     hdr "Summary"
     echo "  passed: $pass   failed: $fail   skipped: $skip"
     echo
