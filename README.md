@@ -23,7 +23,8 @@ byte-for-byte (verified by the interop tests).
 
 A hybrid is only usable when *both* components resolve: ML-KEM/ML-DSA from the
 default provider (OpenSSL 3.5+) or oqsprovider (3.4.x), and the research bases
-(FrodoKEM, BIKE, HQC, Falcon, MAYO, UOV, SNOVA, MQOM2) from oqsprovider only.
+(FrodoKEM, eFrodoKEM, BIKE, HQC, Falcon, MAYO, UOV, SNOVA, MQOM2) from
+oqsprovider only.
 
 ### Hybrid KEMs
 
@@ -38,12 +39,14 @@ default provider (OpenSSL 3.5+) or oqsprovider (3.4.x), and the research bases
 | `SecP384r1MLKEM1024` | ECDH P-384 + ML-KEM-1024 |
 
 **OQS-legacy hybrids** — oqsprovider naming/wire format. ML-KEM variants compose
-from the default provider or oqsprovider; FrodoKEM/BIKE/HQC need oqsprovider:
+from the default provider or oqsprovider; FrodoKEM/eFrodoKEM/BIKE/HQC need
+oqsprovider:
 
 | Family | Algorithms |
 |---|---|
 | ML-KEM | `x25519_mlkem512`, `p256_mlkem512`, `bp256_mlkem512`, `p384_mlkem768`, `x448_mlkem768`, `bp384_mlkem768`, `p521_mlkem1024`, `bp512_mlkem1024` |
 | FrodoKEM | `p256_frodo640aes`, `x25519_frodo640aes`, `p256_frodo640shake`, `x25519_frodo640shake`, `p384_frodo976aes`, `x448_frodo976aes`, `p384_frodo976shake`, `x448_frodo976shake`, `p521_frodo1344aes`, `p521_frodo1344shake` |
+| eFrodoKEM | `p256_efrodo640aes`, `x25519_efrodo640aes`, `p256_efrodo640shake`, `x25519_efrodo640shake`, `p384_efrodo976aes`, `x448_efrodo976aes`, `p384_efrodo976shake`, `x448_efrodo976shake`, `p521_efrodo1344aes`, `p521_efrodo1344shake` |
 | BIKE | `p256_bikel1`, `x25519_bikel1`, `p384_bikel3`, `x448_bikel3`, `p521_bikel5` |
 | HQC | `p256_hqc1`, `x25519_hqc1`, `p384_hqc3`, `x448_hqc3`, `p521_hqc5` |
 
@@ -185,7 +188,9 @@ over TLS 1.3 (`hybrid_cert_tls_test`), config-driven component selection
 (`hybrid_encode_test`, `hybrid_param_test`), CMS SignedData (`hybrid_cms_test`),
 TLS code-point parity (`hybrid_capability_test`), provider coexistence
 (`hybrid_coexist_test`), the full cross-version matrix vs oqsprovider
-(`hybrid_matrix_test`), and — with `-DHYBRID_COMPOSITE` — the composite combiner,
+(`hybrid_matrix_test`), the coverage guard asserting every hybrid oqsprovider
+advertises is also served here (`hybrid_coverage_test`), and — with
+`-DHYBRID_COMPOSITE` — the composite combiner,
 provider and draft-19 KAT tests (`composite_sig_test`, `composite_test`,
 `composite_kat_test`). Each self-skips cleanly when its prerequisites are absent.
 

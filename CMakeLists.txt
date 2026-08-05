@@ -218,6 +218,16 @@ set_tests_properties(hybrid_matrix_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Coverage guard: every hybrid oqsprovider advertises must be in our tables
+# (inverse of the matrix test; catches whole families omitted from the list).
+add_executable(hybrid_coverage_test test/hybrid_coverage_test.c)
+target_include_directories(hybrid_coverage_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_coverage_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_coverage_test COMMAND hybrid_coverage_test)
+set_tests_properties(hybrid_coverage_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Composite (LAMPS) tests — the composite family itself is compiled into the
 # hybrid provider above (HYBRID_COMPOSITE). These just exercise it; they load
 # "provider=hybrid" and need the hybrid module built with -DHYBRID_COMPOSITE.
