@@ -561,9 +561,8 @@ CNFEOF
 # Algorithms are enumerated live from `openssl list -signature-algorithms`
 # (every name served by the hybrid provider), so coverage tracks the provider
 # with no hand-kept list. Each row self-classifies so the suite stays green:
-#   * keygen fails            -> SKIP (component base unavailable, e.g. no oqs)
-#   * keygen ok, pubout fails -> SKIP (public-key SPKI encode gap, issue #19)
-#   * pubout ok               -> full cert + CMS path; any failure is a real FAIL
+#   * keygen fails -> SKIP (component base unavailable, e.g. oqsprovider absent)
+#   * keygen ok    -> full cert + CMS path; any failure is a real FAIL
 # ========================================================================
 sig_certs_cnf() {   # echo path to a cnf: default + hybrid (+ private oqs if present)
     local cnf="$WORKDIR/sig_certs.cnf"
@@ -604,11 +603,10 @@ sig_cert_one() {
         note "$alg  (keygen unavailable — component base absent?)"
         return
     fi
-    # Public-key SPKI encode gap for the research hybrids (issue #19): skip.
+    # Public-key SPKI encode (was issue #19, now fixed): a real FAIL if it breaks.
     if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" pkey -in "$key" -pubout \
             -out "$d/pub.pem" >"$log" 2>&1; then
-        note "$alg  (public-key SPKI encode unsupported — issue #19)"
-        return
+        no "$alg  (pkey -pubout / SPKI encode)"; sed 's/^/        /' "$log" | head -2; return
     fi
     # From here, any failure is a real FAIL.
     if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" req -x509 -key "$key" -out "$crt" \
