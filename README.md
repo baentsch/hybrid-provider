@@ -254,9 +254,9 @@ Two distinct limitations sit behind this, with different lifespans:
   below) is cnf-only and is what forces the Frodo/BIKE/HQC tests through a cnf.
   It exists solely because oqsprovider advertises the *same* TLS group names as
   this provider, so the two can't coexist in one application context. **Once
-  oqsprovider drops its hybrid combinations (redesign.md M8), leaving it to
-  supply only the base FrodoKEM/BIKE/HQC KEMs, that collision — and this
-  requirement — disappears:** all three providers can then be loaded on the
+  oqsprovider drops its hybrid combinations (see design.md "Future work"),
+  leaving it to supply only the base FrodoKEM/BIKE/HQC KEMs, that collision — and
+  this requirement — disappears:** all three providers can then be loaded on the
   command line and those groups become ordinary CLI-usable groups.
 - **Independent per-component steering** (`pq-propquery` / `classic-propquery`,
   below) stays cnf-only, but that is an OpenSSL TLS-plumbing constraint (only a

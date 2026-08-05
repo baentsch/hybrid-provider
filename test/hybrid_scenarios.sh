@@ -47,7 +47,7 @@
 # NOTE: the component-providers/component-path half of this is only cnf-only
 # because oqsprovider currently registers TLS groups under the SAME names as
 # this provider (hence the private context to dodge the collision). Once
-# oqsprovider drops its hybrid combinations (redesign.md M8) and supplies only
+# oqsprovider drops its hybrid combinations (design.md Future work) and supplies only
 # the base FrodoKEM/BIKE/HQC KEMs, that collision goes away and these groups
 # become ordinary command-line-usable groups. The pq-propquery/classic-propquery
 # steering keys stay cnf-only, but that is an OpenSSL limitation (single

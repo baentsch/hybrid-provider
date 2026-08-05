@@ -59,7 +59,7 @@ Specifically, the following interop tests MUST pass:
 hybrid-provider/
 ├── CMakeLists.txt
 ├── CLAUDE.md              ← this file
-├── design.md / redesign.md  ← full design document + composite redesign plan
+├── design.md              ← full architecture, design decisions + future work
 ├── README.md              ← user-facing documentation
 ├── openssl/               ← reference OpenSSL checkout (not built)
 ├── hybrid_prov.c          ← provider init, query_operation, capabilities

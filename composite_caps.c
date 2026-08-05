@@ -15,7 +15,7 @@
  * The code points are from draft-reddy-tls-composite-mldsa (an early *individual*
  * draft, not WG-adopted) and are still **TBD in IANA**, so they are provisional
  * and only guaranteed to interoperate between peers that agree on them out of
- * band (e.g. two instances of this provider). See redesign.md Phase 2.
+ * band (e.g. two instances of this provider). See design.md (Composite signatures).
  */
 #include "composite_prov.h"
 #include <openssl/core_names.h>
