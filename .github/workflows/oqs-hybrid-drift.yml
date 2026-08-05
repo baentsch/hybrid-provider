@@ -1,0 +1,90 @@
+name: OQS hybrid drift
+
+# Weekly, buildless guard that oqsprovider main has not added a hybrid algorithm
+# this provider does not serve — the class of gap that let the eFrodoKEM hybrids
+# slip (see #25). It diffs oqsprovider's generated source against our master
+# tables (scripts/check-oqs-hybrid-drift.sh) and, on drift, opens a tracking
+# issue in this repo; it auto-closes that issue once back in sync.
+#
+# This complements the weekly CI tier (which builds oqsprovider main and runs
+# hybrid_coverage_test): this job is cheap, needs no toolchain, and produces an
+# actionable issue rather than a red build that could mean anything.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 6 * * 1"   # Mondays 06:30 UTC (just after the CI build tier)
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: oqs-hybrid-drift
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      LABEL: oqs-hybrid-drift
+      OQSPROV_REF: main
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check hybrid set vs oqsprovider ${{ env.OQSPROV_REF }}
+        id: check
+        run: |
+          set +e
+          ./scripts/check-oqs-hybrid-drift.sh | tee report.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # status 2 = fetch/tooling error; surface as a failed run, not an issue.
+      - name: Fail on tooling error
+        if: steps.check.outputs.status == '2'
+        run: |
+          echo "drift check errored (see log above)"
+          exit 1
+
+      - name: Open tracking issue on drift
+        if: steps.check.outputs.status == '1'
+        run: |
+          set -euo pipefail
+          gh label create "$LABEL" --color BFD4F2 --force \
+            --description "oqsprovider hybrid set drifted from our tables"
+          existing=$(gh issue list --label "$LABEL" --state open \
+                       --json number --jq '.[0].number // empty')
+          {
+            echo "Automated weekly check: oqsprovider \`$OQSPROV_REF\` advertises"
+            echo "hybrid algorithm(s) this provider does not serve."
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo "**Fix:** add the missing rows to \`HYBRID_KEM_LIST\` /"
+            echo "\`HYBRID_SIG_LIST\` in \`hybrid_prov.h\` (see #25 for the"
+            echo "eFrodoKEM precedent), then re-run the test suite."
+            echo
+            echo "_This check runs weekly and will not re-notify while this issue"
+            echo "is open; it auto-closes once the sets match again._"
+            echo "_Source: .github/workflows/oqs-hybrid-drift.yml · run ${{ github.run_id }}_"
+          } > body.md
+          if [ -n "$existing" ]; then
+            echo "drift already tracked in #$existing — leaving it open"
+          else
+            gh issue create --title "oqsprovider hybrid drift detected" \
+              --label "$LABEL" --body-file body.md
+          fi
+
+      - name: Close tracking issue when back in sync
+        if: steps.check.outputs.status == '0'
+        run: |
+          set -euo pipefail
+          for n in $(gh issue list --label "$LABEL" --state open \
+                       --json number --jq '.[].number'); do
+            gh issue comment "$n" \
+              --body "Back in sync as of run ${{ github.run_id }} — closing."
+            gh issue close "$n"
+          done
