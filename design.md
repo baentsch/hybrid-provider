@@ -198,16 +198,24 @@ typedef struct hybrid_key_st {
     OSSL_LIB_CTX *libctx;
     char *propq;
     const void *info;        /* HYBRID_KEM_INFO or HYBRID_SIG_INFO */
-    EVP_PKEY *key1;          /* first component key */
-    EVP_PKEY *key2;          /* second component key */
-    unsigned int state;      /* HYBRID_HAVE_NOKEYS / PUBKEY / PRVKEY */
     int is_kem;              /* 1 = KEM hybrid, 0 = SIG hybrid */
+    EVP_PKEY *key1;          /* classical component key */
+    EVP_PKEY *key2;          /* PQ component key */
+    unsigned int state;      /* HYBRID_HAVE_NOKEYS / PUBKEY / PRVKEY */
+    HYBRID_SIZES sizes;      /* KEM only: runtime-discovered component sizes */
+    const char *pq_propq;      /* per-component propq for the PQ half (or NULL) */
+    const char *classic_propq; /* per-component propq for the classical half */
 } HYBRID_KEY;
 
 #define HYBRID_HAVE_NOKEYS  0
 #define HYBRID_HAVE_PUBKEY  1
 #define HYBRID_HAVE_PRVKEY  2
 ```
+
+Component sizes are discovered at runtime (`HYBRID_SIZES`, see
+`hybrid_ensure_sizes`); `pq_propq`/`classic_propq` are borrowed pointers into the
+provider context that steer per-component provider selection (see "Component
+provider selection"), each falling back to `propq` when unset.
 
 Each `EVP_PKEY` is obtained via EVP and may come from any provider.
 
