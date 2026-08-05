@@ -228,6 +228,27 @@ typedef struct hybrid_key_st {
       "frodo1344aes", 1, 0xfe30, 256, "P-521+FrodoKEM-1344-AES", NULL)\
   X(p521_frodo1344shake,"p521_frodo1344shake","EC",    "P-521",         0,    \
       "frodo1344shake", 1, 0xfe32, 256, "P-521+FrodoKEM-1344-SHAKE", NULL)\
+  /* --- oqsprovider eFrodoKEM (ephemeral) hybrids (PQ base from oqsprovider only) --- */ \
+  X(p256_efrodo640aes, "p256_efrodo640aes",   "EC",     "P-256",         0,    \
+      "efrodo640aes", 1, 0xfe01, 128, "P-256+eFrodoKEM-640-AES", NULL)\
+  X(x25519_efrodo640aes,"x25519_efrodo640aes","X25519", NULL,            0,    \
+      "efrodo640aes", 1, 0xfe02, 128, "X25519+eFrodoKEM-640-AES", NULL)\
+  X(p256_efrodo640shake,"p256_efrodo640shake","EC",     "P-256",         0,    \
+      "efrodo640shake", 1, 0xfe04, 128, "P-256+eFrodoKEM-640-SHAKE", NULL)\
+  X(x25519_efrodo640shake,"x25519_efrodo640shake","X25519",NULL,         0,    \
+      "efrodo640shake", 1, 0xfe05, 128, "X25519+eFrodoKEM-640-SHAKE", NULL)\
+  X(p384_efrodo976aes, "p384_efrodo976aes",   "EC",     "P-384",         0,    \
+      "efrodo976aes", 1, 0xfe07, 192, "P-384+eFrodoKEM-976-AES", NULL)\
+  X(x448_efrodo976aes, "x448_efrodo976aes",   "X448",   NULL,            0,    \
+      "efrodo976aes", 1, 0xfe08, 192, "X448+eFrodoKEM-976-AES", NULL)\
+  X(p384_efrodo976shake,"p384_efrodo976shake","EC",     "P-384",         0,    \
+      "efrodo976shake", 1, 0xfe0a, 192, "P-384+eFrodoKEM-976-SHAKE", NULL)\
+  X(x448_efrodo976shake,"x448_efrodo976shake","X448",   NULL,            0,    \
+      "efrodo976shake", 1, 0xfe0b, 192, "X448+eFrodoKEM-976-SHAKE", NULL)\
+  X(p521_efrodo1344aes,"p521_efrodo1344aes",  "EC",     "P-521",         0,    \
+      "efrodo1344aes", 1, 0xfe0d, 256, "P-521+eFrodoKEM-1344-AES", NULL)\
+  X(p521_efrodo1344shake,"p521_efrodo1344shake","EC",   "P-521",         0,    \
+      "efrodo1344shake", 1, 0xfe0f, 256, "P-521+eFrodoKEM-1344-SHAKE", NULL)\
   /* --- oqsprovider BIKE hybrids --- */                                      \
   X(p256_bikel1,       "p256_bikel1",        "EC",     "P-256",         0,    \
       "bikel1", 1, 0xfe11, 128, "P-256+BIKE-L1", NULL)\
