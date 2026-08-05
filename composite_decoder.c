@@ -9,8 +9,11 @@
  * fixed per OID), and rebuilds both components. Lets us consume composite public
  * keys we (or a real peer) wrote.
  *
- * Uses only OpenSSL's public ASN.1/X.509 API (d2i_X509_PUBKEY, OBJ_obj2txt,
- * X509_PUBKEY_get0_param) — no internal headers, same rule as the hybrid family.
+ * Uses only OpenSSL's public ASN.1/X.509 API. The SPKI is parsed by the shared
+ * hybrid_spki_parse() (a non-eager SubjectPublicKeyInfo parser) rather than
+ * d2i_X509_PUBKEY(), whose eager key decode would recurse into this decoder and
+ * crash on the certificate-write round-trip — no internal headers, same rule as
+ * the hybrid family.
  */
 #include "composite_prov.h"
 #include <openssl/core_object.h>
@@ -137,22 +140,22 @@ static int composite_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
 {
     COMPOSITE_DEC_CTX *ctx = vctx;
     unsigned char *der = NULL;
-    const unsigned char *p, *pk = NULL;
+    const unsigned char *pk = NULL;
     size_t derlen = 0, pqn;
-    X509_PUBKEY *xpk = NULL;
-    ASN1_OBJECT *alg_oid = NULL;
+    void *spki = NULL;
+    const ASN1_OBJECT *alg_oid = NULL;
     int pklen = 0, idx, ret = 1;           /* default: not ours, continue chain */
     char oidbuf[COMPOSITE_OID_TXT_MAX];
     COMPOSITE_KEY *key = NULL;
 
     if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
         goto end;
-    p = der;
-    if ((xpk = d2i_X509_PUBKEY(NULL, &p, (long)derlen)) == NULL) {
-        ERR_clear_error();
+    /* Shared non-eager SPKI parse (see hybrid_spki_parse): must not use
+     * d2i_X509_PUBKEY(), whose eager key decode recurses into this decoder and
+     * crashes on the certificate-write round-trip. */
+    if ((spki = hybrid_spki_parse(der, derlen, &alg_oid, &pk, &pklen)) == NULL)
         goto end;
-    }
-    if (!X509_PUBKEY_get0_param(&alg_oid, &pk, &pklen, NULL, xpk)
+    if (alg_oid == NULL
             || OBJ_obj2txt(oidbuf, sizeof(oidbuf), alg_oid, 1) <= 0)
         goto end;
     if ((idx = index_for_oid(oidbuf)) < 0)
@@ -176,7 +179,7 @@ static int composite_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
 end:
     if (key != NULL)
         composite_keymgmt_free(key);
-    X509_PUBKEY_free(xpk);
+    hybrid_spki_free(spki);
     OPENSSL_free(der);
     return ret;
 }
