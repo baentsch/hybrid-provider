@@ -59,18 +59,35 @@ Specifically, the following interop tests MUST pass:
 hybrid-provider/
 ├── CMakeLists.txt
 ├── CLAUDE.md              ← this file
-├── design.md              ← full design document
+├── design.md              ← full architecture, design decisions + future work
+├── README.md              ← user-facing documentation
 ├── openssl/               ← reference OpenSSL checkout (not built)
 ├── hybrid_prov.c          ← provider init, query_operation, capabilities
 ├── hybrid_keymgmt.c       ← keymgmt dispatch (hybrid keys)
 ├── hybrid_kem.c           ← KEM dispatch (encaps/decaps)
 ├── hybrid_sig.c           ← signature dispatch (sign/verify)
-├── hybrid_caps.c          ← TLS-GROUP capability advertising
+├── hybrid_caps.c          ← TLS-GROUP + TLS-SIGALG capability advertising
+├── hybrid_encoder.c       ← SPKI/PKCS8 key encoders (DER + PEM + text)
+├── hybrid_decoder.c       ← SPKI/PKCS8 key decoders
 ├── hybrid_prov.h          ← shared types, HYBRID_KEY, info tables
+├── composite_*.{c,h}      ← composite (LAMPS) family — only with -DHYBRID_COMPOSITE
+│                            (keymgmt, sig, caps, encoder, decoder, prov.h)
 └── test/
-    ├── hybrid_test.c      ← interop tests against default provider
-    ├── hybrid_tls_test.c  ← in-process TLS 1.3 handshake interop (dual libctx)
-    └── hybrid_bench.c     ← keygen/encaps/decaps benchmark vs default provider
+    ├── hybrid_test.c              ← interop tests against default provider
+    ├── hybrid_tls_test.c          ← in-process TLS 1.3 handshake interop (dual libctx)
+    ├── hybrid_cert_tls_test.c     ← signature certs over TLS 1.3
+    ├── hybrid_encode_test.c       ← SPKI/PKCS8 key round-trips vs oqsprovider
+    ├── hybrid_kem_encode_test.c   ← KEM key-file round-trips (HYBRID_KEM_ENCODERS)
+    ├── hybrid_param_test.c        ← raw-param (OSSL_PARAM) round-trips
+    ├── hybrid_cms_test.c          ← CMS SignedData
+    ├── hybrid_capability_test.c   ← TLS code-point parity vs default/oqsprovider
+    ├── hybrid_config_test.c       ← cnf-driven component selection
+    ├── hybrid_compctx_test.c      ← private component context (Frodo/BIKE/HQC)
+    ├── hybrid_coexist_test.c      ← provider coexistence
+    ├── hybrid_matrix_test.c       ← full cross-version matrix vs oqsprovider
+    ├── composite_*_test.c         ← composite combiner/provider/draft-19 KAT
+    ├── hybrid_bench.c             ← keygen/encaps/decaps benchmark vs default provider
+    └── hybrid_scenarios.sh        ← CLI (s_server/s_client) TLS interop harness
 ```
 
 ## Code Conventions

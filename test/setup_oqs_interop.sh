@@ -2,8 +2,8 @@
 #
 # setup_oqs_interop.sh — (re)build the oqsprovider interop peer from source.
 #
-# The hybrid-provider's Phase-1 goal is format-identical interop with
-# oqsprovider (see redesign.md). Interop MUST be tested against a from-source
+# The hybrid-provider's goal is format-identical interop with
+# oqsprovider (see design.md). Interop MUST be tested against a from-source
 # oqsprovider, never a distro/local install. This script reproduces that peer,
 # so a machine wipe / reboot only costs one command:
 #

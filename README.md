@@ -118,7 +118,7 @@ This produces `hybrid.so` in the build directory.
 | Option | Default | Effect |
 |--------|---------|--------|
 | `HYBRID_KEM_ENCODERS` | `OFF` | Build encoders/decoders for hybrid **KEM** key files (SPKI + PKCS8) |
-| `HYBRID_COMPOSITE` | `ON` | Build the composite (LAMPS) ML-DSA signature family into the provider |
+| `HYBRID_COMPOSITE` | `ON` | Build the composite (LAMPS) ML-DSA signature family into the provider (needs OpenSSL 3.5+; auto-disabled below) |
 
 `HYBRID_COMPOSITE` compiles the composite signatures (see
 [above](#composite-signatures-lamps--optional--dhybrid_composite)) into the same
@@ -127,7 +127,9 @@ carrying pre-standardization algorithms is the point of this provider, so the
 composite family ships by default (adding the composite keymgmt, signer,
 encoders/decoders and TLS-SIGALG capability, plus the `composite_*` tests) and is
 expected to be turned off once OpenSSL's default provider offers native composite
-signatures. Configure with `-DHYBRID_COMPOSITE=OFF` to exclude it.
+signatures. Configure with `-DHYBRID_COMPOSITE=OFF` to exclude it. It requires
+OpenSSL 3.5+ (for the ML-DSA seed API); on OpenSSL 3.4.x the build auto-disables
+it regardless of this flag.
 
 `HYBRID_KEM_ENCODERS` mirrors oqsprovider's `OQS_KEM_ENCODERS` option, and off for
 the same reasons: KEM keys are usually ephemeral, and only the hybrid KEMs that
@@ -227,9 +229,11 @@ hybrid↔hybrid. `--pq-provider`/`--classic-provider` (property names) and
 Independent PQ/classic component provider selection is available via the
 provider's **config keys** `pq-propquery` / `classic-propquery` (see below) —
 including on the TLS path, where a single CLI `-propquery` cannot express it.
-File-based KEM/signature round-trips remain **not** reproducible on the CLI (the
-provider has no encoder, so hybrid keys can't be serialized); those stay covered
-by `hybrid_test`.
+Signature key files serialize as SPKI/PKCS#8 (always built), and hybrid-KEM key
+files when `HYBRID_KEM_ENCODERS=ON` for the few KEMs with an assigned OID; those
+round-trips are covered by `hybrid_encode_test` / `hybrid_kem_encode_test`. Only
+the MLX KEM groups (which have no key-file encoders anywhere) stay non-reproducible
+as CLI key files.
 
 ### Configuration is cnf-only, never command line
 
@@ -250,9 +254,9 @@ Two distinct limitations sit behind this, with different lifespans:
   below) is cnf-only and is what forces the Frodo/BIKE/HQC tests through a cnf.
   It exists solely because oqsprovider advertises the *same* TLS group names as
   this provider, so the two can't coexist in one application context. **Once
-  oqsprovider drops its hybrid combinations (redesign.md M8), leaving it to
-  supply only the base FrodoKEM/BIKE/HQC KEMs, that collision — and this
-  requirement — disappears:** all three providers can then be loaded on the
+  oqsprovider drops its hybrid combinations (see design.md "Future work"),
+  leaving it to supply only the base FrodoKEM/BIKE/HQC KEMs, that collision — and
+  this requirement — disappears:** all three providers can then be loaded on the
   command line and those groups become ordinary CLI-usable groups.
 - **Independent per-component steering** (`pq-propquery` / `classic-propquery`,
   below) stays cnf-only, but that is an OpenSSL TLS-plumbing constraint (only a

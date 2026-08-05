@@ -17,6 +17,36 @@ or others) in arbitrary pairings.
 5. Interoperate with OpenSSL default provider's built-in hybrid KEMs
    (X25519MLKEM768, SecP256r1MLKEM768, X448MLKEM1024, SecP384r1MLKEM1024)
 
+## Design principles
+
+Interoperability is the entire point of this work, split by algorithm family:
+
+- **Hybrid family → interop with oqsprovider.** Names, TLS code points, X.509
+  OIDs and wire formats are format-identical to upstream oqsprovider's GitHub
+  `main`, exercised in-process (same OpenSSL libctx). The MLX KEM subset is the
+  exception: it follows OpenSSL's default provider (IETF draft-ietf-tls-ecdhe-mlkem
+  raw-concat), which is the interop peer for those three groups.
+- **Composite family (LAMPS) → interop with external software** such as Bouncy
+  Castle, out-of-process, validated via serialized DER/PEM artifacts and the
+  draft's KAT vectors.
+- **No self-contained / private OID formats, ever.** Matching an existing peer's
+  assigned OIDs (oqsprovider's, or the LAMPS drafts') is interop, not a violation
+  of this rule.
+
+### Architecture constraint (both families)
+
+The hybrid provider is a **composition layer only**, using the public EVP API. It
+never assumes which provider supplies the PQ primitives:
+
+- PQ primitives (ML-KEM/ML-DSA and the OQS research bases) come via EVP from
+  **either oqsprovider or the default provider**, interchangeably — the default
+  provider supplies ML-KEM/ML-DSA on OpenSSL 3.5+; oqsprovider supplies those plus
+  FrodoKEM/BIKE/HQC/MAYO/… bases.
+- **Classical crypto (ECDH/ECDSA/RSA/X25519/Ed25519) always comes from the
+  default provider** via EVP.
+- A combination is constructible as long as *some* loaded provider offers the
+  named base PQ primitive.
+
 ## Architecture
 
 ```
@@ -179,17 +209,51 @@ MQOM2. The authoritative list is `HYBRID_SIG_LIST` in `hybrid_prov.h`.
 
 ### Composite signatures (LAMPS)
 
-An optional, build-flag-gated (`-DHYBRID_COMPOSITE`) capability *of this same
-provider* implements composite ML-DSA (draft-ietf-lamps-pq-composite-sigs).
-Unlike the concatenation hybrids, composite uses the draft's message
-representative `M' = prefix || label || len(ctx) || ctx || PH(M)` and raw-concat
-serialization, keyed off `COMPOSITE_SIG_LIST` in `composite_prov.h`. It is
-validated against the draft's published KAT vectors (`composite_kat_test`). It
-implements the **full draft-19 standardized matrix** — 18 combos, OIDs
-`1.3.6.1.5.5.7.6.37`…`.54`: ML-DSA-44/65/87 paired with RSA-2048/3072/4096 (both
-RSA-PSS and RSA-PKCS#1 v1.5), ECDSA on P-256/P-384/P-521 and
-brainpoolP256r1/P384r1, and Ed25519/Ed448 — plus a disjoint experimental arc.
-See `composite_prov.h` / redesign.md Phase 2.
+An optional, build-flag-gated (`-DHYBRID_COMPOSITE`, default on; needs OpenSSL
+3.5+) capability *of this same provider* implements composite ML-DSA
+(draft-ietf-lamps-pq-composite-sigs). Unlike the concatenation hybrids, composite
+uses the draft's message representative and raw-concat serialization, keyed off
+`COMPOSITE_SIG_LIST` in `composite_prov.h`:
+
+```
+M' = Prefix || Label || len(ctx) || ctx || PH(M)
+  Prefix = "CompositeAlgorithmSignatures2025"   (fixed ASCII, whole-scheme separator)
+  Label  = per-combo, e.g. "COMPSIG-MLDSA44-ECDSA-P256-SHA256"
+  PH     = per-combo prehash (SHA-256/512, SHAKE256, …)
+mldsaSig = ML-DSA.Sign(mldsaSK, M', ctx=Label)   tradSig = Trad.Sign(tradSK, M')
+pubkey = mldsaPK || tradPK   privkey = mldsaSeed || tradSK   sig = mldsaSig || tradSig
+```
+
+The whole concatenation is wrapped in a single SPKI BIT STRING /
+`OneAsymmetricKey` OCTET STRING under one composite OID (component sizes are fixed
+per OID, so the split is unambiguous). It implements the **full draft-19
+standardized matrix** — 18 combos, OIDs `1.3.6.1.5.5.7.6.37`…`.54`: ML-DSA-44/65/87
+paired with RSA-2048/3072/4096 (both RSA-PSS and RSA-PKCS#1 v1.5), ECDSA on
+P-256/P-384/P-521 and brainpoolP256r1/P384r1, and Ed25519/Ed448.
+
+**Generic over the PQ component, two-tier.** The combiner has zero ML-DSA
+hardcoding — it reads a `COMPOSITE_SIG_LIST` row (label, prehash, PQ private-key
+form, tier) and delegates to both components via EVP, exactly like the hybrid
+master list. This lets the same machinery span research PQ signatures. The tiers
+are never blurred:
+
+| Tier | PQ component | OID arc | Wire contract |
+| --- | --- | --- | --- |
+| **standardized** | ML-DSA only | IANA/LAMPS registered (`…6.37`–`.54`) | byte-exact vs BouncyCastle / future OpenSSL-native; normative |
+| **experimental** | any other PQ sig (e.g. `exp_mayo2_ecdsa_p256`) | disjoint experimental arc | non-normative; interop only with ourselves / oqsprovider-if-it-matches |
+
+The split keeps *cede-to-default* symmetric with the hybrid family (see Future
+work): when OpenSSL ships native composite (ML-DSA only), the standardized subset
+can be ceded cleanly while the experimental arc stays, and no experimental combo
+can ever be mistaken for a standards-track OID.
+
+**Packaged as a capability, not a separate provider.** Composite ships inside
+this provider behind a build flag rather than as its own `composite.so`, because
+the spec is stabilizing (draft-19, past IETF Last Call), the matrix is bounded,
+and deployment-surface isolation needs only a build flag (the `HYBRID_KEM_ENCODERS`
+precedent) — a separate provider would just duplicate the shared two-`EVP_PKEY`
+core. It is validated against the draft's published KAT vectors
+(`composite_kat_test`). See `composite_prov.h`.
 
 ## Hybrid Key Structure
 
@@ -198,16 +262,24 @@ typedef struct hybrid_key_st {
     OSSL_LIB_CTX *libctx;
     char *propq;
     const void *info;        /* HYBRID_KEM_INFO or HYBRID_SIG_INFO */
-    EVP_PKEY *key1;          /* first component key */
-    EVP_PKEY *key2;          /* second component key */
-    unsigned int state;      /* HYBRID_HAVE_NOKEYS / PUBKEY / PRVKEY */
     int is_kem;              /* 1 = KEM hybrid, 0 = SIG hybrid */
+    EVP_PKEY *key1;          /* classical component key */
+    EVP_PKEY *key2;          /* PQ component key */
+    unsigned int state;      /* HYBRID_HAVE_NOKEYS / PUBKEY / PRVKEY */
+    HYBRID_SIZES sizes;      /* KEM only: runtime-discovered component sizes */
+    const char *pq_propq;      /* per-component propq for the PQ half (or NULL) */
+    const char *classic_propq; /* per-component propq for the classical half */
 } HYBRID_KEY;
 
 #define HYBRID_HAVE_NOKEYS  0
 #define HYBRID_HAVE_PUBKEY  1
 #define HYBRID_HAVE_PRVKEY  2
 ```
+
+Component sizes are discovered at runtime (`HYBRID_SIZES`, see
+`hybrid_ensure_sizes`); `pq_propq`/`classic_propq` are borrowed pointers into the
+provider context that steer per-component provider selection (see "Component
+provider selection"), each falling back to `propq` when unset.
 
 Each `EVP_PKEY` is obtained via EVP and may come from any provider.
 
@@ -421,7 +493,7 @@ CMake-based, linking against `libcrypto`:
 ```
 hybrid-provider/
 ├── CMakeLists.txt
-├── design.md / redesign.md / CLAUDE.md / README.md
+├── design.md / CLAUDE.md / README.md
 ├── openssl/              ← reference checkout (not built)
 ├── hybrid_prov.{c,h}     ← provider init, query_operation, shared types + tables
 ├── hybrid_keymgmt.c      ← keymgmt dispatch (hybrid keys)
@@ -462,6 +534,65 @@ The provider MUST be tested against the default provider's built-in hybrids:
 
 Since OpenSSL 3.5 does NOT include hybrid signatures in the default provider,
 signature interop testing is limited to self-consistency.
+
+Beyond the MLX baseline, the suite proves drop-in parity with oqsprovider by
+cross-version interop against a **pinned oqsprovider `main` peer** (built by
+`test/setup_oqs_interop.sh` into gitignored `.local`/`.interop`), both directions,
+over the entire hybrid KEM + SIG inventory (driven off the master tables so
+nothing is silently omitted). Each KEM is crossed against whichever second peer
+implements the name — oqsprovider for the OQS-legacy hybrids, the default provider
+for the standardized MLX groups. The hybrid slice of oqsprovider's own e2e tests
+maps onto this project's suite as follows (pure-PQ rows stay in oqsprovider and
+are out of scope):
+
+| oqsprovider test | hybrid slice | our equivalent |
+| --- | --- | --- |
+| `oqs_test_kems` | hybrid encaps/decaps | `hybrid_test`, `hybrid_oqs_test` |
+| `oqs_test_groups` | hybrid TLS handshake | `hybrid_tls_test`, `hybrid_compctx_test`, `hybrid_scenarios.sh` |
+| `oqs_test_signatures` | hybrid sign/verify | `hybrid_test` sig path |
+| `oqs_test_tlssig` | hybrid sig cert auth in TLS | `hybrid_cert_tls_test` |
+| `oqs_test_endecode` | hybrid key-file round-trip | `hybrid_encode_test`, `hybrid_kem_encode_test` (gated) |
+| `oqs_test_evp_pkey_params` | hybrid key param get/set | `hybrid_param_test` |
+| `oqs_test_alg_overlap` | provider coexistence | `hybrid_coexist_test` |
+| `*cmssign`/`*cmsverify` | hybrid sig in CMS | `hybrid_cms_test` |
+| `test_tls_full.py` | external s_client/s_server matrix | `hybrid_scenarios.sh`, `hybrid_matrix_test` |
+
+## Performance
+
+The provider is a **near-zero-cost EVP composition layer**: its own glue adds
+essentially nothing, and a hybrid runs only as fast as each component's EVP path.
+The composition double-dispatch is negligible against both slow and fast PQ
+primitives (a hybrid's sign time equals a hand-written inline composite doing the
+identical EVP calls). Keygen is competitive; KEM encaps/decaps is at parity with
+the default provider and oqsprovider.
+
+The one non-obvious effect is a ~1.9× tax on *fast* PQ signatures (Falcon/MAYO/
+SNOVA) when the PQ component is sourced from oqsprovider on OpenSSL ≥ 3.5. This is
+**oqsprovider's, not OpenSSL's and not this provider's**: on ≥ 3.5 oqsprovider
+returns `*no_cache = 1` for the whole provider (a side effect of its runtime
+algorithm filter), so OpenSSL reconstructs the full method table on every
+`EVP_DigestSignInit` instead of caching it. The delegated M8 path reproduces the
+same number oqsprovider's own native hybrids already pay, so M8 introduces no new
+regression; fixing the `no_cache` policy in oqsprovider speeds up both equally
+(see `docs/oqsprovider-no-cache-issue.md`). The performance lever available here
+is primitive sourcing: `pq-propquery` / `classic-propquery` steer each component
+to the fastest provider exposing the standalone EVP algorithm. Run
+`test/hybrid_bench.c` in your own environment for numbers.
+
+## Future work
+
+- **M8 — become oqsprovider's hybrid backend.** The endgame is for oqsprovider to
+  delete its own hybrid KEM/SIG logic and delegate to this provider (it keeps the
+  base PQ primitives). Because this provider already matches oqsprovider's names,
+  code points, OIDs and wire formats byte-for-byte, that is a drop-in replacement;
+  it also dissolves the group-name collision that today forces the private
+  component context for Frodo/BIKE/HQC (see Constraints). Validation is the
+  cross-version interop sweep above against the pinned pre-removal peer.
+- **Cede composite to the default provider.** When OpenSSL ships native composite
+  ML-DSA (openssl#26121), the standardized composite tier cedes to it exactly as
+  the MLX KEMs cede today, leaving only the experimental arc here.
+- **oqsprovider `no_cache` fix** (see Performance) — a separate, pre-existing
+  oqsprovider issue tracked for a later upstream code review, not a blocker.
 
 ## Constraints and Limitations
 

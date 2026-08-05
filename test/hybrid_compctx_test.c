@@ -2,7 +2,7 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Private component-context test (redesign.md M7 / option 1).
+ * Private component-context test (design.md: Private component context).
  *
  * The hybrid provider is configured with
  *     component-providers = default oqsprovider
