@@ -194,6 +194,13 @@ advertises is also served here (`hybrid_coverage_test`), and — with
 provider and draft-19 KAT tests (`composite_sig_test`, `composite_test`,
 `composite_kat_test`). Each self-skips cleanly when its prerequisites are absent.
 
+`hybrid_coverage_test` guards against drift at *test* time (against a built
+oqsprovider); a lightweight companion, `scripts/check-oqs-hybrid-drift.sh`, does
+the same as a buildless source diff against any oqsprovider ref. A scheduled
+workflow (`.github/workflows/oqs-hybrid-drift.yml`) runs it weekly against
+oqsprovider `main` and opens a tracking issue if upstream adds a hybrid this
+provider does not yet serve.
+
 `hybrid_tls_test` verifies **TLS 1.3 handshake interop**: an in-process
 handshake between two `OSSL_LIB_CTX`s connected by memory BIOs, with one peer
 sourcing the hybrid MLX group from the hybrid provider (via `?provider=hybrid`)
