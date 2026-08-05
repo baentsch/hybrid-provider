@@ -233,6 +233,9 @@ extern const OSSL_DISPATCH composite_pkcs8_der_encoder_functions[];
 extern const OSSL_DISPATCH composite_pkcs8_pem_encoder_functions[];
 extern const OSSL_DISPATCH composite_pkcs8_der_decoder_functions[];
 
+/* Human-readable text encoder (openssl pkey -text). */
+extern const OSSL_DISPATCH composite_text_encoder_functions[];
+
 /* TLS 1.3 signature-algorithm capabilities (composite_caps.c). */
 int composite_get_capabilities(void *provctx, const char *capability,
                                OSSL_CALLBACK *cb, void *arg);

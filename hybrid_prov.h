@@ -420,6 +420,7 @@ extern const OSSL_DISPATCH hybrid_spki_der_encoder_functions[];
 extern const OSSL_DISPATCH hybrid_spki_pem_encoder_functions[];
 extern const OSSL_DISPATCH hybrid_pkcs8_der_encoder_functions[];
 extern const OSSL_DISPATCH hybrid_pkcs8_pem_encoder_functions[];
+extern const OSSL_DISPATCH hybrid_text_encoder_functions[];
 int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out,
                            size_t *outlen);
 int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out,

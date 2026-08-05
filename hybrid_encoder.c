@@ -444,3 +444,99 @@ const OSSL_DISPATCH hybrid_pkcs8_pem_encoder_functions[] = {
     { OSSL_FUNC_ENCODER_ENCODE, (void (*)(void))hybrid_encode_pkcs8_pem },
     { 0, NULL }
 };
+
+/* --- Human-readable text encoder (openssl pkey -text), matching oqsprovider's
+ * layout: a header line then a colon-hex dump of each component's material. --- */
+
+static const char *hybrid_key_name(const HYBRID_KEY *key)
+{
+    return key->is_kem ? ((const HYBRID_KEM_INFO *)key->info)->hybrid_name
+                       : ((const HYBRID_SIG_INFO *)key->info)->hybrid_name;
+}
+
+static int text_block(BIO *mem, const char *label,
+                      const unsigned char *buf, size_t len)
+{
+    return BIO_printf(mem, "%s key material:\n", label) > 0
+           && ASN1_buf_print(mem, buf, len, 4) > 0;
+}
+
+static int hybrid_enc_does_selection_text(void *provctx, int selection)
+{
+    /* Text is available for whatever key material is present. */
+    return (selection & OSSL_KEYMGMT_SELECT_KEYPAIR) != 0;
+}
+
+static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
+                              const OSSL_PARAM key_abstract[], int selection,
+                              OSSL_PASSPHRASE_CALLBACK *cb, void *cbarg)
+{
+    HYBRID_ENC_CTX *ctx = vctx;
+    HYBRID_KEY *hkey = (HYBRID_KEY *)key;
+    BIO *mem = NULL;
+    unsigned char *cbuf = NULL, *pqbuf = NULL;
+    size_t clen = 0, pqlen = 0, got = 0;
+    const char *cname;
+    int priv, ret = 0;
+    char *data = NULL;
+    long datalen;
+    size_t written = 0;
+
+    if (ctx->bio_write_ex == NULL || !hybrid_ensure_sizes(hkey))
+        return 0;
+    priv = (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0
+           && hybrid_have_prvkey(hkey);
+
+    /* Gather the classical + PQ component material (private or public). The
+     * classical part is its on-wire form (EC/RSA DER, or raw X25519); the PQ
+     * part is the raw octet. */
+    if (priv) {
+        pqlen = hkey->sizes.a2_prv;
+        if (!get_component_priv(hkey->key1, &cbuf, &clen)
+            || (pqbuf = OPENSSL_malloc(pqlen)) == NULL
+            || EVP_PKEY_get_octet_string_param(hkey->key2,
+                   OSSL_PKEY_PARAM_PRIV_KEY, pqbuf, pqlen, &got) <= 0
+            || got != pqlen)
+            goto end;
+    } else {
+        if (!hybrid_have_pubkey(hkey))
+            goto end;
+        pqlen = hkey->sizes.a2_pub;
+        if (!get_component_pub(hkey->key1, &cbuf, &clen)
+            || (pqbuf = OPENSSL_malloc(pqlen)) == NULL
+            || EVP_PKEY_get_octet_string_param(hkey->key2,
+                   OSSL_PKEY_PARAM_PUB_KEY, pqbuf, pqlen, &got) <= 0
+            || got != pqlen)
+            goto end;
+    }
+
+    cname = HYBRID_KEY_ALG1_GROUP(hkey);      /* "P-256"; NULL for RSA/X25519 */
+    if (cname == NULL)
+        cname = HYBRID_KEY_ALG1_NAME(hkey);
+    if ((mem = BIO_new(BIO_s_mem())) == NULL
+        || BIO_printf(mem, "%s hybrid %s key:\n", hybrid_key_name(hkey),
+                      priv ? "private" : "public") <= 0
+        || !text_block(mem, cname, cbuf, clen)
+        || !text_block(mem, HYBRID_KEY_ALG2_NAME(hkey), pqbuf, pqlen))
+        goto end;
+
+    datalen = BIO_get_mem_data(mem, &data);
+    if (datalen <= 0)
+        goto end;
+    ret = ctx->bio_write_ex(cout, data, (size_t)datalen, &written)
+          && written == (size_t)datalen;
+end:
+    OPENSSL_clear_free(cbuf, clen);
+    OPENSSL_clear_free(pqbuf, pqlen);
+    BIO_free(mem);
+    return ret;
+}
+
+const OSSL_DISPATCH hybrid_text_encoder_functions[] = {
+    { OSSL_FUNC_ENCODER_NEWCTX, (void (*)(void))hybrid_enc_newctx },
+    { OSSL_FUNC_ENCODER_FREECTX, (void (*)(void))hybrid_enc_freectx },
+    { OSSL_FUNC_ENCODER_DOES_SELECTION,
+      (void (*)(void))hybrid_enc_does_selection_text },
+    { OSSL_FUNC_ENCODER_ENCODE, (void (*)(void))hybrid_encode_text },
+    { 0, NULL }
+};
