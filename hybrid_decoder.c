@@ -168,6 +168,15 @@ void *hybrid_spki_parse(const unsigned char *der, size_t derlen,
         ERR_clear_error();               /* not a SPKI; caller lets others try */
         return NULL;
     }
+    /*
+     * ASN1_item_d2i is the only fallible call and is checked above. Both fields
+     * are ASN1_SIMPLE (mandatory) in HYBRID_SPKI, and X509_ALGOR's algorithm is
+     * likewise mandatory, so a successful decode guarantees spki->algor,
+     * spki->public_key and the returned OID are non-NULL; X509_ALGOR_get0() and
+     * the ASN1_STRING accessors are void/infallible on them. The soft outputs
+     * (the OID and an empty/short public key) are still validated by every
+     * caller (OID != NULL, length checks) as defence in depth.
+     */
     X509_ALGOR_get0(oid, NULL, NULL, spki->algor);
     *pub = ASN1_STRING_get0_data(spki->public_key);
     *publen = ASN1_STRING_length(spki->public_key);
@@ -209,19 +218,28 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     if (variant < 0)
         goto end;                        /* OID not ours; continue chain */
 
-    /* Blob: UINT32(classical_pub_len) then the two component public keys.
+    /* From here the OID is a hybrid one we own, so a failure is a real error for
+     * this key rather than a "let another decoder try" decline: raise a message
+     * so the user learns why an otherwise-recognized hybrid key did not load.
+     * Blob: UINT32(classical_pub_len) then the two component public keys.
      * Signature hybrids and forward KEMs are classical-first; reverse-share
      * KEMs (alg2_slot == 0) put the PQ public key first. */
-    if (pklen < 4)
+    clen = 0;
+    if (pklen >= 4)
+        clen = ((uint32_t)pk[0] << 24) | ((uint32_t)pk[1] << 16)
+             | ((uint32_t)pk[2] << 8) | (uint32_t)pk[3];
+    if (pklen < 4 || 4 + (size_t)clen > (size_t)pklen) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid decode: malformed %s public key", oidbuf);
+        ret = 0;
         goto end;
-    clen = ((uint32_t)pk[0] << 24) | ((uint32_t)pk[1] << 16)
-         | ((uint32_t)pk[2] << 8) | (uint32_t)pk[3];
-    if (4 + (size_t)clen > (size_t)pklen)
-        goto end;
+    }
     pqlen = (size_t)pklen - 4 - clen;
 
     key = hybrid_keymgmt_new_by_variant(ctx->provctx, is_kem, (unsigned)variant);
     if (key == NULL) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid decode: cannot instantiate %s", oidbuf);
         ret = 0;
         goto end;
     }
@@ -233,6 +251,8 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
         pqpub = pk + 4 + clen;
     }
     if (!hybrid_key_load_pub_components(key, cpub, clen, pqpub, pqlen)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid decode: cannot load %s components", oidbuf);
         ret = 0;
         goto end;
     }

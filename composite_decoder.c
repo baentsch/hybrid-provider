@@ -161,17 +161,26 @@ static int composite_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     if ((idx = index_for_oid(oidbuf)) < 0)
         goto end;                          /* OID not ours; continue chain */
 
+    /* From here the OID is a composite one we own, so a failure is a real error
+     * for this key (not a "let another decoder try" decline): raise a message so
+     * the user learns why an otherwise-recognized composite key did not load. */
     key = composite_keymgmt_new_by_index(ctx->provctx, (size_t)idx);
     if (key == NULL) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "composite decode: cannot instantiate %s", oidbuf);
         ret = 0;
         goto end;
     }
     pqn = discover_pq_pub_len(key);
     if (pqn == 0 || pqn >= (size_t)pklen) { /* need both components present */
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "composite decode: malformed %s public key", oidbuf);
         ret = 0;
         goto end;
     }
     if (!composite_key_load_pub(key, pk, pqn, pk + pqn, (size_t)pklen - pqn)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "composite decode: cannot load %s components", oidbuf);
         ret = 0;
         goto end;
     }
