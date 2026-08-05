@@ -429,6 +429,19 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out,
 extern const OSSL_DISPATCH hybrid_spki_der_decoder_functions[];
 extern const OSSL_DISPATCH hybrid_pkcs8_der_decoder_functions[];
 
+/*
+ * Parse a SubjectPublicKeyInfo into its algorithm OID and raw public-key bits
+ * WITHOUT the eager EVP_PKEY decode that d2i_X509_PUBKEY() performs — that eager
+ * decode re-enters the provider decoder chain on the same bytes and crashes on
+ * the X509_PUBKEY round-trip libcrypto does while writing a certificate. Shared
+ * by the hybrid and composite decoders. On success returns a handle to release
+ * with hybrid_spki_free(); *oid and *pub point into it and stay valid until the
+ * handle is freed. Returns NULL if the input is not a SPKI. */
+void *hybrid_spki_parse(const unsigned char *der, size_t derlen,
+                        const ASN1_OBJECT **oid,
+                        const unsigned char **pub, int *publen);
+void hybrid_spki_free(void *handle);
+
 /* Decoder support (hybrid_keymgmt.c) */
 void hybrid_keymgmt_free(void *vkey);
 void *hybrid_keymgmt_new_by_variant(void *provctx, int is_kem,

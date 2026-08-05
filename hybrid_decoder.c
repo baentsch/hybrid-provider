@@ -22,6 +22,7 @@
 
 #include "hybrid_prov.h"
 #include <openssl/x509.h>
+#include <openssl/asn1t.h>
 #include <openssl/core_object.h>
 
 typedef struct {
@@ -139,16 +140,63 @@ static int handback(HYBRID_KEY **key, int variant, int is_kem,
     return r;
 }
 
+/*
+ * Local SubjectPublicKeyInfo template for the shared non-eager parser: SEQUENCE
+ * { AlgorithmIdentifier, BIT STRING }, built from public ASN.1 types. See
+ * hybrid_spki_parse() below and its declaration in hybrid_prov.h for why we
+ * must not use d2i_X509_PUBKEY() (eager decode -> decoder recursion -> crash).
+ */
+typedef struct {
+    X509_ALGOR *algor;
+    ASN1_BIT_STRING *public_key;
+} HYBRID_SPKI;
+
+ASN1_SEQUENCE(HYBRID_SPKI) = {
+    ASN1_SIMPLE(HYBRID_SPKI, algor, X509_ALGOR),
+    ASN1_SIMPLE(HYBRID_SPKI, public_key, ASN1_BIT_STRING)
+} static_ASN1_SEQUENCE_END(HYBRID_SPKI)
+
+void *hybrid_spki_parse(const unsigned char *der, size_t derlen,
+                        const ASN1_OBJECT **oid,
+                        const unsigned char **pub, int *publen)
+{
+    const unsigned char *p = der;
+    HYBRID_SPKI *spki = (HYBRID_SPKI *)ASN1_item_d2i(NULL, &p, (long)derlen,
+                                                     ASN1_ITEM_rptr(HYBRID_SPKI));
+
+    if (spki == NULL) {
+        ERR_clear_error();               /* not a SPKI; caller lets others try */
+        return NULL;
+    }
+    /*
+     * ASN1_item_d2i is the only fallible call and is checked above. Both fields
+     * are ASN1_SIMPLE (mandatory) in HYBRID_SPKI, and X509_ALGOR's algorithm is
+     * likewise mandatory, so a successful decode guarantees spki->algor,
+     * spki->public_key and the returned OID are non-NULL; X509_ALGOR_get0() and
+     * the ASN1_STRING accessors are void/infallible on them. The soft outputs
+     * (the OID and an empty/short public key) are still validated by every
+     * caller (OID != NULL, length checks) as defence in depth.
+     */
+    X509_ALGOR_get0(oid, NULL, NULL, spki->algor);
+    *pub = ASN1_STRING_get0_data(spki->public_key);
+    *publen = ASN1_STRING_length(spki->public_key);
+    return spki;
+}
+
+void hybrid_spki_free(void *handle)
+{
+    ASN1_item_free((ASN1_VALUE *)handle, ASN1_ITEM_rptr(HYBRID_SPKI));
+}
+
 static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
                          OSSL_CALLBACK *data_cb, void *data_cbarg,
                          OSSL_PASSPHRASE_CALLBACK *pw_cb, void *pw_cbarg)
 {
     HYBRID_DEC_CTX *ctx = vctx;
     unsigned char *der = NULL;
-    const unsigned char *p;
     size_t derlen = 0;
-    X509_PUBKEY *xpk = NULL;
-    ASN1_OBJECT *alg_oid = NULL;
+    void *spki = NULL;
+    const ASN1_OBJECT *alg_oid = NULL;
     const unsigned char *pk = NULL;
     const unsigned char *cpub, *pqpub;
     int pklen = 0, variant, is_kem = 0, ret = 1; /* default: not ours, continue */
@@ -160,12 +208,9 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
         goto end;
 
-    p = der;
-    if ((xpk = d2i_X509_PUBKEY(NULL, &p, (long)derlen)) == NULL) {
-        ERR_clear_error();               /* not a SPKI; let others try */
-        goto end;
-    }
-    if (!X509_PUBKEY_get0_param(&alg_oid, &pk, &pklen, NULL, xpk)
+    if ((spki = hybrid_spki_parse(der, derlen, &alg_oid, &pk, &pklen)) == NULL)
+        goto end;                        /* not a SPKI; let others try */
+    if (alg_oid == NULL
         || OBJ_obj2txt(oidbuf, sizeof(oidbuf), alg_oid, 1) <= 0)
         goto end;
 
@@ -173,19 +218,28 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     if (variant < 0)
         goto end;                        /* OID not ours; continue chain */
 
-    /* Blob: UINT32(classical_pub_len) then the two component public keys.
+    /* From here the OID is a hybrid one we own, so a failure is a real error for
+     * this key rather than a "let another decoder try" decline: raise a message
+     * so the user learns why an otherwise-recognized hybrid key did not load.
+     * Blob: UINT32(classical_pub_len) then the two component public keys.
      * Signature hybrids and forward KEMs are classical-first; reverse-share
      * KEMs (alg2_slot == 0) put the PQ public key first. */
-    if (pklen < 4)
+    clen = 0;
+    if (pklen >= 4)
+        clen = ((uint32_t)pk[0] << 24) | ((uint32_t)pk[1] << 16)
+             | ((uint32_t)pk[2] << 8) | (uint32_t)pk[3];
+    if (pklen < 4 || 4 + (size_t)clen > (size_t)pklen) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid decode: malformed %s public key", oidbuf);
+        ret = 0;
         goto end;
-    clen = ((uint32_t)pk[0] << 24) | ((uint32_t)pk[1] << 16)
-         | ((uint32_t)pk[2] << 8) | (uint32_t)pk[3];
-    if (4 + (size_t)clen > (size_t)pklen)
-        goto end;
+    }
     pqlen = (size_t)pklen - 4 - clen;
 
     key = hybrid_keymgmt_new_by_variant(ctx->provctx, is_kem, (unsigned)variant);
     if (key == NULL) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid decode: cannot instantiate %s", oidbuf);
         ret = 0;
         goto end;
     }
@@ -197,6 +251,8 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
         pqpub = pk + 4 + clen;
     }
     if (!hybrid_key_load_pub_components(key, cpub, clen, pqpub, pqlen)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid decode: cannot load %s components", oidbuf);
         ret = 0;
         goto end;
     }
@@ -207,7 +263,7 @@ end:
     /* If we built a key but didn't hand it off, free it via the keymgmt. */
     if (key != NULL)
         hybrid_keymgmt_free(key);
-    X509_PUBKEY_free(xpk);
+    hybrid_spki_free(spki);
     OPENSSL_free(der);
     return ret;
 }

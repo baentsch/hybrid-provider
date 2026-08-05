@@ -13,12 +13,19 @@
 # ---------------------------------------------------------------------------
 # WHAT THIS SCRIPT CAN AND CANNOT DO (and why)
 #
-# The hybrid provider implements no encoder/decoder, so a hybrid key cannot be
-# written to (or read from) a file. That makes the file-based, multi-process
-# KEM/signature round-trips impossible to express with the openssl CLI: every
-# `genpkey -out`, `pkeyutl -sign`, etc. fails with "No encoders were found".
-# Those scenarios are covered in-process (via raw OSSL_PARAM export/import) by
-# the C test `hybrid_test` and cannot be reproduced here.
+# The hybrid provider implements encoders/decoders for its SIGNATURE keys, so
+# signature keys and certificates CAN be written to and read from files: the
+# `sig-certs` command drives genpkey -> self-signed cert -> verify -> CMS end to
+# end on the CLI for the ML-DSA hybrids and the LAMPS composite combos (and the
+# oqs-sourced research hybrids when oqsprovider is present).
+#
+# KEM keys are different: their encoders are gated off by default
+# (HYBRID_KEM_ENCODERS, mirroring oqsprovider's OQS_KEM_ENCODERS), because KEM
+# key files are rarely used and few hybrid KEMs have an assigned OID. So a hybrid
+# KEM key still cannot be serialized on the CLI by default, and the file-based
+# KEM round-trips stay in-process (raw OSSL_PARAM export/import) in the C test
+# `hybrid_test`. What IS always reproducible for KEMs is the TLS 1.3 handshake,
+# where the KEM keys live only in memory and are never serialized.
 #
 # CONFIGURATION IS CNF-ONLY, NEVER COMMAND LINE
 #
@@ -135,6 +142,12 @@ Commands:
               hybrid-vs-oqsprovider both directions. Self-skips when oqsprovider
               is not on the module path. Requires --module-dir to contain both
               the hybrid and oqsprovider provider modules.
+  sig-certs   Drive PQ-hybrid / composite signature algorithms through the
+              openssl CLI end to end: genpkey -> self-signed cert -> verify ->
+              x509 -text -> CMS sign/verify. Algorithms are enumerated from the
+              provider; ML-DSA hybrids and LAMPS composite run from the default
+              provider, the oqs-sourced research hybrids run when oqsprovider is
+              on the module path and otherwise self-skip.
   config      Print the openssl.cnf for the current settings.
   all         Run info then tls.
 
@@ -189,7 +202,7 @@ while [ $# -gt 0 ]; do
         --use-config)         USE_CONFIG=1; shift;;
         --keep)               KEEP=1; shift;;
         -h|--help)            usage; exit 0;;
-        info|tls|tls-compctx|config|all)  COMMAND="$1"; shift;;
+        info|tls|tls-compctx|sig-certs|config|all)  COMMAND="$1"; shift;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
     esac
 done
@@ -533,21 +546,135 @@ CNFEOF
 }
 
 # ========================================================================
+# sig-certs — drive PQ-hybrid / composite SIGNATURE algorithms through the
+# openssl CLI end to end: genpkey -> self-signed cert (req -x509) -> verify ->
+# x509 -text (assert the certificate's signature algorithm) -> CMS sign/verify.
+# This is the file-based, multi-command complement to the in-memory C test
+# hybrid_cert_tls_test (which covers the same signatures over a TLS handshake).
+#
+# The hybrid provider is driven via a cnf (never -provider flags). When
+# oqsprovider is present it is given as a PRIVATE component provider, so the
+# oqs-sourced research hybrids (Falcon/MAYO/UOV/SNOVA/MQOM2) can be built too;
+# otherwise only the default-sourced ML-DSA hybrids and LAMPS composite combos
+# are exercised and the rest self-skip at keygen.
+#
+# Algorithms are enumerated live from `openssl list -signature-algorithms`
+# (every name served by the hybrid provider), so coverage tracks the provider
+# with no hand-kept list. Each row self-classifies so the suite stays green:
+#   * keygen fails            -> SKIP (component base unavailable, e.g. no oqs)
+#   * keygen ok, pubout fails -> SKIP (public-key SPKI encode gap, issue #19)
+#   * pubout ok               -> full cert + CMS path; any failure is a real FAIL
+# ========================================================================
+sig_certs_cnf() {   # echo path to a cnf: default + hybrid (+ private oqs if present)
+    local cnf="$WORKDIR/sig_certs.cnf"
+    if [ ! -f "$cnf" ]; then
+        {
+            echo "openssl_conf = osslcfg"
+            echo "[osslcfg]"
+            echo "providers = prov_sect"
+            echo "[prov_sect]"
+            echo "default = default_sect"
+            echo "hybrid = hybrid_sect"
+            echo "[default_sect]"
+            echo "activate = 1"
+            echo "[hybrid_sect]"
+            echo "module = $MODULE_DIR/hybrid.$SOEXT"
+            echo "activate = 1"
+            # Private component context: only needed to source the oqs research
+            # bases. ML-DSA hybrids and composite resolve from default without it.
+            if [ -f "$MODULE_DIR/oqsprovider.$SOEXT" ]; then
+                echo "component-providers = default oqsprovider"
+                echo "component-path = $MODULE_DIR"
+            fi
+        } > "$cnf"
+    fi
+    echo "$cnf"
+}
+
+# One signature algorithm through the full CLI cert + CMS path.
+# $1 = cnf path, $2 = algorithm name.
+sig_cert_one() {
+    local cnf="$1" alg="$2"
+    local d="$WORKDIR/sig_$alg"; mkdir -p "$d"
+    local key="$d/k.pem" crt="$d/c.pem" msg="$d/m.txt" cms="$d/m.cms" log="$d/err"
+
+    # keygen: an absent component base (e.g. no oqsprovider) is a skip, not a fail.
+    if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" genpkey -algorithm "$alg" \
+            -out "$key" >"$log" 2>&1; then
+        note "$alg  (keygen unavailable — component base absent?)"
+        return
+    fi
+    # Public-key SPKI encode gap for the research hybrids (issue #19): skip.
+    if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" pkey -in "$key" -pubout \
+            -out "$d/pub.pem" >"$log" 2>&1; then
+        note "$alg  (public-key SPKI encode unsupported — issue #19)"
+        return
+    fi
+    # From here, any failure is a real FAIL.
+    if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" req -x509 -key "$key" -out "$crt" \
+            -days 1 -subj "/CN=$alg" >"$log" 2>&1; then
+        no "$alg  (req -x509)"; sed 's/^/        /' "$log" | head -2; return
+    fi
+    if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" verify -CAfile "$crt" "$crt" \
+            >"$log" 2>&1; then
+        no "$alg  (self-signed verify)"; sed 's/^/        /' "$log" | head -2; return
+    fi
+    # The certificate's signature algorithm must be this hybrid/composite alg.
+    if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" x509 -in "$crt" -noout -text \
+            2>/dev/null | grep -qi "Signature Algorithm: *$alg"; then
+        no "$alg  (cert signature algorithm mismatch)"; return
+    fi
+    # CMS sign + verify. Hashless PQ signatures have no default digest, so name
+    # one for the SignedAttributes messageDigest (independent of the signature).
+    echo "hybrid-provider CMS payload" > "$msg"
+    if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" cms -sign -signer "$crt" -inkey "$key" \
+            -in "$msg" -out "$cms" -md sha256 -binary -nodetach >"$log" 2>&1; then
+        no "$alg  (cms -sign)"; sed 's/^/        /' "$log" | head -2; return
+    fi
+    if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" cms -verify -in "$cms" \
+            -CAfile "$crt" -out "$d/out.txt" -binary >"$log" 2>&1; then
+        no "$alg  (cms -verify)"; sed 's/^/        /' "$log" | head -2; return
+    fi
+    ok "$alg  genpkey + cert + verify + CMS"
+}
+
+cmd_sig_certs() {
+    local cnf; cnf="$(sig_certs_cnf)"
+    hdr "PQ-hybrid / composite signature certificates via the openssl CLI"
+    [ -f "$MODULE_DIR/oqsprovider.$SOEXT" ] \
+        || note "oqsprovider.$SOEXT not found — research-signature hybrids self-skip"
+
+    # Every signature name the hybrid provider advertises (strip "@ hybrid").
+    local algs a
+    algs="$(OPENSSL_CONF="$cnf" "$OPENSSL_BIN" list -signature-algorithms 2>/dev/null \
+        | awk '/@ *hybrid/ { gsub(/^ +/, ""); print $1 }')"
+    if [ -z "$algs" ]; then
+        note "no hybrid signature algorithms advertised (composite built out / < 3.5?)"
+        return
+    fi
+    for a in $algs; do
+        sig_cert_one "$cnf" "$a"
+    done
+}
+
+# ========================================================================
 case "$COMMAND" in
     info)        cmd_info;;
     tls)         cmd_tls;;
     tls-compctx) cmd_tls_compctx;;
+    sig-certs)   cmd_sig_certs;;
     config)      gen_config >/dev/null; cat "$WORKDIR/openssl.cnf";;
     all)         cmd_info; cmd_tls;;
 esac
 
-if [ "$COMMAND" = "tls" ] || [ "$COMMAND" = "tls-compctx" ] || [ "$COMMAND" = "all" ]; then
+case "$COMMAND" in tls|tls-compctx|sig-certs|all)
     hdr "Summary"
     echo "  passed: $pass   failed: $fail   skipped: $skip"
     echo
     echo "  Note: independent PQ/classic component selection is driven by the"
     echo "  generated cnf's pq-propquery/classic-propquery keys (use --use-config)."
-    echo "  File-based KEM/signature round-trips remain C-only ('hybrid_test') —"
-    echo "  the hybrid provider has no encoder, so its keys cannot be serialized."
+    echo "  Signature keys are file-serializable (see 'sig-certs'); KEM key files"
+    echo "  stay off by default (HYBRID_KEM_ENCODERS), so KEM round-trips remain"
+    echo "  in-process only ('hybrid_test')."
     [ "$fail" -eq 0 ] || exit 1
-fi
+esac

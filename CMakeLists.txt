@@ -254,19 +254,35 @@ if(HYBRID_COMPOSITE)
     )
 endif()
 
-# Separate-process CLI TLS interop for Frodo/BIKE/HQC hybrids: the hybrid
-# provider (configured via cnf with component-providers/component-path) drives
-# real openssl s_server/s_client handshakes against a pure-oqsprovider peer,
-# both directions. This is the multi-process complement to the in-process
-# hybrid_compctx_test. The script self-skips (exit 0) when oqsprovider.so is not
-# on the module path. Only registered when an openssl CLI was found.
-if(OPENSSL_CLI)
+# Separate-process CLI harnesses driven by test/hybrid_scenarios.sh. These are
+# gated on NOT WIN32: the harness is a bash script (uses /dev/tcp, POSIX quoting,
+# etc.), so it runs on Linux/macOS but not native Windows. Under MSYS2/Cygwin the
+# script itself copes (SOEXT handling), but ctest would still need a POSIX shell,
+# so we simply do not register these on Windows.
+if(OPENSSL_CLI AND NOT WIN32)
+    # TLS interop for Frodo/BIKE/HQC hybrids via the hybrid provider's private
+    # component context, against a pure-oqsprovider peer (both directions). The
+    # multi-process complement to in-process hybrid_compctx_test. Self-skips
+    # (exit 0) when oqsprovider.so is not on the module path.
     add_test(NAME hybrid_scenarios_tls_compctx
         COMMAND ${CMAKE_SOURCE_DIR}/test/hybrid_scenarios.sh
                 --openssl ${OPENSSL_CLI}
                 --libpath ${_ossl_libdir}
                 --module-dir ${CMAKE_BINARY_DIR}
                 tls-compctx)
+
+    # CLI end-to-end coverage for the hybrid + composite SIGNATURE algorithms:
+    # genpkey -> self-signed cert -> verify -> x509 -text -> CMS sign/verify.
+    # Complements the in-process hybrid_cert_tls_test (same signatures over TLS).
+    # ML-DSA hybrids and the LAMPS composite combos run from the default provider;
+    # the oqs-sourced research hybrids run when oqsprovider.so is present and
+    # otherwise self-skip.
+    add_test(NAME hybrid_scenarios_sig_certs
+        COMMAND ${CMAKE_SOURCE_DIR}/test/hybrid_scenarios.sh
+                --openssl ${OPENSSL_CLI}
+                --libpath ${_ossl_libdir}
+                --module-dir ${CMAKE_BINARY_DIR}
+                sig-certs)
 endif()
 
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
