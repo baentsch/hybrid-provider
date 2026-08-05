@@ -269,6 +269,21 @@ if(OPENSSL_CLI)
                 tls-compctx)
 endif()
 
+# Separate-process CLI end-to-end coverage for the hybrid + composite SIGNATURE
+# algorithms: genpkey -> self-signed cert -> verify -> x509 -text -> CMS
+# sign/verify, driven through the openssl CLI. Complements the in-process
+# hybrid_cert_tls_test (same signatures over TLS). ML-DSA hybrids and the LAMPS
+# composite combos run from the default provider; the oqs-sourced research
+# hybrids run when oqsprovider.so is on the module path and otherwise self-skip.
+if(OPENSSL_CLI)
+    add_test(NAME hybrid_scenarios_sig_certs
+        COMMAND ${CMAKE_SOURCE_DIR}/test/hybrid_scenarios.sh
+                --openssl ${OPENSSL_CLI}
+                --libpath ${_ossl_libdir}
+                --module-dir ${CMAKE_BINARY_DIR}
+                sig-certs)
+endif()
+
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
 # with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired
 # into ctest as a low-iteration smoke test that it runs and completes.
