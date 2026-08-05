@@ -279,8 +279,8 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
     PKCS8_PRIV_KEY_INFO *p8 = NULL;
     ASN1_OCTET_STRING *oct = NULL;
     const ASN1_OBJECT *alg_oid = NULL;
-    const unsigned char *octdata = NULL, *cder, *pqv;
-    size_t octlen = 0;
+    const unsigned char *octdata = NULL, *cder, *pqv, *pqpub = NULL;
+    size_t octlen = 0, a2p;
     int innerlen = 0, variant, is_kem = 0, ret = 1;
     char oidbuf[128];
     HYBRID_KEY *key = NULL;
@@ -316,6 +316,7 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         goto end;
     }
     a2v = key->sizes.a2_prv;
+    a2p = key->sizes.a2_pub;
     if (sizeof(uint32_t) + (size_t)clen + a2v > octlen)
         goto end;
     /* Reverse-share KEMs store PQ private first, then classical. */
@@ -326,7 +327,14 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         cder = octdata + 4;
         pqv  = octdata + 4 + clen;
     }
-    if (!hybrid_key_load_prv_components(key, cder, clen, pqv, a2v)) {
+    /* Our blob also carries the PQ public key as a trailing block (offset
+     * 4 + clen + a2v). Pass it through so the decoded key is complete — research
+     * keytypes cannot re-derive it from private material, and a certificate needs
+     * it. Blobs without the trailing block decode private-only (pqpub stays NULL). */
+    if (a2p > 0 && sizeof(uint32_t) + (size_t)clen + a2v + a2p <= octlen)
+        pqpub = octdata + 4 + (size_t)clen + a2v;
+    if (!hybrid_key_load_prv_components(key, cder, clen, pqv, a2v,
+                                        pqpub, pqpub != NULL ? a2p : 0)) {
         ret = 0;
         goto end;
     }

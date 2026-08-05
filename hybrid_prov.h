@@ -451,7 +451,8 @@ int hybrid_key_load_pub_components(HYBRID_KEY *key,
                                    const unsigned char *pq, size_t plen);
 int hybrid_key_load_prv_components(HYBRID_KEY *key,
                                    const unsigned char *cder, size_t cderlen,
-                                   const unsigned char *pqv, size_t pqvlen);
+                                   const unsigned char *pqv, size_t pqvlen,
+                                   const unsigned char *pqpub, size_t pqpublen);
 
 /*
  * Populate key->sizes by querying the component algorithms with throwaway

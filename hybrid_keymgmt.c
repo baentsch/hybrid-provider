@@ -165,6 +165,41 @@ err:
     return ret;
 }
 
+/*
+ * Build a component key from BOTH its private and public raw material. Needed
+ * for the PQ component when decoding a private key: some component providers
+ * (oqsprovider's research signatures) do not re-derive the public key from
+ * private-only fromdata the way ML-DSA does, yet a certificate needs it. Our own
+ * PKCS8 blob carries the PQ public key, so we hand both to the provider. Uses
+ * only the public EVP fromdata API — no dependency on any provider's key format.
+ */
+static int
+load_component_privpub(OSSL_LIB_CTX *libctx, const char *propq,
+                       const char *alg_name,
+                       const uint8_t *priv, size_t privlen,
+                       const uint8_t *pub, size_t publen,
+                       EVP_PKEY **out)
+{
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, alg_name, propq);
+    OSSL_PARAM parr[3];
+    int ret = 0;
+
+    if (ctx == NULL || EVP_PKEY_fromdata_init(ctx) <= 0)
+        goto err;
+    parr[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PRIV_KEY,
+                                                (void *)priv, privlen);
+    parr[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
+                                                (void *)pub, publen);
+    parr[2] = OSSL_PARAM_construct_end();
+    if (EVP_PKEY_fromdata(ctx, out,
+                          OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
+                          | OSSL_KEYMGMT_SELECT_KEYPAIR, parr) > 0)
+        ret = 1;
+err:
+    EVP_PKEY_CTX_free(ctx);
+    return ret;
+}
+
 /* --- Decoder support: build a public key from oqs blob components --- */
 
 /* Free a hybrid key (public wrapper over the static free, for decoders). */
@@ -220,13 +255,17 @@ int hybrid_key_load_pub_components(HYBRID_KEY *key,
 /* Load the classical (DER) + PQ (raw) private components (decoders). */
 int hybrid_key_load_prv_components(HYBRID_KEY *key,
                                   const unsigned char *cder, size_t cderlen,
-                                  const unsigned char *pqv, size_t pqvlen)
+                                  const unsigned char *pqv, size_t pqvlen,
+                                  const unsigned char *pqpub, size_t pqpublen)
 {
     int sel = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
             | OSSL_KEYMGMT_SELECT_PRIVATE_KEY;
     const char *a1 = HYBRID_KEY_ALG1_NAME(key);
+    int ok;
 
-    /* Raw-key classical types (X25519/X448) are stored raw, not DER. */
+    /* Raw-key classical types (X25519/X448) are stored raw, not DER. The
+     * classical public key is always derivable from its private key, so we only
+     * ever load the classical private component. */
     if (strcmp(a1, "X25519") == 0 || strcmp(a1, "X448") == 0) {
         key->key1 = EVP_PKEY_new_raw_private_key_ex(key->libctx, a1,
                         HYBRID_KEY_CLASSIC_PROPQ(key), cder, cderlen);
@@ -238,9 +277,20 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
     }
     if (key->key1 == NULL)
         return 0;
-    if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
-                        HYBRID_KEY_ALG2_NAME(key), NULL,
-                        OSSL_PKEY_PARAM_PRIV_KEY, sel, pqv, pqvlen, &key->key2)) {
+    /* Load the PQ component. When the stored PQ public key is available, hand it
+     * to the provider alongside the private key: research keytypes cannot
+     * re-derive it from private material, and without it the decoded key could
+     * not produce a certificate. Otherwise fall back to a private-only load. */
+    if (pqpub != NULL && pqpublen > 0)
+        ok = load_component_privpub(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+                                    HYBRID_KEY_ALG2_NAME(key),
+                                    pqv, pqvlen, pqpub, pqpublen, &key->key2);
+    else
+        ok = load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+                            HYBRID_KEY_ALG2_NAME(key), NULL,
+                            OSSL_PKEY_PARAM_PRIV_KEY, sel, pqv, pqvlen,
+                            &key->key2);
+    if (!ok) {
         EVP_PKEY_free(key->key1);
         key->key1 = NULL;
         return 0;
