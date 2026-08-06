@@ -38,11 +38,45 @@ OQSPROV_BUILD="$OQSPROV_SRC/_build"
 LIBOQS_REF="${LIBOQS_REF:-main}"
 OQSPROV_REF="${OQSPROV_REF:-main}"
 
+# In-repo OQS_CEDE_HYBRIDS lever, applied to oqs-provider until it lands upstream.
+CEDE_PATCH="$REPO/test/patches/oqsprovider-cede-hybrids.patch"
+
 # Check out the requested ref (works for branch/tag/commit); clone if absent.
 checkout_ref() {  # <dir> <ref>
+    # A prior run may have applied our cede patch; undo ONLY that so the checkout
+    # below is clean. Never discard other local work: revert solely when the tree's
+    # single change is exactly our patch — otherwise leave everything intact and warn.
+    if [ -n "$(git -C "$1" status --porcelain --untracked-files=no)" ]; then
+        if git -C "$1" apply --reverse --check "$CEDE_PATCH" 2>/dev/null \
+           && [ -z "$(git -C "$1" status --porcelain --untracked-files=no \
+                      -- ':!oqsprov/oqsprov.c')" ]; then
+            git -C "$1" apply --reverse "$CEDE_PATCH"   # our patch only
+        else
+            echo "!! $1 has uncommitted changes; leaving them intact" >&2
+            echo "!! (commit or stash them for a clean re-checkout)" >&2
+        fi
+    fi
     git -C "$1" fetch --tags --force origin
     git -C "$1" checkout --quiet "$2"
     git -C "$1" pull --ff-only --quiet 2>/dev/null || true   # no-op on tag/commit
+}
+
+# Apply the in-repo OQS_CEDE_HYBRIDS patch unless oqsprovider already carries it.
+# The lever puts oqsprovider in PQ-only mode so hybrid-provider serves every hybrid
+# name (used by hybrid_replace_test). checkout_ref has already reverted any prior
+# application of this same patch, so re-runs pick up patch edits cleanly. A no-op
+# once it lands upstream; remove the patch file and this call at that point.
+apply_cede_patch() {  # <oqs-provider src dir>
+    [ -f "$CEDE_PATCH" ] || return 0
+    if grep -q OQS_CEDE_HYBRIDS "$1/oqsprov/oqsprov.c" 2>/dev/null; then
+        echo ">> OQS_CEDE_HYBRIDS already present in oqsprovider (skipping patch)"
+    elif git -C "$1" apply --check "$CEDE_PATCH" 2>/dev/null; then
+        git -C "$1" apply "$CEDE_PATCH"
+        echo ">> applied cede-hybrids patch (OQS_CEDE_HYBRIDS lever)"
+    else
+        echo "!! cede-hybrids patch does not apply to $OQSPROV_REF (oqsprov.c may have" >&2
+        echo "!! drifted); hybrid_replace_test will FAIL until the patch or pin is fixed." >&2
+    fi
 }
 
 echo ">> repo:           $REPO"
@@ -80,6 +114,7 @@ if [ ! -d "$OQSPROV_SRC/.git" ]; then
     git clone https://github.com/open-quantum-safe/oqs-provider.git "$OQSPROV_SRC"
 fi
 checkout_ref "$OQSPROV_SRC" "$OQSPROV_REF"
+apply_cede_patch "$OQSPROV_SRC"
 cmake -S "$OQSPROV_SRC" -B "$OQSPROV_BUILD" -GNinja \
     -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
     -DCMAKE_PREFIX_PATH="$OPENSSL_PREFIX" \

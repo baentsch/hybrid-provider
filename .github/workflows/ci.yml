@@ -1,14 +1,14 @@
 name: CI
 
-# Two tiers:
-#   regular (push / PR / manual) — released, PINNED, cached dependencies, so runs
-#     are fast and deterministic:
-#       OpenSSL 3.4 + latest release, liboqs 0.16.0, oqs-provider @ known-good
-#       commit (oqs-provider releases don't pin a liboqs release — it tracks
-#       liboqs main — so we pin a validated commit that builds against liboqs
-#       0.16.0). Covers both behaviour regimes (pre/post OpenSSL 3.5.0).
-#   weekly (schedule / manual) — bleeding edge, rebuilt fresh, to catch upstream
-#     breakage early: OpenSSL master + liboqs main + oqs-provider main.
+# Two tiers (see design.md "Continuous integration tiers"):
+#   regular (push / PR / manual) — FAST and deterministic: a minimal PINNED matrix
+#     (one pre-3.5 + one >=3.5 OpenSSL release, liboqs 0.16.0, oqs-provider @
+#     known-good commit). It must not scale with OpenSSL releases or track
+#     upstream main, so push/PR signal stays fast and independent of upstream.
+#   weekly (schedule / manual) — EXHAUSTIVE + bleeding edge: the full
+#     per-OpenSSL-version floor matrix (3.0 .. master) built against liboqs main +
+#     oqs-provider main, re-validating the drop-in contract as upstream moves.
+#     Never blocks a PR.
 
 on:
   push:
@@ -30,9 +30,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Minimal by design: one pre-3.5 tier and one >=3.5 tier — enough to cover
+        # both behaviour regimes without scaling per OpenSSL release. The full
+        # per-version floor sweep lives in the weekly job. pre35 marks OpenSSL
+        # without native ML-KEM/ML-DSA (added in 3.5.0): its PQ half comes from
+        # the PQ-only oqsprovider, so it runs the drop-in subset, not the full suite.
         openssl:
-          - { name: "3.4",    series: "3.4" }
-          - { name: "latest", series: ""    }   # highest stable openssl-X.Y.Z tag
+          - { name: "3.4",    series: "3.4", pre35: "true"  }
+          - { name: "latest", series: "",    pre35: "false" }   # highest stable tag
     env:
       PREFIX: ${{ github.workspace }}/.local
       LIBOQS_REF: "0.16.0"
@@ -90,25 +95,45 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Test — full suite (OpenSSL >= 3.5)
-        if: matrix.openssl.name != '3.4'
+        if: matrix.openssl.pre35 != 'true'
         working-directory: build
         run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
 
-      # On 3.4 the default provider has no ML-KEM/ML-DSA, so the hybrid provider's
-      # MLX algorithms can't be exercised against it; only oqs-interop and
-      # version-agnostic tests apply.
-      - name: Test — oqs-interop subset (OpenSSL 3.4)
-        if: matrix.openssl.name == '3.4'
+      # Pre-3.5 the default provider has no native ML-KEM/ML-DSA (and no ML-DSA
+      # seed API), so MLX-vs-default and composite tests self-skip. The PQ half
+      # comes from the cede-patched, PQ-only oqsprovider, so the drop-in
+      # replacement and oqs-compose tests still apply: hybrid_replace_test proves
+      # hybrid-provider serves the hybrid KEMs on 3.0+ and, from 3.2, the sigs.
+      - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
+        if: matrix.openssl.pre35 == 'true'
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
-            -R 'hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench'
 
   # ----------------------------------------------------------------- weekly ---
+  # Exhaustive per-OpenSSL-version floor matrix against bleeding-edge liboqs +
+  # oqs-provider main. Re-validates the drop-in replacement contract as upstream
+  # moves and surfaces OQS_CEDE_HYBRIDS patch drift early. Never gates a PR.
   weekly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    name: OpenSSL main + liboqs/oqs-provider main
+    name: OpenSSL ${{ matrix.openssl.name }} (main deps)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One tier per behaviour regime, no more: 3.0 = KEM-only (TLS-SIGALG
+        # advertising is guarded to 3.2+ in hybrid_caps.c, so the provider builds
+        # KEM-only below that); 3.2 = sigs advertised but no native PQ (PQ still
+        # entirely from the PQ-only oqsprovider); latest = newest stable release
+        # (native ML-KEM/ML-DSA + composite); master = bleeding edge. 3.3/3.4 are
+        # the same regime as 3.2, so they add nothing here. pre35 tiers get their
+        # PQ from oqsprovider.
+        openssl:
+          - { name: "3.0",    series: "3.0",    pre35: "true"  }
+          - { name: "3.2",    series: "3.2",    pre35: "true"  }
+          - { name: "latest", series: "",       pre35: "false" }
+          - { name: "master", series: "master", pre35: "false" }
     env:
       PREFIX: ${{ github.workspace }}/.local
       OSSL_INSTALL: ${{ github.workspace }}/ossl-install
@@ -118,30 +143,44 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Resolve OpenSSL master
+      - name: Resolve OpenSSL ref
         id: ossl
         run: |
           set -euo pipefail
-          SHA=$(git ls-remote https://github.com/openssl/openssl refs/heads/master | cut -f1)
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"; echo "OpenSSL master: $SHA"
+          S='${{ matrix.openssl.series }}'
+          if [ "$S" = "master" ]; then
+            REF=master
+            SHA=$(git ls-remote https://github.com/openssl/openssl refs/heads/master | cut -f1)
+          else
+            # empty series => newest stable release; otherwise newest of that series
+            if [ -n "$S" ]; then GLOB="openssl-$S.*"; RE="^openssl-${S//./\\.}\\.[0-9]+$"
+            else GLOB="openssl-*"; RE="^openssl-[0-9]+\\.[0-9]+\\.[0-9]+$"; fi
+            REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl "$GLOB" \
+                  | awk -F/ '{print $NF}' | grep -E "$RE" | sort -V | tail -1)
+            SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL: $REF ($SHA)"
 
-      # Only OpenSSL is cached (pure, keyed on the master commit); liboqs and
-      # oqs-provider main are always rebuilt fresh — the whole point of this tier.
-      - name: Cache OpenSSL (master)
+      # Cache OpenSSL only (keyed on the resolved commit): released tags stay warm,
+      # master rotates. liboqs + oqs-provider main are always rebuilt fresh by
+      # setup_oqs_interop.sh — the whole point of this tier — so PREFIX is not cached.
+      - name: Cache OpenSSL
         id: cache-ossl
         uses: actions/cache@v4
         with:
           path: ${{ env.OSSL_INSTALL }}
           key: weekly-ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
 
-      - name: Build OpenSSL (master)
+      - name: Build OpenSSL
         if: steps.cache-ossl.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch master https://github.com/openssl/openssl ossl-src
+          git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
+            https://github.com/openssl/openssl ossl-src
           cd ossl-src
-          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
-          make -j"$(nproc)"
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64
+          make -j"$(nproc)" build_sw
           make install_sw
 
       - name: Stage OpenSSL into .local
@@ -156,6 +195,14 @@ jobs:
       - name: Build hybrid provider
         run: cmake --build build -j"$(nproc)"
 
-      - name: Test — full suite
+      - name: Test — full suite (OpenSSL >= 3.5)
+        if: matrix.openssl.pre35 != 'true'
         working-directory: build
         run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
+
+      - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
+        if: matrix.openssl.pre35 == 'true'
+        working-directory: build
+        run: |
+          LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench'

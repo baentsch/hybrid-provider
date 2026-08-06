@@ -557,6 +557,25 @@ are out of scope):
 | `*cmssign`/`*cmsverify` | hybrid sig in CMS | `hybrid_cms_test` |
 | `test_tls_full.py` | external s_client/s_server matrix | `hybrid_scenarios.sh`, `hybrid_matrix_test` |
 
+### Continuous integration tiers
+
+CI is split by a hard rule: **push/PR CI stays fast and deterministic; anything
+expensive or dependent on upstream drift runs weekly.**
+
+- **regular** (push / PR / manual) — a minimal *pinned* matrix (one pre-3.5 and
+  one ≥3.5 OpenSSL release, fixed liboqs / oqs-provider refs). It deliberately
+  does **not** scale with the number of OpenSSL releases and does **not** track
+  upstream `main`, so contributors get fast, repeatable signal that is
+  independent of what OpenSSL / liboqs / oqs-provider do upstream. A red push/PR
+  run always means *this* change broke something, never that an upstream moved.
+- **weekly** (schedule / manual) — the exhaustive, bleeding-edge tier: the full
+  per-OpenSSL-version floor matrix built against liboqs and oqs-provider `main`.
+  This is where the drop-in replacement contract (`hybrid_replace_test`: hybrid
+  KEMs / signatures / composite each usable from their respective OpenSSL floor)
+  is re-validated as upstream moves, and where drift of the in-repo
+  `OQS_CEDE_HYBRIDS` patch against oqs-provider `main` surfaces early. A weekly
+  failure never blocks a PR.
+
 ## Performance
 
 The provider is a **near-zero-cost EVP composition layer**: its own glue adds

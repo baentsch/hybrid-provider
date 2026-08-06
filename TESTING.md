@@ -56,10 +56,39 @@ TLS code-point parity (`hybrid_capability_test`), provider coexistence
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 (`hybrid_matrix_test`), the coverage guard asserting every hybrid
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) advertises is
-also served here (`hybrid_coverage_test`), and — with `-DHYBRID_COMPOSITE` — the
-composite combiner, provider and draft-19 KAT tests (`composite_sig_test`,
+also served here (`hybrid_coverage_test`), the drop-in replacement test over a
+PQ-only [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
+(`hybrid_replace_test`, below), and — with `-DHYBRID_COMPOSITE` — the composite
+combiner, provider and draft-19 KAT tests (`composite_sig_test`,
 `composite_test`, `composite_kat_test`). Each self-skips cleanly when its
 prerequisites are absent.
+
+### Drop-in replacement over a PQ-only oqsprovider (`hybrid_replace_test`)
+
+This ascertains that hybrid-provider can **fully replace**
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider)'s hybrids while
+composing over it for the PQ primitives. It sets `OQS_CEDE_HYBRIDS` before
+loading providers, so
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider) withdraws every
+hybrid KEM/signature (keeping the standalone PQ + classical components), then
+asserts the version contract per running OpenSSL:
+
+- **hybrid KEMs** — OpenSSL **3.0+** (always exercised),
+- **hybrid signatures** — OpenSSL **3.2+** (skipped below),
+- **composite** — OpenSSL **3.5+**, and only when built with the composite family.
+
+The Frodo/BIKE/HQC hybrids make the "PQ from
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider)" claim concrete
+(their PQ base exists nowhere else). The `OQS_CEDE_HYBRIDS` lever is carried as
+`test/patches/oqsprovider-cede-hybrids.patch` until it lands upstream;
+`test/setup_oqs_interop.sh` applies it automatically (a no-op once upstream
+carries it). In CI (`.github/workflows/ci.yml`) the weekly job runs this across
+OpenSSL 3.0 / 3.2 / latest / master (against liboqs/oqs-provider `main`), and the
+fast push/PR job also exercises it on 3.4 + latest — so the contract is proven
+per regime. The test self-skips only when
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider) is absent; if it
+is present but not honoring the lever (patch missing or drifted), the test
+**fails** rather than skipping, so the weekly drift watcher goes red.
 
 `hybrid_coverage_test` guards against drift at *test* time (against a built
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)); a lightweight

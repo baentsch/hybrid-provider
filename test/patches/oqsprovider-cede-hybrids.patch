@@ -1,0 +1,71 @@
+diff --git a/oqsprov/oqsprov.c b/oqsprov/oqsprov.c
+index 6d7598e..58d421f 100644
+--- a/oqsprov/oqsprov.c
++++ b/oqsprov/oqsprov.c
+@@ -1442,6 +1442,66 @@ int OQS_PROVIDER_ENTRYPOINT_NAME(const OSSL_CORE_HANDLE *handle,
+ 
+     ///// OQS_TEMPLATE_FRAGMENT_DISABLE_OSSL_ALGS_END
+ 
++    /*
++     * Optionally cede ALL hybrid algorithms to an external hybrid provider.
++     *
++     * When OQS_CEDE_HYBRIDS is set in the environment, oqsprovider disables
++     * every hybrid KEM and hybrid signature so that a separately loaded
++     * provider (e.g. the OpenSSL hybrid-provider) serves the composite hybrid
++     * names instead. Only the composite hybrids are ceded; the standalone PQ
++     * and classical component algorithms remain fully served by oqsprovider,
++     * which the hybrid provider in turn composes over via the EVP API.
++     *
++     * Pushing a name onto rt_disabled_algs removes it from every operation
++     * array (KEM, signature, keymgmt, encoder, decoder -- all routed through
++     * FILTERED_ALGS), suppresses it in the TLS group/sigalg capability lists
++     * (which consult oqsprov_get_rt_disabled_algs()), and skips its OID/sigid
++     * registration in the loop below -- i.e. a complete withdrawal.
++     *
++     * Hybrids are recognised structurally: an oqsprovider hybrid is registered
++     * as <classical>_<pq> (e.g. p256_mldsa44, x25519_frodo640aes) or under one
++     * of the IETF-standardised MLX KEM names. No standalone algorithm carries a
++     * classical prefix, so matching the prefix set below is exact.
++     */
++    if (getenv("OQS_CEDE_HYBRIDS") != NULL) {
++        static const char *const hybrid_prefixes[] = {
++            "p256_", "p384_", "p521_",  "x25519_",
++            "x448_", "bp256_", "bp384_", "bp512_", "rsa3072_"};
++        static const char *const hybrid_standard_names[] = {
++            "X25519MLKEM768", "SecP256r1MLKEM768", "X448MLKEM1024",
++            "SecP384r1MLKEM1024"};
++        const OSSL_ALGORITHM *const hybrid_alg_lists[] = {
++            oqsprovider_signatures, oqsprovider_asym_kems};
++        size_t li, pi;
++
++        for (li = 0; li < OSSL_NELEM(hybrid_alg_lists); li++) {
++            const OSSL_ALGORITHM *alg;
++
++            for (alg = hybrid_alg_lists[li]; alg->algorithm_names != NULL;
++                 alg++) {
++                const char *name = alg->algorithm_names;
++                int is_hybrid = 0;
++
++                for (pi = 0; pi < OSSL_NELEM(hybrid_prefixes); pi++)
++                    if (strncmp(name, hybrid_prefixes[pi],
++                                strlen(hybrid_prefixes[pi])) == 0) {
++                        is_hybrid = 1;
++                        break;
++                    }
++                for (pi = 0;
++                     !is_hybrid && pi < OSSL_NELEM(hybrid_standard_names); pi++)
++                    if (strcmp(name, hybrid_standard_names[pi]) == 0)
++                        is_hybrid = 1;
++
++                if (is_hybrid &&
++                    sk_OPENSSL_STRING_find(rt_disabled_algs, (char *)name) < 0) {
++                    rt_algo_filter_enabled = 1;
++                    sk_OPENSSL_STRING_push(rt_disabled_algs, (char *)name);
++                }
++            }
++        }
++    }
++
+     // insert all OIDs to the global objects list
+     for (i = 0; i < OQS_OID_CNT; i += 2) {
+         int id_ok = 1;

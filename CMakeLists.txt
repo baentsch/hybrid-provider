@@ -126,6 +126,21 @@ set_tests_properties(hybrid_oqs_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Drop-in replacement test: with oqsprovider in PQ-only mode (OQS_CEDE_HYBRIDS,
+# applied via test/patches/oqsprovider-cede-hybrids.patch until it lands
+# upstream), hybrid-provider must serve every hybrid — KEMs on OpenSSL 3.0+,
+# sigs on 3.2+, composite on 3.5+. Self-skips only when oqsprovider is absent;
+# FAILS if oqsprovider is present but not honoring the cede lever, so patch drift
+# turns the (weekly) run red instead of silently passing. The test also setenv()s
+# OQS_CEDE_HYBRIDS itself before loading providers; it is set here too for visibility.
+add_executable(hybrid_replace_test test/hybrid_replace_test.c)
+target_include_directories(hybrid_replace_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_replace_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_replace_test COMMAND hybrid_replace_test)
+set_tests_properties(hybrid_replace_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};OQS_CEDE_HYBRIDS=1"
+)
+
 # Private component-context test: hybrid sources Frodo/BIKE/HQC base from its
 # own libctx (default + oqsprovider), so the app context has no group collision
 # and these hybrids work over TLS. Self-skips when oqsprovider is unavailable.
