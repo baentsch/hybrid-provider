@@ -25,8 +25,9 @@ cmake .. -DOPENSSL_ROOT_DIR=/path/to/openssl
 make
 ```
 
-Requires OpenSSL 3.4+ (ML-KEM/ML-DSA support). Interop tests against default
-provider hybrid KEMs require OpenSSL 3.5+.
+Requires OpenSSL 3.4+. The default provider gained native ML-KEM/ML-DSA only in
+3.5.0; on 3.4.x those components come from oqsprovider instead. Interop tests
+against default provider hybrid KEMs require OpenSSL 3.5+.
 
 ## Testing Requirements
 

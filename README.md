@@ -120,8 +120,12 @@ on P-256/P-384/P-521 and brainpoolP256r1/P384r1, and Ed25519/Ed448.
 
 ## Prerequisites
 
-- OpenSSL 3.4+ (ML-KEM/ML-DSA support)
-- OpenSSL 3.5+ for KEM interop tests against the default provider
+- OpenSSL 3.4+. Note that the default provider gained native ML-KEM/ML-DSA only
+  in **3.5.0**; on **3.4.x** those components must come from
+  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) instead (the
+  hybrid provider composes them either way).
+- OpenSSL 3.5+ for the native default-provider component path, the KEM interop
+  tests against it, and the composite family (ML-DSA seed API)
 - CMake 3.16+
 - C11 compiler
 
