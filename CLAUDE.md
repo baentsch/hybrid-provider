@@ -60,7 +60,10 @@ hybrid-provider/
 ├── CMakeLists.txt
 ├── CLAUDE.md              ← this file
 ├── design.md              ← full architecture, design decisions + future work
-├── README.md              ← user-facing documentation
+├── README.md              ← landing page: motivation, algorithm inventory, build
+├── USAGE.md               ← loading, calling, mixing components, cnf configuration
+├── TESTING.md             ← test suite, CLI harness, benchmarking
+├── CONTRIBUTING.md        ← code conventions, layout, adding a hybrid (contributor doc)
 ├── openssl/               ← reference OpenSSL checkout (not built)
 ├── hybrid_prov.c          ← provider init, query_operation, capabilities
 ├── hybrid_keymgmt.c       ← keymgmt dispatch (hybrid keys)
