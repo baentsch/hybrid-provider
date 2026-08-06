@@ -113,8 +113,10 @@ on P-256/P-384/P-521 and brainpoolP256r1/P384r1, and Ed25519/Ed448.
 - **EVP-only** — all cryptographic operations delegate to sub-algorithms via
   the public EVP API. No internal OpenSSL headers are used.
 - **Provider-agnostic composition** — sub-algorithms can come from any provider.
-- **Wire-format compatibility** — KEM hybrids interoperate with OpenSSL's
-  built-in hybrid KEMs.
+- **Interoperability** — verified, as applicable, against the OpenSSL default
+  provider's hybrid KEMs, every hybrid KEM and signature supported by
+  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider), and the
+  composite draft-19 known-answer tests (KATs).
 
 ## Prerequisites
 
