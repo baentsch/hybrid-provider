@@ -3,10 +3,13 @@ name: CI
 # Two tiers:
 #   regular (push / PR / manual) — released, PINNED, cached dependencies, so runs
 #     are fast and deterministic:
-#       OpenSSL 3.4 + latest release, liboqs 0.16.0, oqs-provider @ known-good
-#       commit (oqs-provider releases don't pin a liboqs release — it tracks
-#       liboqs main — so we pin a validated commit that builds against liboqs
-#       0.16.0). Covers both behaviour regimes (pre/post OpenSSL 3.5.0).
+#       OpenSSL 3.0 / 3.2 / 3.4 / 3.5 / latest release, liboqs 0.16.0,
+#       oqs-provider @ known-good commit (oqs-provider releases don't pin a liboqs
+#       release — it tracks liboqs main — so we pin a validated commit that builds
+#       against liboqs 0.16.0). Spans both behaviour regimes (pre/post OpenSSL
+#       3.5.0) so the drop-in replacement contract is exercised per version:
+#       hybrid KEMs from 3.0, hybrid sigs from 3.2, composite/native PQ from 3.5.
+#       oqsprovider is built PQ-only via the in-repo OQS_CEDE_HYBRIDS patch.
 #   weekly (schedule / manual) — bleeding edge, rebuilt fresh, to catch upstream
 #     breakage early: OpenSSL master + liboqs main + oqs-provider main.
 
@@ -30,9 +33,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # pre35 marks OpenSSL without native ML-KEM/ML-DSA (added in 3.5.0): the
+        # PQ half comes from the PQ-only oqsprovider, so those tiers run the
+        # drop-in subset (hybrid_replace_test et al.) rather than the full suite.
         openssl:
-          - { name: "3.4",    series: "3.4" }
-          - { name: "latest", series: ""    }   # highest stable openssl-X.Y.Z tag
+          - { name: "3.0",    series: "3.0", pre35: true  }
+          - { name: "3.2",    series: "3.2", pre35: true  }
+          - { name: "3.4",    series: "3.4", pre35: true  }
+          - { name: "3.5",    series: "3.5", pre35: false }
+          - { name: "latest", series: "",    pre35: false }   # highest stable tag
     env:
       PREFIX: ${{ github.workspace }}/.local
       LIBOQS_REF: "0.16.0"
@@ -90,19 +99,21 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Test — full suite (OpenSSL >= 3.5)
-        if: matrix.openssl.name != '3.4'
+        if: matrix.openssl.pre35 != true
         working-directory: build
         run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
 
-      # On 3.4 the default provider has no ML-KEM/ML-DSA, so the hybrid provider's
-      # MLX algorithms can't be exercised against it; only oqs-interop and
-      # version-agnostic tests apply.
-      - name: Test — oqs-interop subset (OpenSSL 3.4)
-        if: matrix.openssl.name == '3.4'
+      # Pre-3.5 the default provider has no native ML-KEM/ML-DSA (and no ML-DSA
+      # seed API), so MLX-vs-default and composite tests self-skip. The PQ half
+      # comes from the cede-patched, PQ-only oqsprovider, so the drop-in
+      # replacement and oqs-compose tests still apply: hybrid_replace_test proves
+      # hybrid-provider serves the hybrid KEMs on 3.0+ and, from 3.2, the sigs.
+      - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
+        if: matrix.openssl.pre35 == true
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
-            -R 'hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench'
 
   # ----------------------------------------------------------------- weekly ---
   weekly:

@@ -91,6 +91,8 @@ hybrid-provider/
     ├── hybrid_compctx_test.c      ← private component context (Frodo/BIKE/HQC)
     ├── hybrid_coexist_test.c      ← provider coexistence
     ├── hybrid_matrix_test.c       ← full cross-version matrix vs oqsprovider
+    ├── hybrid_replace_test.c      ← drop-in replacement over PQ-only oqsprovider (OQS_CEDE_HYBRIDS)
+    ├── patches/                   ← in-repo oqsprovider patches (cede-hybrids lever)
     ├── composite_*_test.c         ← composite combiner/provider/draft-19 KAT
     ├── hybrid_bench.c             ← keygen/encaps/decaps benchmark vs default provider
     └── hybrid_scenarios.sh        ← CLI (s_server/s_client) TLS interop harness

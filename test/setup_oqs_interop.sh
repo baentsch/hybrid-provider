@@ -40,9 +40,29 @@ OQSPROV_REF="${OQSPROV_REF:-main}"
 
 # Check out the requested ref (works for branch/tag/commit); clone if absent.
 checkout_ref() {  # <dir> <ref>
+    git -C "$1" checkout --quiet -- . 2>/dev/null || true   # drop any prior local patch
     git -C "$1" fetch --tags --force origin
     git -C "$1" checkout --quiet "$2"
     git -C "$1" pull --ff-only --quiet 2>/dev/null || true   # no-op on tag/commit
+}
+
+# Apply the in-repo OQS_CEDE_HYBRIDS patch, if oqsprovider does not already carry
+# it. The lever lets the drop-in replacement test (hybrid_replace_test) put
+# oqsprovider into PQ-only mode so hybrid-provider serves every hybrid name.
+# Idempotent (checkout_ref resets the tree first) and a no-op once it lands
+# upstream. Remove the patch file and this call at that point.
+apply_cede_patch() {  # <oqs-provider src dir>
+    local patch="$REPO/test/patches/oqsprovider-cede-hybrids.patch"
+    [ -f "$patch" ] || return 0
+    if grep -q OQS_CEDE_HYBRIDS "$1/oqsprov/oqsprov.c" 2>/dev/null; then
+        echo ">> OQS_CEDE_HYBRIDS already present in oqsprovider (skipping patch)"
+    elif git -C "$1" apply --check "$patch" 2>/dev/null; then
+        git -C "$1" apply "$patch"
+        echo ">> applied cede-hybrids patch (OQS_CEDE_HYBRIDS lever)"
+    else
+        echo "!! cede-hybrids patch does not apply to $OQSPROV_REF; hybrid_replace_test" >&2
+        echo "!! will self-skip (oqsprov.c may have drifted from the patch base)" >&2
+    fi
 }
 
 echo ">> repo:           $REPO"
@@ -80,6 +100,7 @@ if [ ! -d "$OQSPROV_SRC/.git" ]; then
     git clone https://github.com/open-quantum-safe/oqs-provider.git "$OQSPROV_SRC"
 fi
 checkout_ref "$OQSPROV_SRC" "$OQSPROV_REF"
+apply_cede_patch "$OQSPROV_SRC"
 cmake -S "$OQSPROV_SRC" -B "$OQSPROV_BUILD" -GNinja \
     -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
     -DCMAKE_PREFIX_PATH="$OPENSSL_PREFIX" \
