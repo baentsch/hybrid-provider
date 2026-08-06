@@ -122,14 +122,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Floor is 3.0 for hybrid KEMs: TLS-SIGALG capability advertising is
-        # guarded to 3.2+ in hybrid_caps.c, so below that the provider builds
-        # KEM-only. pre35 tiers get their PQ from the PQ-only oqsprovider.
+        # One tier per behaviour regime, no more: 3.0 = KEM-only (TLS-SIGALG
+        # advertising is guarded to 3.2+ in hybrid_caps.c, so the provider builds
+        # KEM-only below that); 3.2 = sigs advertised but no native PQ (PQ still
+        # entirely from the PQ-only oqsprovider); latest = newest stable release
+        # (native ML-KEM/ML-DSA + composite); master = bleeding edge. 3.3/3.4 are
+        # the same regime as 3.2, so they add nothing here. pre35 tiers get their
+        # PQ from oqsprovider.
         openssl:
           - { name: "3.0",    series: "3.0",    pre35: true  }
           - { name: "3.2",    series: "3.2",    pre35: true  }
-          - { name: "3.4",    series: "3.4",    pre35: true  }
-          - { name: "3.5",    series: "3.5",    pre35: false }
+          - { name: "latest", series: "",       pre35: false }
           - { name: "master", series: "master", pre35: false }
     env:
       PREFIX: ${{ github.workspace }}/.local
@@ -149,7 +152,9 @@ jobs:
             REF=master
             SHA=$(git ls-remote https://github.com/openssl/openssl refs/heads/master | cut -f1)
           else
-            GLOB="openssl-$S.*"; RE="^openssl-${S//./\\.}\\.[0-9]+$"
+            # empty series => newest stable release; otherwise newest of that series
+            if [ -n "$S" ]; then GLOB="openssl-$S.*"; RE="^openssl-${S//./\\.}\\.[0-9]+$"
+            else GLOB="openssl-*"; RE="^openssl-[0-9]+\\.[0-9]+\\.[0-9]+$"; fi
             REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl "$GLOB" \
                   | awk -F/ '{print $NF}' | grep -E "$RE" | sort -V | tail -1)
             SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
