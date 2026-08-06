@@ -82,11 +82,13 @@ The Frodo/BIKE/HQC hybrids make the "PQ from
 (their PQ base exists nowhere else). The `OQS_CEDE_HYBRIDS` lever is carried as
 `test/patches/oqsprovider-cede-hybrids.patch` until it lands upstream;
 `test/setup_oqs_interop.sh` applies it automatically (a no-op once upstream
-carries it). The CI matrix (`.github/workflows/ci.yml`) runs this across OpenSSL
-3.0 / 3.2 / 3.4 / 3.5 / latest, plus master in the weekly job, so the contract is
-proven on every tier. When
-[oqsprovider](https://github.com/open-quantum-safe/oqs-provider) is absent, or
-present but not honoring the lever, the test self-skips.
+carries it). In CI (`.github/workflows/ci.yml`) the weekly job runs this across
+OpenSSL 3.0 / 3.2 / latest / master (against liboqs/oqs-provider `main`), and the
+fast push/PR job also exercises it on 3.4 + latest — so the contract is proven
+per regime. The test self-skips only when
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider) is absent; if it
+is present but not honoring the lever (patch missing or drifted), the test
+**fails** rather than skipping, so the weekly drift watcher goes red.
 
 `hybrid_coverage_test` guards against drift at *test* time (against a built
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)); a lightweight

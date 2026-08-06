@@ -76,13 +76,17 @@ static int origin_id(const char *name, unsigned int *id)
     return 0;
 }
 
-/* Count how many capabilities a provider advertises (arg is an int counter). */
+#ifdef HYBRID_HAVE_TLS_SIGALG
+/* Count how many capabilities a provider advertises (arg is an int counter).
+ * Only used by the TLS-SIGALG self-check below, so guarded to avoid an unused-
+ * function warning on OpenSSL < 3.2. */
 static int count_cb(const OSSL_PARAM params[], void *arg)
 {
     (void)params;
     ++*(int *)arg;
     return 1;
 }
+#endif
 
 int main(void)
 {

@@ -1,7 +1,7 @@
-From a9bfd3ebccbb7162fa34ea450facb9ebf22a342f Mon Sep 17 00:00:00 2001
-From: baentsch <57787676+baentsch@users.noreply.github.com>
-Date: Wed, 5 Aug 2026 09:08:24 +0200
-Subject: [PATCH] Add OQS_CEDE_HYBRIDS lever to disable all hybrid algorithms
+Add OQS_CEDE_HYBRIDS lever to disable all hybrid algorithms
+
+Applied to oqs-provider by test/setup_oqs_interop.sh via `git apply`, which reads
+only the diff below; the text down to the "---" separator is context.
 
 Introduce an opt-in runtime switch that withdraws every hybrid KEM and
 hybrid signature from oqsprovider so that a separately loaded provider

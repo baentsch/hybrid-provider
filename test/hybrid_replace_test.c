@@ -27,8 +27,10 @@
  * algorithms MUST work; below it they are skipped (not asserted absent), since
  * the thresholds are declared floors, not hard cliffs.
  *
- * Self-skips (exit 0) when oqsprovider is absent, or present but NOT honoring
- * OQS_CEDE_HYBRIDS (unpatched) — in which case true drop-in cannot be tested.
+ * Self-skips (exit 0) only when oqsprovider is absent (no interop peer). If it is
+ * present but does NOT honor OQS_CEDE_HYBRIDS (patch missing / drifted off
+ * upstream), the test FAILS rather than skipping, so the weekly drift watcher
+ * goes red instead of silently passing an untested drop-in.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -233,13 +235,18 @@ int main(void)
     printf("OpenSSL %s (0x%08lx)\n", OpenSSL_version(OPENSSL_VERSION), ver);
     printf("===============================================================\n");
 
-    /* Precondition 1: oqsprovider must serve NO hybrids (cede active). */
+    /* Precondition 1: oqsprovider must serve NO hybrids (cede active). Failing
+     * this means the cede patch is missing or has drifted -- a real regression
+     * for the drop-in, so FAIL (do not skip): the weekly drift watcher must go
+     * red rather than silently pass an untested drop-in. */
     if (provider_serves(ctx, "p256_mlkem512", "provider=oqsprovider", 1)
         || provider_serves(ctx, "p256_mldsa44", "provider=oqsprovider", 0)) {
-        printf("oqsprovider still serves hybrids -- OQS_CEDE_HYBRIDS not honored\n");
-        printf("(oqsprovider not built with the cede patch) -- SKIPPING\n");
+        printf("FAIL: oqsprovider still serves hybrids -- OQS_CEDE_HYBRIDS not "
+               "honored\n");
+        printf("(oqsprovider not built with the cede patch, or the patch drifted "
+               "off upstream)\n");
         OSSL_LIB_CTX_free(ctx);
-        return 0;
+        return 1;
     }
     printf("  precondition: oqsprovider cedes all hybrids ................ OK\n");
 

@@ -36,8 +36,8 @@ jobs:
         # without native ML-KEM/ML-DSA (added in 3.5.0): its PQ half comes from
         # the PQ-only oqsprovider, so it runs the drop-in subset, not the full suite.
         openssl:
-          - { name: "3.4",    series: "3.4", pre35: true  }
-          - { name: "latest", series: "",    pre35: false }   # highest stable tag
+          - { name: "3.4",    series: "3.4", pre35: "true"  }
+          - { name: "latest", series: "",    pre35: "false" }   # highest stable tag
     env:
       PREFIX: ${{ github.workspace }}/.local
       LIBOQS_REF: "0.16.0"
@@ -95,7 +95,7 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Test — full suite (OpenSSL >= 3.5)
-        if: matrix.openssl.pre35 != true
+        if: matrix.openssl.pre35 != 'true'
         working-directory: build
         run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
 
@@ -105,7 +105,7 @@ jobs:
       # replacement and oqs-compose tests still apply: hybrid_replace_test proves
       # hybrid-provider serves the hybrid KEMs on 3.0+ and, from 3.2, the sigs.
       - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
-        if: matrix.openssl.pre35 == true
+        if: matrix.openssl.pre35 == 'true'
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
@@ -130,10 +130,10 @@ jobs:
         # the same regime as 3.2, so they add nothing here. pre35 tiers get their
         # PQ from oqsprovider.
         openssl:
-          - { name: "3.0",    series: "3.0",    pre35: true  }
-          - { name: "3.2",    series: "3.2",    pre35: true  }
-          - { name: "latest", series: "",       pre35: false }
-          - { name: "master", series: "master", pre35: false }
+          - { name: "3.0",    series: "3.0",    pre35: "true"  }
+          - { name: "3.2",    series: "3.2",    pre35: "true"  }
+          - { name: "latest", series: "",       pre35: "false" }
+          - { name: "master", series: "master", pre35: "false" }
     env:
       PREFIX: ${{ github.workspace }}/.local
       OSSL_INSTALL: ${{ github.workspace }}/ossl-install
@@ -196,12 +196,12 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Test — full suite (OpenSSL >= 3.5)
-        if: matrix.openssl.pre35 != true
+        if: matrix.openssl.pre35 != 'true'
         working-directory: build
         run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
 
       - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
-        if: matrix.openssl.pre35 == true
+        if: matrix.openssl.pre35 == 'true'
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
