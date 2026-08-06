@@ -23,7 +23,14 @@
 #include <openssl/provider.h>
 #include <openssl/params.h>
 #include <openssl/core_names.h>
+#include <openssl/opensslv.h>
 #include "hybrid_prov.h"
+
+/* TLS-SIGALG capability params are OpenSSL 3.2+; on 3.0/3.1 only TLS-GROUP
+ * (hybrid KEM) parity is checked. Mirrors the guard in hybrid_caps.c. */
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+# define HYBRID_HAVE_TLS_SIGALG 1
+#endif
 
 #define MAXG 512
 static struct { char name[80]; unsigned int id; } adv[MAXG];
@@ -41,10 +48,12 @@ static int collect(const OSSL_PARAM params[], void *arg)
     unsigned int id = 0;
 
     (void)arg;
+#ifdef HYBRID_HAVE_TLS_SIGALG
     if (pn == NULL || pi == NULL) {          /* not a group -> try a sigalg */
         pn = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_SIGALG_IANA_NAME);
         pi = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT);
     }
+#endif
     if (pn != NULL && pi != NULL && nadv < MAXG
         && OSSL_PARAM_get_utf8_string_ptr(pn, &name)
         && OSSL_PARAM_get_uint(pi, &id)) {
@@ -126,6 +135,7 @@ int main(void)
         }
     }
 
+#ifdef HYBRID_HAVE_TLS_SIGALG
     printf("\nTLS-SIGALG code-point parity vs oqsprovider\n");
     printf("===========================================\n");
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
@@ -185,6 +195,7 @@ int main(void)
             failed++;
         OSSL_LIB_CTX_free(hctx);
     }
+#endif /* HYBRID_HAVE_TLS_SIGALG */
 
     printf("\nResults: %d/%d matched, %d failed, %d skipped\n",
            passed, tests, failed, skipped);

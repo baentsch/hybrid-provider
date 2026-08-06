@@ -6,7 +6,7 @@ name: CI
 #     known-good commit). It must not scale with OpenSSL releases or track
 #     upstream main, so push/PR signal stays fast and independent of upstream.
 #   weekly (schedule / manual) — EXHAUSTIVE + bleeding edge: the full
-#     per-OpenSSL-version floor matrix (3.2 .. master) built against liboqs main +
+#     per-OpenSSL-version floor matrix (3.0 .. master) built against liboqs main +
 #     oqs-provider main, re-validating the drop-in contract as upstream moves.
 #     Never blocks a PR.
 
@@ -122,9 +122,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Floor is 3.2 (hybrid_caps.c uses the TLS-SIGALG capability API, added in
-        # 3.2). pre35 tiers get their PQ from the PQ-only oqsprovider.
+        # Floor is 3.0 for hybrid KEMs: TLS-SIGALG capability advertising is
+        # guarded to 3.2+ in hybrid_caps.c, so below that the provider builds
+        # KEM-only. pre35 tiers get their PQ from the PQ-only oqsprovider.
         openssl:
+          - { name: "3.0",    series: "3.0",    pre35: true  }
           - { name: "3.2",    series: "3.2",    pre35: true  }
           - { name: "3.4",    series: "3.4",    pre35: true  }
           - { name: "3.5",    series: "3.5",    pre35: false }

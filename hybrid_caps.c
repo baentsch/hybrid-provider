@@ -5,9 +5,21 @@
 
 #include "hybrid_prov.h"
 #include <openssl/core_names.h>
+#include <openssl/opensslv.h>   /* OPENSSL_VERSION_NUMBER */
 #include <openssl/prov_ssl.h>   /* TLS1_3_VERSION */
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"
+#endif
+
+/*
+ * The TLS-SIGALG provider capability params (OSSL_CAPABILITY_TLS_SIGALG_*) were
+ * added in OpenSSL 3.2. On 3.0/3.1 the provider builds KEM-only: the hybrid KEMs
+ * and their TLS groups still work; hybrid signatures are simply not advertised as
+ * TLS SignatureSchemes (and hybrid signatures need a 3.2+ component provider
+ * anyway). TLS-GROUP has existed since 3.0.
+ */
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+# define HYBRID_HAVE_TLS_SIGALG 1
 #endif
 
 /*
@@ -109,6 +121,7 @@ static const OSSL_PARAM hybrid_param_group_list[][11] = {
  * the encoders use. Security bits derive from the PQ NIST level (1/2 -> 128,
  * 3/4 -> 192, 5 -> 256). Drift is caught by hybrid_capability_test.
  */
+#ifdef HYBRID_HAVE_TLS_SIGALG
 typedef struct {
     unsigned int code_point;
     unsigned int secbits;
@@ -155,6 +168,7 @@ static const OSSL_PARAM hybrid_param_sigalg_list[][8] = {
 
 #define HYBRID_TLS_SIGALG_COUNT \
     (sizeof(hybrid_param_sigalg_list) / sizeof(hybrid_param_sigalg_list[0]))
+#endif /* HYBRID_HAVE_TLS_SIGALG */
 
 int hybrid_get_capabilities(void *provctx, const char *capability,
                             OSSL_CALLBACK *cb, void *arg)
@@ -174,6 +188,7 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
         return 1;
     }
 
+#ifdef HYBRID_HAVE_TLS_SIGALG
     if (OPENSSL_strcasecmp(capability, "TLS-SIGALG") == 0) {
         for (i = 0; i < HYBRID_TLS_SIGALG_COUNT; i++) {
             if (hybrid_sigalg_list[i].code_point == 0)
@@ -181,12 +196,13 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
             if (!cb(hybrid_param_sigalg_list[i], arg))
                 return 0;
         }
-#ifdef HYBRID_COMPOSITE
+# ifdef HYBRID_COMPOSITE
         if (!composite_get_capabilities(provctx, capability, cb, arg))
             return 0;   /* also advertise the composite TLS SignatureSchemes */
-#endif
+# endif
         return 1;
     }
+#endif
 
     return 0;
 }
