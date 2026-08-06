@@ -1,35 +1,3 @@
-Add OQS_CEDE_HYBRIDS lever to disable all hybrid algorithms
-
-Applied to oqs-provider by test/setup_oqs_interop.sh via `git apply`, which reads
-only the diff below; the text down to the "---" separator is context.
-
-Introduce an opt-in runtime switch that withdraws every hybrid KEM and
-hybrid signature from oqsprovider so that a separately loaded provider
-(e.g. the OpenSSL hybrid-provider) can serve the composite hybrid names
-instead. Only the composite hybrids are ceded; the standalone PQ and
-classical component algorithms remain fully served by oqsprovider, over
-which the hybrid provider composes via the EVP API.
-
-When OQS_CEDE_HYBRIDS is set in the environment, each hybrid name is
-pushed onto rt_disabled_algs. This removes it from every operation array
-(KEM, signature, keymgmt, encoder, decoder -- all routed through
-FILTERED_ALGS), suppresses it in the TLS group/sigalg capability lists
-(which consult oqsprov_get_rt_disabled_algs()), and skips its OID/sigid
-registration -- i.e. a complete withdrawal. Default behaviour (env var
-unset) is unchanged, so this is non-breaking for existing users.
-
-Hybrids are recognised structurally: an oqsprovider hybrid is registered
-as <classical>_<pq> (e.g. p256_mldsa44, x25519_frodo640aes) or under one
-of the IETF-standardised MLX KEM names. No standalone algorithm carries a
-classical prefix, so matching the prefix set is exact.
-
-Verified against a clean build: with OQS_CEDE_HYBRIDS set, oqsprovider
-advertises 0 hybrid KEMs (was 34) and 0 hybrid signatures (was 26), while
-all standalone PQ and classical algorithms remain available.
----
- oqsprov/oqsprov.c | 60 +++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 60 insertions(+)
-
 diff --git a/oqsprov/oqsprov.c b/oqsprov/oqsprov.c
 index 6d7598e..58d421f 100644
 --- a/oqsprov/oqsprov.c
@@ -101,6 +69,3 @@ index 6d7598e..58d421f 100644
      // insert all OIDs to the global objects list
      for (i = 0; i < OQS_OID_CNT; i += 2) {
          int id_ok = 1;
--- 
-2.34.1
-
