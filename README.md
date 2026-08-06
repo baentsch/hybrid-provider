@@ -120,12 +120,17 @@ on P-256/P-384/P-521 and brainpoolP256r1/P384r1, and Ed25519/Ed448.
 
 ## Prerequisites
 
-- OpenSSL 3.4+. Note that the default provider gained native ML-KEM/ML-DSA only
-  in **3.5.0**; on **3.4.x** those components must come from
-  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) instead (the
-  hybrid provider composes them either way).
-- OpenSSL 3.5+ for the native default-provider component path, the KEM interop
-  tests against it, and the composite family (ML-DSA seed API)
+- OpenSSL **3.0+**. The provider itself uses only 3.0-era EVP; the *effective*
+  floor is set by where each component comes from:
+  - **Hybrid KEMs** — OpenSSL **3.0+** (the EVP KEM API is 3.0). The PQ half
+    (ML-KEM, FrodoKEM, …) resolves from
+    [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) on 3.0–3.4,
+    or from the default provider natively on 3.5+ (ML-KEM landed in 3.5.0).
+  - **Hybrid signatures** — OpenSSL **3.2+** (the oqsprovider hybrid-signature
+    floor); the PQ half resolves as above (ML-DSA natively from 3.5+).
+  - **Composite signatures** and any use of the **default provider's native
+    ML-KEM/ML-DSA** — OpenSSL **3.5+** only (composite needs the 3.5 ML-DSA seed
+    API; native ML-KEM/ML-DSA did not exist before 3.5.0).
 - CMake 3.16+
 - C11 compiler
 
