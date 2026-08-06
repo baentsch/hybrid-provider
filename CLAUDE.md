@@ -25,8 +25,11 @@ cmake .. -DOPENSSL_ROOT_DIR=/path/to/openssl
 make
 ```
 
-Requires OpenSSL 3.4+ (ML-KEM/ML-DSA support). Interop tests against default
-provider hybrid KEMs require OpenSSL 3.5+.
+Requires OpenSSL 3.0+ (3.0-era EVP only). Effective floor is per component:
+hybrid KEMs 3.0+, hybrid sigs 3.2+ (oqsprovider floor), composite and any use of
+the default provider's native ML-KEM/ML-DSA 3.5+ (seed API; native PQ landed in
+3.5.0). On 3.0–3.4 the PQ half comes from oqsprovider; on 3.5+ from the default
+provider. Interop tests against default provider hybrid KEMs require 3.5+.
 
 ## Testing Requirements
 
@@ -60,7 +63,10 @@ hybrid-provider/
 ├── CMakeLists.txt
 ├── CLAUDE.md              ← this file
 ├── design.md              ← full architecture, design decisions + future work
-├── README.md              ← user-facing documentation
+├── README.md              ← landing page: motivation, algorithm inventory, build
+├── USAGE.md               ← loading, calling, mixing components, cnf configuration
+├── TESTING.md             ← test suite, CLI harness, benchmarking
+├── CONTRIBUTING.md        ← code conventions, layout, adding a hybrid (contributor doc)
 ├── openssl/               ← reference OpenSSL checkout (not built)
 ├── hybrid_prov.c          ← provider init, query_operation, capabilities
 ├── hybrid_keymgmt.c       ← keymgmt dispatch (hybrid keys)

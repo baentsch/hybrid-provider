@@ -493,7 +493,7 @@ CMake-based, linking against `libcrypto`:
 ```
 hybrid-provider/
 ├── CMakeLists.txt
-├── design.md / CLAUDE.md / README.md
+├── design.md / CLAUDE.md / README.md / USAGE.md / TESTING.md / CONTRIBUTING.md
 ├── openssl/              ← reference checkout (not built)
 ├── hybrid_prov.{c,h}     ← provider init, query_operation, shared types + tables
 ├── hybrid_keymgmt.c      ← keymgmt dispatch (hybrid keys)

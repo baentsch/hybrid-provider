@@ -10,7 +10,10 @@ if(DEFINED OPENSSL_ROOT_DIR)
     list(INSERT CMAKE_PREFIX_PATH 0 "${OPENSSL_ROOT_DIR}")
 endif()
 
-find_package(OpenSSL 3.4 REQUIRED)
+# 3.0 is the real floor: the provider uses only 3.0-era EVP (EVP_PKEY_encapsulate,
+# EVP_PKEY_Q_keygen, fromdata, OSSL_PARAM_BLD). Hybrid sigs need a 3.2+ oqsprovider
+# and composite needs 3.5+ (gated below), but neither raises the compile floor.
+find_package(OpenSSL 3.0 REQUIRED)
 message(STATUS "Using OpenSSL ${OPENSSL_VERSION} from ${OPENSSL_INCLUDE_DIR}")
 
 # Locate the matching `openssl` CLI (next to the OpenSSL we build against), used
