@@ -10,6 +10,8 @@
 # include "composite_prov.h"   /* composite (LAMPS) capability, folded in here */
 #endif
 
+static void hybrid_cede_reset(void);   /* cede state teardown, defined below */
+
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;
 static OSSL_FUNC_provider_gettable_params_fn hybrid_gettable_params;
 static OSSL_FUNC_provider_get_params_fn hybrid_get_params;
@@ -29,6 +31,23 @@ static void hybrid_teardown(void *provctx)
         OPENSSL_free(ctx->classic_propq);
         OPENSSL_free(ctx);
     }
+    hybrid_cede_reset();
+}
+
+/* Parse a boolean-ish string; return `dflt` for NULL/empty/unrecognized. */
+static int hybrid_parse_bool(const char *s, int dflt)
+{
+    if (s == NULL || *s == '\0')
+        return dflt;
+    if (strcmp(s, "0") == 0 || OPENSSL_strcasecmp(s, "no") == 0
+            || OPENSSL_strcasecmp(s, "off") == 0
+            || OPENSSL_strcasecmp(s, "false") == 0)
+        return 0;
+    if (strcmp(s, "1") == 0 || OPENSSL_strcasecmp(s, "yes") == 0
+            || OPENSSL_strcasecmp(s, "on") == 0
+            || OPENSSL_strcasecmp(s, "true") == 0)
+        return 1;
+    return dflt;
 }
 
 /*
@@ -268,21 +287,258 @@ static const OSSL_ALGORITHM hybrid_decoders[] = {
 # undef HYBRID_KEM_DEC_REG
 #endif
 
+/*
+ * Cede-to-default (see HYBRID_CONF_CEDE_TO_DEFAULT). Mirrors oqsprovider's
+ * rt_disabled_algs idiom: one small file-scope list of withdrawn algorithm
+ * names is the single source of truth. hybrid_query returns filtered copies of
+ * the static tables and the capability advertisers consult hybrid_is_ceded();
+ * both keep the provider from offering what the default provider already does.
+ * File-scope (not per-provctx) because, like oqsprovider, one loaded instance
+ * decides this once — hybrid_apply_cede() resets the state on each init.
+ */
+static const char *hybrid_ceded[HYBRID_KEM_ALG_COUNT + HYBRID_SIG_ALG_COUNT
+#ifdef HYBRID_COMPOSITE
+        + COMPOSITE_SIG_ALG_COUNT
+#endif
+    ];
+static size_t hybrid_n_ceded;
+static int hybrid_filter_enabled;
+static OSSL_ALGORITHM *hybrid_keymgmts_rt, *hybrid_kems_rt,
+    *hybrid_signatures_rt, *hybrid_encoders_rt, *hybrid_decoders_rt;
+
+int hybrid_is_ceded(const char *name)
+{
+    size_t i;
+
+    if (name != NULL)
+        for (i = 0; i < hybrid_n_ceded; i++)
+            if (strcmp(hybrid_ceded[i], name) == 0)
+                return 1;
+    return 0;
+}
+
+/* Record `name` (a static-lifetime master-table pointer) as ceded, if new.
+ * hybrid_ceded is sized to hold every algorithm, so this never overflows. */
+static void hybrid_mark_ceded(const char *name)
+{
+    if (name != NULL && !hybrid_is_ceded(name))
+        hybrid_ceded[hybrid_n_ceded++] = name;
+}
+
+/* Free the filtered tables and clear the ceded state (teardown / re-init). */
+static void hybrid_cede_reset(void)
+{
+    OPENSSL_free(hybrid_keymgmts_rt);
+    OPENSSL_free(hybrid_kems_rt);
+    OPENSSL_free(hybrid_signatures_rt);
+    OPENSSL_free(hybrid_encoders_rt);
+    OPENSSL_free(hybrid_decoders_rt);
+    hybrid_keymgmts_rt = hybrid_kems_rt = hybrid_signatures_rt =
+        hybrid_encoders_rt = hybrid_decoders_rt = NULL;
+    hybrid_n_ceded = 0;
+    hybrid_filter_enabled = 0;
+}
+
+/* OSSL_PROVIDER_do_all callback: capture the loaded "default" provider, if any.
+ * Returns 0 to stop the walk once found. */
+static int hybrid_find_default_cb(OSSL_PROVIDER *prov, void *arg)
+{
+    const char *nm = OSSL_PROVIDER_get0_name(prov);
+
+    if (nm != NULL && strcmp(nm, "default") == 0) {
+        *(OSSL_PROVIDER **)arg = prov;
+        return 0;
+    }
+    return 1;
+}
+
+/* Cede any KEM the default provider advertises as a TLS group under the same
+ * name or code point (OSSL_PROVIDER_get_capabilities callback). */
+static int hybrid_cede_group_cb(const OSSL_PARAM params[], void *arg)
+{
+    const OSSL_PARAM *p;
+    unsigned int id = 0;
+    const char *nm = NULL;
+    size_t i;
+
+    if ((p = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_ID)) != NULL)
+        (void)OSSL_PARAM_get_uint(p, &id);
+    if ((p = OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_NAME)) != NULL
+            && p->data_type == OSSL_PARAM_UTF8_STRING)
+        nm = p->data;
+
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+        if ((id != 0 && (unsigned int)hybrid_kem_table[i].tls_codepoint == id)
+                || (nm != NULL
+                    && strcmp(nm, hybrid_kem_table[i].hybrid_name) == 0))
+            hybrid_mark_ceded(hybrid_kem_table[i].hybrid_name);
+    (void)arg;
+    return 1;
+}
+
+/* Cede any hybrid/composite signature the default provider advertises as a TLS
+ * sigalg under the same name, code point or OID. */
+static int hybrid_cede_sigalg_cb(const OSSL_PARAM params[], void *arg)
+{
+    const OSSL_PARAM *p;
+    unsigned int cp = 0;
+    const char *nm = NULL, *oid = NULL;
+    size_t i;
+
+    if ((p = OSSL_PARAM_locate_const(params,
+            OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT)) != NULL)
+        (void)OSSL_PARAM_get_uint(p, &cp);
+    if ((p = OSSL_PARAM_locate_const(params,
+            OSSL_CAPABILITY_TLS_SIGALG_NAME)) != NULL
+            && p->data_type == OSSL_PARAM_UTF8_STRING)
+        nm = p->data;
+    if ((p = OSSL_PARAM_locate_const(params,
+            OSSL_CAPABILITY_TLS_SIGALG_OID)) != NULL
+            && p->data_type == OSSL_PARAM_UTF8_STRING)
+        oid = p->data;
+
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+        const HYBRID_SIG_INFO *r = &hybrid_sig_table[i];
+
+        if ((cp != 0 && (unsigned int)r->tls_codepoint == cp)
+                || (nm != NULL && strcmp(nm, r->hybrid_name) == 0)
+                || (oid != NULL && r->oid != NULL && strcmp(oid, r->oid) == 0))
+            hybrid_mark_ceded(r->hybrid_name);
+    }
+#ifdef HYBRID_COMPOSITE
+    for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {
+        const COMPOSITE_SIG_INFO *r = &composite_sig_table[i];
+
+        if ((cp != 0 && (unsigned int)r->tls_codepoint == cp)
+                || (nm != NULL && strcmp(nm, r->name) == 0)
+                || (oid != NULL && r->oid != NULL && strcmp(oid, r->oid) == 0))
+            hybrid_mark_ceded(r->name);
+    }
+#endif
+    (void)arg;
+    return 1;
+}
+
+/* Cede every algorithm the default provider resolves by a direct fetch (KEM by
+ * name; signature by name, else by OID) — catching those it serves without a
+ * TLS capability (e.g. a KEM with no group, or a certificate-only signature). */
+static void hybrid_cede_by_fetch(OSSL_LIB_CTX *libctx)
+{
+    size_t i;
+
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+        EVP_KEM *k = EVP_KEM_fetch(libctx, hybrid_kem_table[i].hybrid_name,
+                                   "provider=default");
+
+        if (k != NULL)
+            hybrid_mark_ceded(hybrid_kem_table[i].hybrid_name);
+        EVP_KEM_free(k);
+    }
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+        const HYBRID_SIG_INFO *r = &hybrid_sig_table[i];
+        EVP_SIGNATURE *s = EVP_SIGNATURE_fetch(libctx, r->hybrid_name,
+                                               "provider=default");
+
+        if (s == NULL && r->oid != NULL)
+            s = EVP_SIGNATURE_fetch(libctx, r->oid, "provider=default");
+        if (s != NULL)
+            hybrid_mark_ceded(r->hybrid_name);
+        EVP_SIGNATURE_free(s);
+    }
+#ifdef HYBRID_COMPOSITE
+    for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {
+        const COMPOSITE_SIG_INFO *r = &composite_sig_table[i];
+        EVP_SIGNATURE *s = EVP_SIGNATURE_fetch(libctx, r->name,
+                                               "provider=default");
+
+        if (s == NULL && r->oid != NULL)
+            s = EVP_SIGNATURE_fetch(libctx, r->oid, "provider=default");
+        if (s != NULL)
+            hybrid_mark_ceded(r->name);
+        EVP_SIGNATURE_free(s);
+    }
+#endif
+}
+
+/* Heap copy of `src` minus every entry whose name is ceded (names are single,
+ * non-aliased tokens in our tables, so strcmp is exact). NULL on OOM. */
+static OSSL_ALGORITHM *hybrid_filter_algs(const OSSL_ALGORITHM *src)
+{
+    size_t count = 0, i, j = 0;
+    OSSL_ALGORITHM *out;
+
+    while (src[count].algorithm_names != NULL)
+        count++;
+    if ((out = OPENSSL_malloc((count + 1) * sizeof(*out))) == NULL)
+        return NULL;
+    for (i = 0; i < count; i++)
+        if (!hybrid_is_ceded(src[i].algorithm_names))
+            out[j++] = src[i];
+    out[j] = src[count];   /* the {NULL,...} terminator */
+    return out;
+}
+
+/*
+ * Withdraw everything the default provider already serves in `libctx`. Matching
+ * is by any identifier we might share with it — algorithm name, TLS code point
+ * or OID — so it is not a fixed list but tracks whatever the default provider
+ * offers now (the standardized hybrid KEM groups) or later (e.g. native
+ * composite signatures). Runs at init: this provider is not yet active in the
+ * store, so the probing fetches/capability queries cannot recurse into
+ * hybrid_query. Returns 0 only on allocation failure.
+ */
+static int hybrid_apply_cede(OSSL_LIB_CTX *libctx)
+{
+    OSSL_PROVIDER *def = NULL;
+
+    hybrid_cede_reset();
+    OSSL_PROVIDER_do_all(libctx, hybrid_find_default_cb, &def);
+    if (def == NULL)
+        return 1;   /* no default provider here: nothing to cede */
+
+    /* Probing pushes "unable to fetch" errors for absent identifiers; a miss is
+     * the expected case, so keep them off the caller's error stack. */
+    ERR_set_mark();
+    hybrid_cede_by_fetch(libctx);
+    (void)OSSL_PROVIDER_get_capabilities(def, "TLS-GROUP",
+                                         hybrid_cede_group_cb, NULL);
+    (void)OSSL_PROVIDER_get_capabilities(def, "TLS-SIGALG",
+                                         hybrid_cede_sigalg_cb, NULL);
+    ERR_pop_to_mark();
+
+    if (hybrid_n_ceded == 0)
+        return 1;
+
+    hybrid_keymgmts_rt = hybrid_filter_algs(hybrid_keymgmts);
+    hybrid_kems_rt = hybrid_filter_algs(hybrid_kems);
+    hybrid_signatures_rt = hybrid_filter_algs(hybrid_signatures);
+    hybrid_encoders_rt = hybrid_filter_algs(hybrid_encoders);
+    hybrid_decoders_rt = hybrid_filter_algs(hybrid_decoders);
+    if (hybrid_keymgmts_rt == NULL || hybrid_kems_rt == NULL
+            || hybrid_signatures_rt == NULL || hybrid_encoders_rt == NULL
+            || hybrid_decoders_rt == NULL) {
+        hybrid_cede_reset();
+        return 0;
+    }
+    hybrid_filter_enabled = 1;
+    return 1;
+}
+
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)
 {
     *no_cache = 0;
     switch (operation_id) {
     case OSSL_OP_KEYMGMT:
-        return hybrid_keymgmts;
+        return hybrid_filter_enabled ? hybrid_keymgmts_rt : hybrid_keymgmts;
     case OSSL_OP_KEM:
-        return hybrid_kems;
+        return hybrid_filter_enabled ? hybrid_kems_rt : hybrid_kems;
     case OSSL_OP_SIGNATURE:
-        return hybrid_signatures;
+        return hybrid_filter_enabled ? hybrid_signatures_rt : hybrid_signatures;
     case OSSL_OP_ENCODER:
-        return hybrid_encoders;
+        return hybrid_filter_enabled ? hybrid_encoders_rt : hybrid_encoders;
     case OSSL_OP_DECODER:
-        return hybrid_decoders;
+        return hybrid_filter_enabled ? hybrid_decoders_rt : hybrid_decoders;
     default:
         return NULL;
     }
@@ -315,6 +571,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     OSSL_FUNC_core_obj_add_sigid_fn *c_obj_add_sigid = NULL;
     OSSL_FUNC_BIO_write_ex_fn *bio_write_ex = NULL;
     OSSL_FUNC_BIO_read_ex_fn *bio_read_ex = NULL;
+    int cede_to_default;
 
     for (; in->function_id != 0; in++) {
         switch (in->function_id) {
@@ -359,9 +616,14 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
      * duplicate them since the originals are not guaranteed to outlive this
      * call. Absent keys leave the pointers untouched (NULL).
      */
+    /* Cede-to-default lever, resolved below: config key first, then the env var
+     * (which wins when set). On by default. */
+    cede_to_default = 1;
+
     if (c_get_params != NULL) {
         char *pq = NULL, *classic = NULL, *comp = NULL, *comp_path = NULL;
-        OSSL_PARAM core_params[5];
+        char *cede = NULL;
+        OSSL_PARAM core_params[6];
 
         core_params[0] = OSSL_PARAM_construct_utf8_ptr(
             HYBRID_CONF_PQ_PROPQUERY, &pq, 0);
@@ -371,7 +633,9 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
             HYBRID_CONF_COMPONENT_PROVIDERS, &comp, 0);
         core_params[3] = OSSL_PARAM_construct_utf8_ptr(
             HYBRID_CONF_COMPONENT_PATH, &comp_path, 0);
-        core_params[4] = OSSL_PARAM_construct_end();
+        core_params[4] = OSSL_PARAM_construct_utf8_ptr(
+            HYBRID_CONF_CEDE_TO_DEFAULT, &cede, 0);
+        core_params[5] = OSSL_PARAM_construct_end();
 
         if (c_get_params(handle, core_params)) {
             if (pq != NULL && (ctx->pq_propq = OPENSSL_strdup(pq)) == NULL)
@@ -379,10 +643,19 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
             if (classic != NULL
                     && (ctx->classic_propq = OPENSSL_strdup(classic)) == NULL)
                 goto err;
+            if (cede != NULL)
+                cede_to_default = hybrid_parse_bool(cede, cede_to_default);
             if (!hybrid_setup_component_ctx(ctx, comp, comp_path))
                 goto err;
         }
     }
+
+    /* Environment variable overrides the config key when set. Then withdraw the
+     * algorithms the default provider already serves in this context. */
+    cede_to_default = hybrid_parse_bool(getenv(HYBRID_ENV_CEDE_TO_DEFAULT),
+                                        cede_to_default);
+    if (cede_to_default && !hybrid_apply_cede(ctx->libctx))
+        goto err;
 
     /*
      * Register the hybrid signature OIDs so the X.509 / TLS layers can map a

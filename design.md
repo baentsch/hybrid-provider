@@ -473,12 +473,49 @@ capabilities.
 
 The MLX groups are advertised under their **canonical names and codepoints**,
 identical to the default provider's. Because the default provider also
-advertises them, both implementations collide on the group name. Selection is
-therefore driven by property query: `?provider=hybrid` prefers the hybrid
-implementation for the group while still resolving the X25519/EC/ML-KEM
-*components* from the default provider (the `?` keeps the query optional so the
-components fall back). This is the same lever intended for eventual config-only
-switching between the default-provider and hybrid-provider implementations.
+implements them, both would collide on the group name — so **by default the
+provider cedes to the default provider** (see *Cede-to-default* below): it
+detects the default provider's hybrids at load time and withdraws them, leaving
+only what the default provider lacks. Ceding can be switched off, in which case
+both implementations coexist under the same names and selection is driven by
+property query: `?provider=hybrid` prefers the hybrid implementation for the
+group while still resolving the X25519/EC/ML-KEM *components* from the default
+provider (the `?` keeps the query optional so the components fall back). That
+coexistence mode is what the interoperability tests use.
+
+### Cede-to-default
+
+Whatever the OpenSSL default provider already serves, this provider withdraws.
+Those algorithms exist here only to be compared against that implementation for
+interoperability; in production, running both is redundant. So on load
+`hybrid_apply_cede()` works out which of this provider's algorithms the default
+provider serves in the same library context and drops them from the query tables
+(`hybrid_query`) and the TLS capabilities (`hybrid_caps.c`, `composite_caps.c`)
+alike, leaving only what the default provider lacks.
+
+Detection is **identifier-based, not a fixed algorithm list**, matching on any
+of the identifiers the default provider may share with us:
+
+- **name** — a direct `provider=default` fetch of each KEM / signature name (and,
+  for signatures, of its OID); catches algorithms served without a TLS capability;
+- **TLS code point** and **OID** — a scan of the default provider's live
+  `TLS-GROUP` and `TLS-SIGALG` capabilities (`OSSL_PROVIDER_get_capabilities`),
+  catching a shared code point or OID the default provider exposes under a
+  *different* name.
+
+This open-endedness is deliberate: it covers what the default provider serves
+today (the standardized MLX KEM groups) and whatever it may add later — most
+notably native composite signatures (openssl#26121), which are handled by the
+same code path with no new logic. Detection runs at init — the provider is not
+yet active in the store, so the probing fetches and capability queries cannot
+recurse into its own `hybrid_query`. When the default provider is absent from the
+context, or serves none of our identifiers, nothing is withdrawn.
+
+The behaviour is switchable off (`cede-to-default = no` /
+`HYBRID_CEDE_TO_DEFAULT=0`) to get the coexistence mode above; `hybrid_cede_test`
+covers both states across the whole inventory. This is symmetric with the
+`OQS_CEDE_HYBRIDS` lever that makes oqsprovider cede *its* hybrids to this
+provider (see the drop-in work).
 
 `test/hybrid_tls_test.c` exercises this end to end: an in-process TLS 1.3
 handshake between two `OSSL_LIB_CTX`s connected by memory BIOs — one peer
@@ -607,9 +644,11 @@ to the fastest provider exposing the standalone EVP algorithm. Run
   it also dissolves the group-name collision that today forces the private
   component context for Frodo/BIKE/HQC (see Constraints). Validation is the
   cross-version interop sweep above against the pinned pre-removal peer.
-- **Cede composite to the default provider.** When OpenSSL ships native composite
-  ML-DSA (openssl#26121), the standardized composite tier cedes to it exactly as
-  the MLX KEMs cede today, leaving only the experimental arc here.
+- **Native composite in the default provider.** When OpenSSL ships native
+  composite ML-DSA (openssl#26121), the standardized composite tier cedes to it
+  automatically — `hybrid_apply_cede()` already matches by name / code point /
+  OID across the composite table (see *Cede-to-default*), so the standardized
+  combos drop out and only the experimental arc remains, with no code change.
 - **oqsprovider `no_cache` fix** (see Performance) — a separate, pre-existing
   oqsprovider issue tracked for a later upstream code review, not a blocker.
 

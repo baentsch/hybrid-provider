@@ -6,11 +6,15 @@
  * oqs_test_alg_overlap).
  *
  * oqsprovider's overlap test asserts it exposes NOTHING the default provider
- * already implements (it disables clashing algorithms). The hybrid provider
- * takes the opposite, deliberate stance for a true drop-in: it *re-advertises*
- * the same hybrid algorithm names as the default provider (the standardized MLX
- * KEM groups) and as oqsprovider (every OQS-legacy hybrid KEM/SIG), and relies
- * on property-query selection to pick the intended implementation. This is the
+ * already implements (it disables clashing algorithms). The hybrid provider CAN
+ * take the opposite stance for a true drop-in: it *re-advertises* the same
+ * hybrid algorithm names as the default provider (the standardized MLX KEM
+ * groups) and as oqsprovider (every OQS-legacy hybrid KEM/SIG), and relies on
+ * property-query selection to pick the intended implementation. That is the
+ * coexistence mode — reached by switching the cede-to-default lever off
+ * (HYBRID_CEDE_TO_DEFAULT=0, set for this test in CMakeLists.txt); with ceding
+ * on (the default) whatever the default provider serves is withdrawn, see
+ * hybrid_cede_test. This is the
  * property M8 hinges on: once oqsprovider delegates its hybrid logic here, code
  * that fetches with a mandatory "provider=default", "provider=oqsprovider" or
  * "provider=hybrid" must all keep resolving to a live, correct implementation.

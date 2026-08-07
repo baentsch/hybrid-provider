@@ -182,6 +182,11 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
         for (i = 0; i < HYBRID_TLS_GROUP_COUNT; i++) {
             if (hybrid_group_list[i].group_id == 0)
                 continue;   /* no registered TLS code point */
+            /* Withdrawn because the default provider serves it (cede-to-default);
+             * the group index is the master-list order, shared with the KEM
+             * table, so match by that KEM's name. */
+            if (hybrid_is_ceded(hybrid_kem_table[i].hybrid_name))
+                continue;
             if (!cb(hybrid_param_group_list[i], arg))
                 return 0;
         }
@@ -192,6 +197,11 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
     if (OPENSSL_strcasecmp(capability, "TLS-SIGALG") == 0) {
         for (i = 0; i < HYBRID_TLS_SIGALG_COUNT; i++) {
             if (hybrid_sigalg_list[i].code_point == 0)
+                continue;
+            /* Withdrawn because the default provider serves it (cede-to-default);
+             * the sigalg index is the master-list order, shared with the SIG
+             * table, so match by that signature's name. */
+            if (hybrid_is_ceded(hybrid_sig_table[i].hybrid_name))
                 continue;
             if (!cb(hybrid_param_sigalg_list[i], arg))
                 return 0;
