@@ -49,6 +49,16 @@ from [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) only.
 | `SecP256r1MLKEM768` | ECDH P-256 + ML-KEM-768 |
 | `SecP384r1MLKEM1024` | ECDH P-384 + ML-KEM-1024 |
 
+Whatever the OpenSSL default provider already serves, this provider **cedes to
+it by default**: on load it detects every algorithm the default provider
+provides in the same library context — by name, TLS code point or OID — and
+withdraws its own copies, so it only adds what the default provider lacks. That
+is identifier-based rather than a fixed list, so it covers what the default
+provider serves today (the standardized hybrid KEM groups above) and whatever it
+may add later (e.g. native composite signatures). Ceding is switchable off
+(`cede-to-default = no` / `HYBRID_CEDE_TO_DEFAULT=0`) to run both implementations
+under the same identifiers for interoperability — see [USAGE.md](USAGE.md).
+
 **OQS-legacy hybrids** —
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) naming/wire
 format. ML-KEM variants compose from the default provider or

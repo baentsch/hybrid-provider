@@ -52,7 +52,8 @@ over TLS 1.3 (`hybrid_cert_tls_test`), config-driven component selection
 (`hybrid_compctx_test`), SPKI/PKCS8 and raw-param round-trips
 (`hybrid_encode_test`, `hybrid_param_test`), CMS SignedData (`hybrid_cms_test`),
 TLS code-point parity (`hybrid_capability_test`), provider coexistence
-(`hybrid_coexist_test`), the full cross-version matrix vs
+(`hybrid_coexist_test`), cede-to-default withdrawal of the default provider's
+hybrids (`hybrid_cede_test`), the full cross-version matrix vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 (`hybrid_matrix_test`), the coverage guard asserting every hybrid
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) advertises is

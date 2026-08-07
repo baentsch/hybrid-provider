@@ -32,6 +32,29 @@
  */
 #define HYBRID_CONF_COMPONENT_PROVIDERS "component-providers"
 #define HYBRID_CONF_COMPONENT_PATH      "component-path"
+/*
+ * Cede-to-default lever. Some of this provider's algorithms are also provided
+ * by OpenSSL's default provider; re-implementing them exists only so the two
+ * can be compared for interoperability, and in real operation duplicating them
+ * is pointless. So by DEFAULT the provider withdraws every algorithm the
+ * default provider already serves in the same library context — from the query
+ * tables and the TLS capabilities alike — leaving only what the default
+ * provider lacks. Detection is by any of the identifiers the default provider
+ * may share with us: algorithm name, TLS code point, or OID (see
+ * hybrid_apply_cede). It is intentionally open-ended: it covers whatever the
+ * default provider serves today (the standardized hybrid KEM groups) and
+ * whatever it may serve in future (e.g. native composite signatures), with no
+ * per-algorithm list to maintain here.
+ *
+ * The behaviour is switchable off (needed for the interoperability tests, which
+ * deliberately load both providers and compare the two implementations of the
+ * same identifier): set the config-section key "cede-to-default = no" or the
+ * environment variable HYBRID_CEDE_TO_DEFAULT=0. The env var, when set, takes
+ * precedence over the config key. Accepted booleans: 1/0, yes/no, on/off,
+ * true/false.
+ */
+#define HYBRID_CONF_CEDE_TO_DEFAULT     "cede-to-default"
+#define HYBRID_ENV_CEDE_TO_DEFAULT      "HYBRID_CEDE_TO_DEFAULT"
 
 #define HYBRID_MAX_COMPONENT_PROVIDERS  8
 
@@ -61,6 +84,15 @@ typedef struct {
     OSSL_FUNC_BIO_write_ex_fn *bio_write_ex;
     OSSL_FUNC_BIO_read_ex_fn *bio_read_ex;
 } HYBRID_PROV_CTX;
+
+/*
+ * True if `name` is an algorithm this provider withdrew because the default
+ * provider already serves it (cede-to-default; see hybrid_prov.c). Consulted by
+ * the capability advertisers (hybrid_caps.c, composite_caps.c) so their output
+ * matches the withdrawn query tables. The ceded set is a small file-scope list
+ * in hybrid_prov.c, mirroring oqsprovider's rt_disabled_algs.
+ */
+int hybrid_is_ceded(const char *name);
 
 /* The context to use for component sub-algorithm fetches. */
 #define HYBRID_COMPONENT_LIBCTX(pctx) \

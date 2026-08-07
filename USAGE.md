@@ -143,3 +143,45 @@ its private context. This is verified in-process by `hybrid_compctx_test` and
 over separate-process `openssl` `s_server`/`s_client` handshakes (both
 directions, against a pure-[oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 peer) by `test/hybrid_scenarios.sh tls-compctx`.
+
+### Ceding to the default provider (`cede-to-default`)
+
+Some of this provider's algorithms are also implemented by the OpenSSL default
+provider. Re-implementing them exists only so the two can be compared for
+interoperability; in real operation duplicating them serves no purpose.
+
+Therefore, **by default the provider cedes**: at load time it inspects the
+default provider in the same library context and withdraws every algorithm the
+default provider already serves — from both the algorithm tables (so
+`EVP_*_fetch` without a mandatory `provider=` no longer resolves them here) and
+the TLS group / signature-algorithm capabilities. What remains is exactly the
+set the default provider lacks.
+
+The match is by **any identifier the default provider may share with us —
+algorithm name, TLS code point or OID** — not a fixed algorithm list, so it is
+open-ended by design: it covers whatever the default provider serves today (the
+standardized hybrid KEM groups) and whatever it may serve in a future OpenSSL
+(for instance native composite signatures). When the default provider is not
+loaded alongside this one, or serves none of our identifiers (e.g. an OpenSSL
+whose default provider has no post-quantum algorithms), nothing is withdrawn.
+
+Ceding is switchable off when you *do* want both implementations present under
+the same identifiers and disambiguated by property query (e.g. `provider=hybrid`
+vs `provider=default`) — the mode the interoperability tests use. Turn it off via
+the config-section key or the environment variable (the env var, when set, wins):
+
+```ini
+[hybrid_sect]
+module          = /path/to/hybrid.so
+activate        = 1
+cede-to-default = no          # keep the default provider's algorithms too (coexist)
+```
+
+```sh
+HYBRID_CEDE_TO_DEFAULT=0 ./your-app     # same effect, no config edit
+```
+
+Accepted booleans: `1`/`0`, `yes`/`no`, `on`/`off`, `true`/`false`. `hybrid_cede_test`
+verifies both states across the whole inventory; detection only ever affects
+identifiers the default provider actually serves, so anything unique to this
+provider is never withdrawn.

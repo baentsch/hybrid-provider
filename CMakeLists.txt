@@ -324,6 +324,21 @@ if(OPENSSL_CLI AND NOT WIN32)
                 sig-interop)
 endif()
 
+# Cede-to-default test: by default the provider withdraws whatever the default
+# provider already serves. Table-driven over the whole inventory — for every
+# hybrid KEM/signature it uses "does the default provider resolve this?" as the
+# oracle and asserts, flipping the HYBRID_CEDE_TO_DEFAULT lever around each
+# provider load, that provider=hybrid resolves it with ceding off (coexistence)
+# and only when the default provider does NOT serve it with ceding on. Manages
+# the lever itself via setenv().
+add_executable(hybrid_cede_test test/hybrid_cede_test.c)
+target_include_directories(hybrid_cede_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_cede_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_cede_test COMMAND hybrid_cede_test)
+set_tests_properties(hybrid_cede_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
 # with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired
 # into ctest as a low-iteration smoke test that it runs and completes.
@@ -334,3 +349,15 @@ set_tests_properties(hybrid_bench PROPERTIES
 )
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_bench PRIVATE OpenSSL::Crypto)
+
+# The provider cedes whatever the default provider already serves by DEFAULT
+# (see HYBRID_CONF_CEDE_TO_DEFAULT). The interop suite deliberately loads both
+# providers and compares the two implementations of the same identifier, so it
+# needs ceding OFF; switch it off for every test here. hybrid_cede_test is the
+# one exception — it drives the lever itself via setenv() to exercise both states.
+get_property(_hp_tests DIRECTORY PROPERTY TESTS)
+foreach(_t ${_hp_tests})
+    if(NOT _t STREQUAL "hybrid_cede_test")
+        set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "HYBRID_CEDE_TO_DEFAULT=0")
+    endif()
+endforeach()

@@ -85,6 +85,10 @@ int composite_get_capabilities(void *provctx, const char *capability,
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {
         if (composite_sigalg_list[i].code_point == 0)
             continue;   /* no (provisional) TLS code point -> not advertised */
+        /* Withdrawn because the default provider serves it (cede-to-default,
+         * e.g. once OpenSSL ships native composite signatures). */
+        if (hybrid_is_ceded(composite_sig_table[i].name))
+            continue;
         if (!cb(composite_param_sigalg_list[i], arg))
             return 0;
     }
