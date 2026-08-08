@@ -18,9 +18,12 @@
  *    context value are a best-effort draft-19 reading; both sign and verify use
  *    the same values, so round-trip passes regardless — interop fidelity against
  *    Bouncy Castle / OpenSSL-native composite still needs confirming.
- *  - The concat split assumes a FIXED-length PQ signature (ML-DSA, MAYO). A
- *    variable-length PQ sig (e.g. Falcon) in the experimental tier would need a
- *    length prefix — a follow-up for that tier.
+ *  - The concat split assumes a FIXED-length PQ signature (verify splits at
+ *    EVP_PKEY_get_size(pq)). Every experimental-tier PQ component is chosen to be
+ *    fixed-length for this reason: MAYO/CROSS/UOV/SNOVA/MQOM2 already are, and
+ *    Falcon is included only via its *padded* variants (constant-size sig). A
+ *    genuinely variable-length PQ sig (plain Falcon) would need a length prefix —
+ *    a follow-up if such a combo is ever added.
  */
 #include "composite_prov.h"
 #include <openssl/evp.h>
