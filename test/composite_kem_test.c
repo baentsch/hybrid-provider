@@ -51,7 +51,9 @@ static unsigned char *hexdec(const char *h, size_t *outlen)
 /* Check 1 — the draft-18 worked X25519 combiner vector. */
 static void combiner_kat(OSSL_LIB_CTX *ctx)
 {
-    /* From src/kemCombiner_MLKEM768_X25519_SHA3_256.md. */
+    /* draft-ietf-lamps-pq-composite-kem-18 worked example, from
+     * https://github.com/lamps-wg/draft-composite-kem/blob/
+     * draft-ietf-lamps-pq-composite-kem-18/src/kemCombiner_MLKEM768_X25519_SHA3_256.md */
     const char *mlss_h = "461b74b074818906edcd2fd976008caca5247f496670ae86e34abe35e62a7ae1";
     const char *trss_h = "4c62bd6d6f76294f3c14d7e79dbf56e4bf82cb1fb803accfaf2a59c1663a8843";
     const char *trct_h = "0ec7210a4aa22bb75af9243f95a6ccf857e872efbe5e77e8e917b56178fa473f";
@@ -95,16 +97,28 @@ static int have_alg(OSSL_LIB_CTX *ctx, const char *name)
     return ok;
 }
 
+/* Property query selecting the provider for the classical component. Defaults to
+ * the default provider, but is overridable (e.g. COMPOSITE_TRAD_PROPQ=
+ * "provider=fips") so the classical half can be sourced elsewhere — mirroring the
+ * real provider's config-driven classic-propquery, which is not hard-wired to
+ * the default provider either. */
+static const char *trad_propq(void)
+{
+    const char *p = getenv("COMPOSITE_TRAD_PROPQ");
+
+    return p != NULL ? p : "provider=default";
+}
+
 static EVP_PKEY *gen_trad(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info)
 {
+    const char *propq = trad_propq();
+
     if (strcmp(info->trad_alg, "EC") == 0)
-        return EVP_PKEY_Q_keygen(ctx, "provider=default", "EC",
-                                 info->trad_group);
+        return EVP_PKEY_Q_keygen(ctx, propq, "EC", info->trad_group);
     if (strcmp(info->trad_alg, "X25519") == 0
             || strcmp(info->trad_alg, "X448") == 0)
-        return EVP_PKEY_Q_keygen(ctx, "provider=default", info->trad_alg);
-    return EVP_PKEY_Q_keygen(ctx, "provider=default", "RSA",
-                             (size_t)info->trad_rsa_bits);
+        return EVP_PKEY_Q_keygen(ctx, propq, info->trad_alg);
+    return EVP_PKEY_Q_keygen(ctx, propq, "RSA", (size_t)info->trad_rsa_bits);
 }
 
 /* Check 2 — encaps/decaps self-consistency for one combo. */

@@ -1,4 +1,5 @@
 # Composite ML-KEM KAT vectors from draft-ietf-lamps-pq-composite-kem
+# draft: draft-ietf-lamps-pq-composite-kem-18
 # source: lamps-wg/draft-composite-kem draft-ietf-lamps-pq-composite-kem-18 src/testvectors.json
 # regenerate: python3 test/regen_composite_kem_kat.py > test/composite_kem_kat.txt
 # format: <name> <pkcs8_priv_hex> <ciphertext_hex> <shared_secret_hex>  (decapsulate ciphertext with priv -> shared secret)

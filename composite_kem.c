@@ -27,8 +27,36 @@
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
+#include <openssl/err.h>
 #include <string.h>
 #include <stdint.h>
+
+/*
+ * Classify the traditional component so the RSA-vs-DH dispatch below is explicit
+ * rather than "RSA-OAEP, else assume EC/X": an unrecognized trad_alg (e.g. a new
+ * table row added for research) is rejected here instead of being silently fed
+ * into the DH path. trad_alg is a compile-time-fixed value from the combo table,
+ * so this only ever fails on a programming error, but it keeps the combiner
+ * honest as the table grows. Returns 1 and sets *is_dh; 0 (with an error) if the
+ * trad_alg is not one this combiner knows how to drive.
+ */
+static int trad_classify(const COMPOSITE_KEM_INFO *info, int *is_dh)
+{
+    if (strcmp(info->trad_alg, "RSA-OAEP") == 0) {
+        *is_dh = 0;
+        return 1;
+    }
+    if (strcmp(info->trad_alg, "EC") == 0
+            || strcmp(info->trad_alg, "X25519") == 0
+            || strcmp(info->trad_alg, "X448") == 0) {
+        *is_dh = 1;
+        return 1;
+    }
+    ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                   "composite-KEM: unsupported traditional algorithm '%s'",
+                   info->trad_alg);
+    return 0;
+}
 
 int composite_kem_combine(OSSL_LIB_CTX *libctx,
                           const unsigned char *mlkemss, size_t mlkemsslen,
@@ -66,7 +94,11 @@ end:
 static int trad_pub_bytes(const COMPOSITE_KEM_INFO *info, EVP_PKEY *pkey,
                           unsigned char **buf, size_t *len)
 {
-    if (strcmp(info->trad_alg, "RSA-OAEP") == 0) {
+    int is_dh;
+
+    if (!trad_classify(info, &is_dh))
+        return 0;
+    if (!is_dh) {                          /* RSA-OAEP: RSAPublicKey DER */
         unsigned char *der = NULL;
         int dlen = i2d_PublicKey(pkey, &der);
 
@@ -122,7 +154,11 @@ static int trad_encaps(const COMPOSITE_KEM_INFO *info, EVP_PKEY *trad_pub,
                        unsigned char **ct, size_t *ctlen,
                        unsigned char **ss, size_t *sslen)
 {
-    if (strcmp(info->trad_alg, "RSA-OAEP") == 0) {
+    int is_dh;
+
+    if (!trad_classify(info, &is_dh))
+        return 0;
+    if (!is_dh) {                          /* RSA-OAEP */
         EVP_PKEY_CTX *c = rsa_oaep_ctx(libctx, propq, trad_pub, 1);
         unsigned char *sec = NULL, *out = NULL;
         size_t outlen = 0;
@@ -186,7 +222,11 @@ static int trad_decaps(const COMPOSITE_KEM_INFO *info, EVP_PKEY *trad_priv,
                        const unsigned char *ct, size_t ctlen,
                        unsigned char **ss, size_t *sslen)
 {
-    if (strcmp(info->trad_alg, "RSA-OAEP") == 0) {
+    int is_dh;
+
+    if (!trad_classify(info, &is_dh))
+        return 0;
+    if (!is_dh) {                          /* RSA-OAEP */
         EVP_PKEY_CTX *c = rsa_oaep_ctx(libctx, propq, trad_priv, 0);
         unsigned char *out = NULL;
         size_t outlen = 0;

@@ -59,7 +59,7 @@ static const COMPOSITE_KEM_INFO *find_info(const char *name)
     return NULL;
 }
 
-static int pq_available(OSSL_LIB_CTX *ctx, const char *pq_alg)
+static int pq_available_in_default(OSSL_LIB_CTX *ctx, const char *pq_alg)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, pq_alg, "provider=default");
     int ok = c != NULL && EVP_PKEY_keygen_init(c) > 0;
@@ -69,7 +69,7 @@ static int pq_available(OSSL_LIB_CTX *ctx, const char *pq_alg)
     return ok;
 }
 
-static void check(OSSL_LIB_CTX *ctx, const char *name,
+static void check_kat_decaps(OSSL_LIB_CTX *ctx, const char *name,
                   const char *p8h, const char *ch, const char *kh)
 {
     const COMPOSITE_KEM_INFO *info = find_info(name);
@@ -88,7 +88,7 @@ static void check(OSSL_LIB_CTX *ctx, const char *name,
         failed++;
         return;
     }
-    if (!pq_available(ctx, info->pq_alg)) {
+    if (!pq_available_in_default(ctx, info->pq_alg)) {
         printf("SKIP (%s unavailable)\n", info->pq_alg);
         skipped++; tests--;
         return;
@@ -167,11 +167,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("composite (LAMPS) ML-KEM KAT interop vs draft-18 reference vectors\n");
-    printf("=================================================================\n");
+    printf("composite (LAMPS) ML-KEM KAT interop vs reference vectors\n");
+    printf("=========================================================\n");
     while ((n = getline(&line, &cap, f)) > 0) {
         char *save, *name, *p8h, *ch, *kh;
 
+        /* The vectors carry their own provenance: echo the draft revision from
+         * the file's "# draft:" header rather than hard-coding it here. */
+        if (strncmp(line, "# draft:", 8) == 0)
+            printf(" vectors:%s", line + 8);
         if (line[0] == '#' || line[0] == '\n')
             continue;
         name = strtok_r(line, " \t\r\n", &save);
@@ -179,7 +183,7 @@ int main(int argc, char **argv)
         ch = strtok_r(NULL, " \t\r\n", &save);
         kh = strtok_r(NULL, " \t\r\n", &save);
         if (name && p8h && ch && kh)
-            check(ctx, name, p8h, ch, kh);
+            check_kat_decaps(ctx, name, p8h, ch, kh);
     }
     free(line);
     fclose(f);
