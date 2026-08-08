@@ -77,7 +77,16 @@ typedef struct {
     const char *trad_md;     /* traditional component's OWN hash — distinct from */
                              /* prehash (e.g. RSA3072-PSS uses SHA256 here even  */
                              /* though the label says SHA512); NULL = pure (Ed)  */
-    int         pq_priv_seed;/* 1: PQ priv serialized as seed (ML-DSA 32B); 0 raw*/
+    int         pq_priv_seed;/* PQ private-key serialization: 1 = seed (ML-DSA    */
+                             /* 32B, draft-mandated; the reason composite needs   */
+                             /* OpenSSL 3.5's ML-DSA seed API); 0 = raw priv       */
+                             /* (experimental sigs, OSSL_PKEY_PARAM_PRIV_KEY).     */
+                             /* Touches ONLY the PKCS#8 private key + interop: the */
+                             /* SPKI/cert and signature are identical either way,  */
+                             /* so cert size is unaffected. ML-DSA could use raw   */
+                             /* too (self-consistent, and would drop the 3.5 floor)*/
+                             /* but that breaks draft interop, hence seed. The KEM */
+                             /* family lacks this knob — parity tracked in #34.    */
     int         tier;        /* COMPOSITE_TIER_STANDARD | _EXPERIMENTAL         */
     int         tls_codepoint;/* TLS SignatureScheme code point (0 = none), the  */
                              /* single source consumed by composite_caps.c —     */
