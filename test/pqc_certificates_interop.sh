@@ -132,7 +132,11 @@ verify_peer() {   # $1 = provider dir name
         note "$peer: no artifacts_certs_$ROUND.zip (unreachable / absent)"; return
     fi
     mkdir -p "$d"; unzip -qo "$zip" -d "$d" 2>/dev/null
-    # Composite trust-anchor certs, matched by the arc OID in the filename.
+    : > "$WORKDIR/$peer.oids"
+    # Composite trust-anchor certs, matched by the arc OID in the filename. A
+    # provider may ship several files for the same OID (duplicate / renamed
+    # copies), so certs (files) and distinct OIDs are counted separately — the
+    # OID count is what maps to our 18 composite algorithms.
     while IFS= read -r ta; do
         local oid pem
         oid="$(echo "$ta" | grep -oE "$ARC" | head -1)"; [ -z "$oid" ] && continue
@@ -140,6 +144,7 @@ verify_peer() {   # $1 = provider dir name
         oss x509 -inform DER -in "$ta" -out "$pem" 2>/dev/null || pem="$ta"
         if oss verify -no_check_time -CAfile "$pem" "$pem" >/dev/null 2>&1; then
             p=$((p+1)); echo "$oid" >> "$WORKDIR/verified_oids"
+            echo "$oid" >> "$WORKDIR/$peer.oids"
         else
             no "$peer: $oid ($(basename "$ta")) not verified by hybrid-provider"
         fi
@@ -147,7 +152,8 @@ verify_peer() {   # $1 = provider dir name
     if [ "$n" -eq 0 ]; then
         note "$peer: no composite ($ARC) trust-anchor certs in $ROUND"
     else
-        ok "$peer: $p/$n composite trust-anchor certs verified by hybrid-provider"
+        local dist; dist=$(sort -u "$WORKDIR/$peer.oids" | wc -l)
+        ok "$peer: $dist distinct composite OIDs verified ($p/$n certs incl. duplicates)"
     fi
 }
 

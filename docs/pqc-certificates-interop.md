@@ -59,27 +59,31 @@ Run against **every provider that publishes draft-19 composite-signature
 artifacts** in the r5 round. That set is taken from the repo's own results
 matrix (`docs/pqc_hackathon_results_certs_r5.md`, the rows on the
 `1.3.6.1.5.5.7.6.*` arc), plus `composite-crypto` (present in the repo, not that
-matrix). Counts differ because providers implement different subsets of the 18
-combos (and some ship extra per-OID variants).
+matrix). There are 18 standardized composite combos (OIDs `.37`–`.54`); a
+provider covers a subset of them, and may ship several files per OID, so the
+meaningful figure is **distinct OIDs verified** (the cert-file count is given in
+parentheses when it differs).
 
-| Peer (`providers/<name>`) | Composite trust-anchor certs verified |
+| Peer (`providers/<name>`) | Distinct composite OIDs verified |
 |---|---|
 | `bc` (BouncyCastle) | **18 / 18** |
-| `carl-redhound` | **12 / 12** |
+| `carl-redhound` | **12** |
 | `cht` | **18 / 18** |
 | `composite-crypto` | **18 / 18** |
 | `composite-sigs-ref-impl` (LAMPS reference impl) | **18 / 18** |
 | `crypto4a` | **18 / 18** |
 | `cryptonext` | **18 / 18** |
 | `entrust` | **18 / 18** |
-| `entrust-pkihub` | **15 / 15** |
-| `leancrypto` | **3 / 3** |
+| `entrust-pkihub` | **15** |
+| `leancrypto` | **3** |
 | `openssl-composite-preliminary-impl` | **18 / 18** |
-| `safelogic` | **20 / 20** |
+| `safelogic` | **18 / 18** (20 cert files — ships OID `.48` three times) |
 
 **Every composite certificate published by every draft-19 composite provider in
 the r5 corpus verifies with hybrid-provider — 12/12 providers, 0 failures, all 18
-distinct OIDs covered.** i.e. hybrid-provider reads and verifies real draft-19
+distinct OIDs covered.** (No provider carries an OID outside the `.37`–`.54`
+signature arc; `safelogic`'s 20 files are the 18 OIDs with two duplicate copies
+of the ML-DSA-65+Ed25519 trust anchor.) i.e. hybrid-provider reads and verifies real draft-19
 composite certificates from a dozen independent implementations. This
 corroborates, over the wire and against third parties, the byte-exact
 conformance the in-repo `composite_kat_test` asserts against the draft-19
