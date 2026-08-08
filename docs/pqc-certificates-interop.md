@@ -55,19 +55,36 @@ is purely by OID, since the friendly names differ between implementations.
 
 ### Read direction — peers' composite certs verified by hybrid-provider (r5)
 
+Run against **every provider that publishes draft-19 composite-signature
+artifacts** in the r5 round. That set is taken from the repo's own results
+matrix (`docs/pqc_hackathon_results_certs_r5.md`, the rows on the
+`1.3.6.1.5.5.7.6.*` arc), plus `composite-crypto` (present in the repo, not that
+matrix). Counts differ because providers implement different subsets of the 18
+combos (and some ship extra per-OID variants).
+
 | Peer (`providers/<name>`) | Composite trust-anchor certs verified |
 |---|---|
-| `composite-sigs-ref-impl` (LAMPS reference impl) | **18 / 18** |
 | `bc` (BouncyCastle) | **18 / 18** |
-| `openssl-composite-preliminary-impl` | **18 / 18** |
+| `carl-redhound` | **12 / 12** |
+| `cht` | **18 / 18** |
 | `composite-crypto` | **18 / 18** |
-| `ossl35` | — (ships no composite certs in r5; skipped) |
+| `composite-sigs-ref-impl` (LAMPS reference impl) | **18 / 18** |
+| `crypto4a` | **18 / 18** |
+| `cryptonext` | **18 / 18** |
+| `entrust` | **18 / 18** |
+| `entrust-pkihub` | **15 / 15** |
+| `leancrypto` | **3 / 3** |
+| `openssl-composite-preliminary-impl` | **18 / 18** |
+| `safelogic` | **20 / 20** |
 
-**All 18 standardized composite combos verify against every peer that provides
-them** — i.e. hybrid-provider reads and verifies real draft-19 composite
-certificates from four independent implementations. This corroborates, over the
-wire and against third parties, the byte-exact conformance the in-repo
-`composite_kat_test` asserts against the draft-19 published vectors.
+**Every composite certificate published by every draft-19 composite provider in
+the r5 corpus verifies with hybrid-provider — 12/12 providers, 0 failures, all 18
+distinct OIDs covered.** i.e. hybrid-provider reads and verifies real draft-19
+composite certificates from a dozen independent implementations. This
+corroborates, over the wire and against third parties, the byte-exact
+conformance the in-repo `composite_kat_test` asserts against the draft-19
+published vectors. (Providers with no composite-arc certs — pure ML-DSA/ML-KEM
+like `ossl35` — are outside this overlap and are not run.)
 
 ### Write direction — hybrid-provider's own artifacts
 
@@ -88,7 +105,8 @@ flat layout (54 files: `_ta.der`, `_ta.pem`, `_priv.der` per combo), e.g.
 ## Conclusion
 
 For the composite-signature overlap, hybrid-provider is **fully interoperable in
-the read direction today**: 18/18 across four independent third-party
-implementations, no failures. It also produces a conformant r5 artifact set for
+the read direction today**: every composite certificate from all 12 draft-19
+composite providers in the r5 corpus verifies, no failures (all 18 distinct OIDs
+covered). It also produces a conformant r5 artifact set for
 the write direction; landing that in the repo (as a `providers/hybrid-provider/`
 submission) is the remaining step to appear in the public compatibility matrix.

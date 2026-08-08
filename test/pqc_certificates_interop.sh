@@ -33,7 +33,14 @@ OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
 OPENSSL_LIBPATH="${OPENSSL_LIBPATH:-}"
 MODULE_DIR="${MODULE_DIR:-$REPO/build}"
 ROUND="${ROUND:-r5}"
-PEERS="${PEERS:-composite-sigs-ref-impl bc ossl35 openssl-composite-preliminary-impl composite-crypto}"
+# Default peers = every provider that publishes draft-19 composite-signature
+# artifacts in the r5 round, as listed by the repo's own results matrix
+# (docs/pqc_hackathon_results_certs_r5.md — the rows on the 1.3.6.1.5.5.7.6.*
+# arc), plus composite-crypto (present in the repo but not that matrix). Override
+# with --peers to widen/narrow; non-composite providers self-skip either way.
+PEERS="${PEERS:-bc carl-redhound cht composite-crypto composite-sigs-ref-impl \
+crypto4a cryptonext entrust entrust-pkihub leancrypto \
+openssl-composite-preliminary-impl safelogic}"
 RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/master/providers"
 OUTDIR=""
 KEEP=0
