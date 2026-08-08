@@ -13,16 +13,19 @@
 # private key + a ciphertext + the expected shared secret; we decapsulate their
 # ciphertext with their key and confirm we recover their secret.
 #
-# Peer: the LAMPS reference implementation only (composite-kem-ref-impl). This is
-# deliberate — the reference impl is the conformance oracle; we do not consume or
-# depend on any other provider's artifacts here.
+# Peers: every provider in the corpus that publishes composite-KEM decaps vectors
+# for this spec level (the .55..66 arc). composite-kem-ref-impl is the LAMPS
+# conformance oracle and is listed first; the others are independent third-party
+# implementations (BouncyCastle et al.). Providers that ship the KEM only as a
+# public-key cert (no private key + ciphertext + shared secret) cannot be checked
+# by decapsulation and are reported as SKIP. Override the set with --peers.
 #
 # Modes:
-#   verify    (default) Download composite-kem-ref-impl's artifacts_certs_<round>
-#             .zip and, for every composite-KEM OID, load its PKCS#8 private key
-#             with hybrid-provider, decapsulate its ciphertext, and check the
-#             recovered shared secret equals its published one — i.e. "reference
-#             generated, we read". Also decodes each end-entity public key.
+#   verify    (default) Download each peer's artifacts_certs_<round>.zip and, for
+#             every composite-KEM OID that ships a decaps vector, load its PKCS#8
+#             private key with hybrid-provider, decapsulate its ciphertext, and
+#             check the recovered shared secret equals its published one — i.e.
+#             "third party generated, we read". Reports a per-peer matrix.
 #   generate  Produce THIS provider's composite ML-KEM artifacts (PKCS#8 _priv.der,
 #             SPKI _pub.der, plus a self-encapsulated _ciphertext.bin + _ss.bin) in
 #             the repo's r5 flat naming, then self-verify by decapsulating. This is
@@ -41,8 +44,10 @@ OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
 OPENSSL_LIBPATH="${OPENSSL_LIBPATH:-}"
 MODULE_DIR="${MODULE_DIR:-$REPO/build}"
 ROUND="${ROUND:-r5}"
-# Reference implementation only — the composite-KEM conformance oracle.
-PEER="${PEER:-composite-kem-ref-impl}"
+# composite-kem-ref-impl (LAMPS reference) first, then the third-party providers
+# that publish composite-KEM decaps vectors in the r5 round. Override with --peers;
+# a peer without decaps vectors self-skips, so widening this list is harmless.
+PEERS="${PEERS:-composite-kem-ref-impl bc cht crypto4a cryptonext entrust}"
 RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/master/providers"
 OUTDIR=""
 KEEP=0
@@ -62,7 +67,7 @@ Options:
   --openssl PATH    openssl binary            (default: $OPENSSL_BIN)
   --libpath PATH    LD_LIBRARY_PATH for libs  (default: none)
   --module-dir DIR  OPENSSL_MODULES with hybrid.$SOEXT (default: $MODULE_DIR)
-  --peer NAME       reference provider dir    (default: $PEER)
+  --peers "a b c"   provider dirs to verify   (default: $PEERS)
   --round R         artifact round            (default: $ROUND)
   --outdir DIR      generate output dir       (default: <module-dir>/pqc-kem-artifacts)
   --keep            keep the temp work dir
@@ -75,7 +80,7 @@ while [ $# -gt 0 ]; do
         --openssl)    OPENSSL_BIN="$2"; shift 2;;
         --libpath)    OPENSSL_LIBPATH="$2"; shift 2;;
         --module-dir) MODULE_DIR="$2"; shift 2;;
-        --peer)       PEER="$2"; shift 2;;
+        --peers)      PEERS="$2"; shift 2;;
         --round)      ROUND="$2"; shift 2;;
         --outdir)     OUTDIR="$2"; shift 2;;
         --keep)       KEEP=1; shift;;
@@ -126,18 +131,16 @@ EOF
 ARC='1\.3\.6\.1\.5\.5\.7\.6\.(5[5-9]|6[0-6])'   # LAMPS composite-KEM OID arc
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
 
-# ---- verify: reference decaps vectors read + checked by hybrid-provider -------
-cmd_verify() {
-    hdr "Read/verify: $PEER composite ML-KEM decaps vectors checked by hybrid-provider"
-    echo "  round: $ROUND   openssl: $("$OPENSSL_BIN" version 2>/dev/null)"
-    local zip="$WORKDIR/$PEER.zip" d="$WORKDIR/$PEER" n=0
-    if ! curl -fsSL "$RAW_BASE/$PEER/artifacts_certs_$ROUND.zip" -o "$zip" 2>/dev/null \
+# ---- verify: third-party decaps vectors read + checked by hybrid-provider -----
+verify_peer() {   # $1 = provider dir name
+    local peer="$1" zip="$WORKDIR/$1.zip" d="$WORKDIR/$1" n=0 p=0
+    if ! curl -fsSL "$RAW_BASE/$peer/artifacts_certs_$ROUND.zip" -o "$zip" 2>/dev/null \
             || [ ! -s "$zip" ]; then
-        note "$PEER: no artifacts_certs_$ROUND.zip (unreachable / absent)"; return
+        note "$peer: no artifacts_certs_$ROUND.zip (unreachable / absent)"; return
     fi
     mkdir -p "$d"; unzip -qo "$zip" -d "$d" 2>/dev/null
-    : > "$WORKDIR/verified_oids"
-    # One shared-secret file per composite-KEM OID; the standalone ML-KEM entries
+    : > "$WORKDIR/$peer.oids"
+    # One shared-secret file per composite-KEM OID; standalone ML-KEM entries
     # (OID arc 2.16.840...) do not match ARC and are ignored.
     while IFS= read -r ss; do
         local base oid priv ct out
@@ -146,25 +149,33 @@ cmd_verify() {
         n=$((n+1))
         priv="${base}_priv.der"; ct="${base}_ciphertext.bin"
         if [ ! -f "$priv" ] || [ ! -f "$ct" ]; then
-            no "$oid: reference _priv.der / _ciphertext.bin missing"; continue
+            no "$peer: $oid missing _priv.der / _ciphertext.bin"; continue
         fi
         out="$WORKDIR/$(basename "$base").out"
-        if ! oss pkeyutl -decap -inkey "$priv" -keyform DER -in "$ct" \
-                -secret "$out" >/dev/null 2>&1; then
-            no "$oid ($(basename "$base")): hybrid-provider could not decapsulate"
-            continue
-        fi
-        if cmp -s "$out" "$ss"; then
+        if oss pkeyutl -decap -inkey "$priv" -keyform DER -in "$ct" \
+                -secret "$out" >/dev/null 2>&1 && cmp -s "$out" "$ss"; then
+            p=$((p+1)); echo "$oid" >> "$WORKDIR/$peer.oids"
             echo "$oid" >> "$WORKDIR/verified_oids"
-            ok "$oid: decapsulated to reference shared secret"
         else
-            no "$oid ($(basename "$base")): recovered secret != reference _ss.bin"
+            no "$peer: $oid ($(basename "$base")) did not decapsulate to its secret"
         fi
     done < <(find "$d" -type f -name '*_ss.bin' | grep -E "$ARC" | sort)
     if [ "$n" -eq 0 ]; then
-        note "$PEER: no composite-KEM ($ARC) decaps vectors in $ROUND"
+        note "$peer: no composite-KEM ($ARC) decaps vectors in $ROUND (certs-only or none)"
     else
-        echo "  distinct composite-KEM OIDs matching reference secret: \
+        local dist; dist=$(sort -u "$WORKDIR/$peer.oids" | wc -l)
+        ok "$peer: $dist/12 composite-KEM OIDs decapsulated to the peer's secret ($p/$n vectors)"
+    fi
+}
+
+cmd_verify() {
+    hdr "Read/verify: pqc-certificates composite ML-KEM decaps vectors checked by hybrid-provider"
+    echo "  round: $ROUND   openssl: $("$OPENSSL_BIN" version 2>/dev/null)"
+    : > "$WORKDIR/verified_oids"
+    local peer
+    for peer in $PEERS; do verify_peer "$peer"; done
+    if [ -s "$WORKDIR/verified_oids" ]; then
+        echo "  distinct composite-KEM OIDs verified from >=1 peer: \
 $(sort -u "$WORKDIR/verified_oids" | wc -l)/12"
     fi
 }

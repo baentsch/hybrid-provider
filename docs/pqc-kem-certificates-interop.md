@@ -13,10 +13,11 @@ This is the KEM companion to [`pqc-certificates-interop.md`](pqc-certificates-in
   exactly this provider's `COMPOSITE_KEM_LIST` (12 standardized combos).
 - **Components:** the ML-KEM + RSA-OAEP/ECDH/X25519/X448 halves come from the
   default provider (OpenSSL 3.5+).
-- **Peer:** the LAMPS reference implementation only
-  (`providers/composite-kem-ref-impl/`). This is deliberate — the reference impl
-  is the conformance oracle; the harness does not consume any other provider's
-  artifacts.
+- **Peers:** every corpus provider that publishes composite-KEM decaps vectors at
+  this spec level. `composite-kem-ref-impl` is the LAMPS conformance oracle and is
+  listed first; the rest are independent third-party implementations. Providers
+  that ship the KEM only as a public-key cert (no private key + ciphertext +
+  shared secret) cannot be checked by decapsulation and self-skip.
 
 ## Why a decapsulation check (not a cert verify)
 
@@ -64,17 +65,29 @@ unreachable zip or a missing component. The in-repo `composite_kem_kat_test`
 
 ## Results (OpenSSL 3.5.6, r5)
 
-Read direction — `composite-kem-ref-impl` decaps vectors checked by hybrid-provider:
+Read direction — each peer's composite-KEM decaps vectors checked by
+hybrid-provider (load the peer's PKCS#8 key, decapsulate the peer's ciphertext,
+match the peer's shared secret):
 
-| Peer | Decapsulated to reference secret |
+| Peer | Decapsulated to the peer's secret |
 |---|---|
 | `composite-kem-ref-impl` (LAMPS reference) | **12 / 12** |
+| `bc` (BouncyCastle) | **12 / 12** |
+| `cht` | **12 / 12** |
+| `crypto4a` | **12 / 12** |
+| `cryptonext` | **12 / 12** |
+| `entrust` | **12 / 12** |
 
-**12/12 distinct composite-KEM OIDs recovered the reference shared secret, zero
-failures** — real cross-implementation interop against the LAMPS reference
-implementation for the full combo matrix (ML-KEM-768/1024 × RSA-OAEP / ECDH
-P-256·P-384·P-521·brainpool / X25519 / X448), corroborating the in-repo
-`composite_kem_kat_test` over the wire.
+**12/12 distinct composite-KEM OIDs verified from every one of six independent
+implementations, zero failures** — real cross-implementation interop for the full
+combo matrix (ML-KEM-768/1024 × RSA-OAEP / ECDH P-256·P-384·P-521·brainpool /
+X25519 / X448), corroborating the in-repo `composite_kem_kat_test` over the wire.
+
+Of the rest of the corpus at round r5: the other `artifacts_certs_r5.zip`
+providers ship no composite-KEM (`.55`–`.66`) artifacts, and `sanctum-secops-llc`
+publishes them only in a non-standard split-component layout (separate
+`_mlkem_priv.der` / `_trad_priv.der`, no single composite `_priv.der`), so it is
+not part of the decaps matrix. Widen or narrow the set with `--peers`.
 
 Write direction — `generate` produces + self-verifies **12/12** conformant
 artifacts.
