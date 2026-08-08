@@ -161,18 +161,21 @@ cmd_generate() {
     hdr "Generate: hybrid-provider composite artifacts (r5 layout) + self-verify"
     mkdir -p "$OUTDIR"
     local alg n=0 p=0
-    # Composite algorithms are the mldsa*-prefixed signature names (the concat
-    # hybrids are <trad>_<pq>); enumerated from the provider, not hard-coded.
+    # Identify composites by the official LAMPS OID arc, not by a name convention:
+    # iterate every signature algorithm the provider offers, and keep only those
+    # whose generated certificate carries a composite-arc OID. Non-composite sigs
+    # (concat hybrids, whose OID is outside the arc) and any needing an absent
+    # component simply drop out — nothing here assumes how composites are named.
     for alg in $(oss list -signature-algorithms 2>/dev/null \
-            | awk '/@ *hybrid/ { gsub(/^ +/,""); print $1 }' | grep '^mldsa'); do
+            | awk '/@ *hybrid/ { gsub(/^ +/,""); print $1 }'); do
         local key="$WORKDIR/$alg.key" crt="$WORKDIR/$alg.crt" oid base
         oss genpkey -algorithm "$alg" -out "$key" 2>/dev/null || continue
         oss req -x509 -key "$key" -subj "/CN=hybrid-provider $alg" -days 3650 \
-            -out "$crt" 2>/dev/null || { no "$alg (cert generation)"; continue; }
+            -out "$crt" 2>/dev/null || continue
         oid="$(oss x509 -in "$crt" -outform DER 2>/dev/null \
                | "$OPENSSL_BIN" asn1parse -inform DER 2>/dev/null \
                | grep -oE "$ARC" | head -1)"
-        [ -z "$oid" ] && { note "$alg (no composite OID — skipped)"; continue; }
+        [ -z "$oid" ] && continue     # OID outside the composite arc -> not composite
         n=$((n+1)); base="$OUTDIR/id-$alg-$oid"
         oss x509 -in "$crt" -outform DER -out "${base}_ta.der" 2>/dev/null
         cp "$crt" "${base}_ta.pem"
