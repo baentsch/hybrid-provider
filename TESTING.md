@@ -235,3 +235,7 @@ measurement loops until that budget (or an iteration cap) is reached, so slow
 keygens (UOV/MQOM/CROSS) don't dominate while fast verifies still get enough
 samples. It defaults to 1000; `ctest` runs it with a short budget as a smoke
 test, so pass a larger value (e.g. `./composite_bench 2000`) for stable numbers.
+
+An illustrative results snapshot and the deployment recommendations that follow
+from it are in [composite-bench-results.md](composite-bench-results.md) (numbers
+are hardware-specific — regenerate for your own environment).
