@@ -118,6 +118,28 @@ test vectors:
 Traditional components span RSA-2048/3072/4096 (both PSS and PKCS#1 v1.5), ECDSA
 on P-256/P-384/P-521 and brainpoolP256r1/P384r1, and Ed25519/Ed448.
 
+### Composite ML-KEM (LAMPS) — optional, `-DHYBRID_COMPOSITE`
+
+An implementation of composite ML-KEM
+(draft-ietf-lamps-pq-composite-kem), built into the same `hybrid.so` under the
+same `-DHYBRID_COMPOSITE` flag. The KEM combiner is a single fixed KDF —
+`ss = SHA3-256(mlkemSS || tradSS || tradCT || tradPK || Label)` — with raw-concat
+serialization (`mlkemPK || tradPK`, `mlkemSeed || tradSK`, `mlkemCT || tradCT`).
+
+The **full draft-18 standardized matrix** (12 combos, OIDs `1.3.6.1.5.5.7.6.55`
+… `.66`) is implemented, verified against the draft's reference test vectors
+(`composite_kem_kat_test`) and interop-tested end-to-end against the LAMPS
+composite-KEM reference implementation (see
+[docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)):
+
+| ML-KEM level | Algorithms |
+|---|---|
+| ML-KEM-768 | `mlkem768_rsa2048`, `mlkem768_rsa3072`, `mlkem768_rsa4096`, `mlkem768_x25519`, `mlkem768_p256`, `mlkem768_p384`, `mlkem768_bp256` |
+| ML-KEM-1024 | `mlkem1024_rsa3072`, `mlkem1024_p384`, `mlkem1024_bp384`, `mlkem1024_x448`, `mlkem1024_p521` |
+
+Traditional components are RSA-OAEP-2048/3072/4096 (SHA-256), ECDH on
+P-256/P-384/P-521 and brainpoolP256r1/P384r1, and X25519/X448.
+
 ## Key Principles
 
 - **EVP-only** — all cryptographic operations delegate to sub-algorithms via
@@ -125,8 +147,9 @@ on P-256/P-384/P-521 and brainpoolP256r1/P384r1, and Ed25519/Ed448.
 - **Provider-agnostic composition** — sub-algorithms can come from any provider.
 - **Interoperability** — verified, as applicable, against the OpenSSL default
   provider's hybrid KEMs, every hybrid KEM and signature supported by
-  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider), and the
-  composite draft-19 known-answer tests (KATs).
+  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider), the
+  composite draft-19 signature and draft-18 ML-KEM known-answer tests (KATs), and
+  the LAMPS composite-KEM reference implementation.
 
 ## Prerequisites
 
@@ -159,18 +182,18 @@ This produces `hybrid.so` in the build directory.
 | Option | Default | Effect |
 |--------|---------|--------|
 | `HYBRID_KEM_ENCODERS` | `OFF` | Build encoders/decoders for hybrid **KEM** key files (SPKI + PKCS8) |
-| `HYBRID_COMPOSITE` | `ON` | Build the composite (LAMPS) ML-DSA signature family into the provider (needs OpenSSL 3.5+; auto-disabled below) |
+| `HYBRID_COMPOSITE` | `ON` | Build the composite (LAMPS) ML-DSA signature **and** ML-KEM families into the provider (needs OpenSSL 3.5+; auto-disabled below) |
 
-`HYBRID_COMPOSITE` compiles the composite signatures (see
+`HYBRID_COMPOSITE` compiles the composite signature and ML-KEM families (see
 [above](#composite-signatures-lamps--optional--dhybrid_composite)) into the same
 `hybrid.so` — there is no separate composite module. It is **on by default**:
 carrying pre-standardization algorithms is the point of this provider, so the
-composite family ships by default (adding the composite keymgmt, signer,
-encoders/decoders and TLS-SIGALG capability, plus the `composite_*` tests) and is
+composite families ship by default (adding the composite keymgmt, signer, KEM,
+encoders/decoders and TLS-SIGALG capability, plus the `composite_*` tests) and are
 expected to be turned off once OpenSSL's default provider offers native composite
-signatures. Configure with `-DHYBRID_COMPOSITE=OFF` to exclude it. It requires
-OpenSSL 3.5+ (for the ML-DSA seed API); on OpenSSL 3.4.x the build auto-disables
-it regardless of this flag.
+algorithms. Configure with `-DHYBRID_COMPOSITE=OFF` to exclude them. It requires
+OpenSSL 3.5+ (for the ML-DSA/ML-KEM seed APIs); on OpenSSL 3.4.x the build
+auto-disables it regardless of this flag.
 
 `HYBRID_KEM_ENCODERS` mirrors
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)'s
