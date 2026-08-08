@@ -7,7 +7,8 @@
 #include <openssl/provider.h>
 #include <stdlib.h>
 #ifdef HYBRID_COMPOSITE
-# include "composite_prov.h"   /* composite (LAMPS) capability, folded in here */
+# include "composite_prov.h"       /* composite (LAMPS) signatures, folded in here */
+# include "composite_kem_prov.h"   /* composite (LAMPS) ML-KEM, folded in here */
 #endif
 
 static void hybrid_cede_reset(void);   /* cede state teardown, defined below */
@@ -133,6 +134,9 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
 # define COMPOSITE_KMGMT_REG(cf, nm, ...) \
     { nm, "provider=hybrid", composite_##cf##_kmgmt_functions,                \
       "composite key management" },
+# define COMPOSITE_KEM_KMGMT_REG(cf, nm, ...) \
+    { nm, "provider=hybrid", composite_##cf##_kem_kmgmt_functions,            \
+      "composite ML-KEM key management" },
 #endif
 static const OSSL_ALGORITHM hybrid_keymgmts[] = {
     /* KEM keymgmts */
@@ -141,6 +145,7 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_KMGMT_REG)
 #ifdef HYBRID_COMPOSITE
     COMPOSITE_SIG_LIST(COMPOSITE_KMGMT_REG)
+    COMPOSITE_KEM_LIST(COMPOSITE_KEM_KMGMT_REG)
 #endif
     { NULL, NULL, NULL, NULL }
 };
@@ -148,17 +153,28 @@ static const OSSL_ALGORITHM hybrid_keymgmts[] = {
 #undef HYBRID_KEM_KMGMT_REG
 #ifdef HYBRID_COMPOSITE
 # undef COMPOSITE_KMGMT_REG
+# undef COMPOSITE_KEM_KMGMT_REG
 #endif
 
 /* KEM operation registration rows, generated from the master list. */
 #define HYBRID_KEM_OP_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)   \
     { nm, "provider=hybrid", hybrid_kem_functions, ds " hybrid KEM" },
 
+#ifdef HYBRID_COMPOSITE
+# define COMPOSITE_KEM_OP_REG(cf, nm, ...) \
+    { nm, "provider=hybrid", composite_kem_functions, "composite ML-KEM" },
+#endif
 static const OSSL_ALGORITHM hybrid_kems[] = {
     HYBRID_KEM_LIST(HYBRID_KEM_OP_REG)
+#ifdef HYBRID_COMPOSITE
+    COMPOSITE_KEM_LIST(COMPOSITE_KEM_OP_REG)
+#endif
     { NULL, NULL, NULL, NULL }
 };
 #undef HYBRID_KEM_OP_REG
+#ifdef HYBRID_COMPOSITE
+# undef COMPOSITE_KEM_OP_REG
+#endif
 
 /* SIG operation registration rows, generated from the master list. */
 #define HYBRID_SIG_OP_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                 \
@@ -228,6 +244,21 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
       composite_pkcs8_pem_encoder_functions, "composite PKCS8 PEM encoder" },\
     { nm, "provider=hybrid,output=text",                                     \
       composite_text_encoder_functions, "composite text encoder" },
+# define COMPOSITE_KEM_ENC_REG(cf, nm, ...)                                   \
+    { nm, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo",       \
+      composite_kem_spki_der_encoder_functions,                              \
+      "composite ML-KEM SPKI DER encoder" },                                 \
+    { nm, "provider=hybrid,output=pem,structure=SubjectPublicKeyInfo",       \
+      composite_kem_spki_pem_encoder_functions,                              \
+      "composite ML-KEM SPKI PEM encoder" },                                 \
+    { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
+      composite_kem_pkcs8_der_encoder_functions,                             \
+      "composite ML-KEM PKCS8 DER encoder" },                                \
+    { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
+      composite_kem_pkcs8_pem_encoder_functions,                             \
+      "composite ML-KEM PKCS8 PEM encoder" },                                \
+    { nm, "provider=hybrid,output=text",                                     \
+      composite_kem_text_encoder_functions, "composite ML-KEM text encoder" },
 #endif
 static const OSSL_ALGORITHM hybrid_encoders[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_ENC_REG)
@@ -236,11 +267,13 @@ static const OSSL_ALGORITHM hybrid_encoders[] = {
 #endif
 #ifdef HYBRID_COMPOSITE
     COMPOSITE_SIG_LIST(COMPOSITE_ENC_REG)
+    COMPOSITE_KEM_LIST(COMPOSITE_KEM_ENC_REG)
 #endif
     { NULL, NULL, NULL, NULL }
 };
 #ifdef HYBRID_COMPOSITE
 # undef COMPOSITE_ENC_REG
+# undef COMPOSITE_KEM_ENC_REG
 #endif
 #undef HYBRID_SIG_ENC_REG
 #ifdef HYBRID_KEM_ENCODERS
@@ -268,6 +301,13 @@ static const OSSL_ALGORITHM hybrid_encoders[] = {
       composite_spki_der_decoder_functions, "composite SPKI DER decoder" },  \
     { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \
       composite_pkcs8_der_decoder_functions, "composite PKCS8 DER decoder" },
+# define COMPOSITE_KEM_DEC_REG(cf, nm, ...)                                   \
+    { nm, "provider=hybrid,input=der,structure=SubjectPublicKeyInfo",        \
+      composite_kem_spki_der_decoder_functions,                              \
+      "composite ML-KEM SPKI DER decoder" },                                 \
+    { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \
+      composite_kem_pkcs8_der_decoder_functions,                             \
+      "composite ML-KEM PKCS8 DER decoder" },
 #endif
 static const OSSL_ALGORITHM hybrid_decoders[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_DEC_REG)
@@ -276,11 +316,13 @@ static const OSSL_ALGORITHM hybrid_decoders[] = {
 #endif
 #ifdef HYBRID_COMPOSITE
     COMPOSITE_SIG_LIST(COMPOSITE_DEC_REG)
+    COMPOSITE_KEM_LIST(COMPOSITE_KEM_DEC_REG)
 #endif
     { NULL, NULL, NULL, NULL }
 };
 #ifdef HYBRID_COMPOSITE
 # undef COMPOSITE_DEC_REG
+# undef COMPOSITE_KEM_DEC_REG
 #endif
 #undef HYBRID_SIG_DEC_REG
 #ifdef HYBRID_KEM_ENCODERS
@@ -298,7 +340,7 @@ static const OSSL_ALGORITHM hybrid_decoders[] = {
  */
 static const char *hybrid_ceded[HYBRID_KEM_ALG_COUNT + HYBRID_SIG_ALG_COUNT
 #ifdef HYBRID_COMPOSITE
-        + COMPOSITE_SIG_ALG_COUNT
+        + COMPOSITE_SIG_ALG_COUNT + COMPOSITE_KEM_ALG_COUNT
 #endif
     ];
 static size_t hybrid_n_ceded;
@@ -456,6 +498,16 @@ static void hybrid_cede_by_fetch(OSSL_LIB_CTX *libctx)
         if (s != NULL)
             hybrid_mark_ceded(r->name);
         EVP_SIGNATURE_free(s);
+    }
+    for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++) {
+        const COMPOSITE_KEM_INFO *r = &composite_kem_table[i];
+        EVP_KEM *k = EVP_KEM_fetch(libctx, r->name, "provider=default");
+
+        if (k == NULL && r->oid != NULL)
+            k = EVP_KEM_fetch(libctx, r->oid, "provider=default");
+        if (k != NULL)
+            hybrid_mark_ceded(r->name);
+        EVP_KEM_free(k);
     }
 #endif
 }
@@ -685,6 +737,16 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
                 (void)c_obj_create(handle, cin->oid, cin->name, cin->name);
                 (void)c_obj_add_sigid(handle, cin->name, "", cin->name);
             }
+        }
+        {   /* composite ML-KEM: register the OID<->name mapping only (a KEM is
+             * not a signature, so no add_sigid). Lets the X.509 / CLI layers map
+             * a composite-KEM SPKI OID back to the algorithm name. */
+            size_t ki;
+
+            for (ki = 0; ki < COMPOSITE_KEM_ALG_COUNT; ki++)
+                (void)c_obj_create(handle, composite_kem_table[ki].oid,
+                                   composite_kem_table[ki].name,
+                                   composite_kem_table[ki].name);
         }
 #endif
         ERR_pop_to_mark();

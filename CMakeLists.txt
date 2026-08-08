@@ -73,6 +73,10 @@ if(HYBRID_COMPOSITE)
         composite_encoder.c
         composite_decoder.c
         composite_caps.c
+        composite_kem.c
+        composite_kem_keymgmt.c
+        composite_kem_encoder.c
+        composite_kem_decoder.c
     )
     target_compile_definitions(hybrid-provider PRIVATE HYBRID_COMPOSITE)
 endif()
@@ -278,6 +282,40 @@ if(HYBRID_COMPOSITE)
     add_test(NAME composite_kat_test
         COMMAND composite_kat_test ${CMAKE_SOURCE_DIR}/test/composite_kat.txt)
     set_tests_properties(composite_kat_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # Composite ML-KEM combiner test (drives composite_kem.c directly): draft
+    # X25519 combiner KAT + encaps/decaps self-consistency across the combos.
+    add_executable(composite_kem_test test/composite_kem_test.c composite_kem.c)
+    target_include_directories(composite_kem_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_kem_test PRIVATE OpenSSL::Crypto)
+    add_test(NAME composite_kem_test COMMAND composite_kem_test)
+    set_tests_properties(composite_kem_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # Composite ML-KEM provider round-trip: keygen/encaps/decaps + SPKI + PKCS8
+    # for every combo, driven through EVP by name (provider=hybrid).
+    add_executable(composite_kem_prov_test test/composite_kem_prov_test.c)
+    target_include_directories(composite_kem_prov_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_kem_prov_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_kem_prov_test hybrid-provider)
+    add_test(NAME composite_kem_prov_test COMMAND composite_kem_prov_test)
+    set_tests_properties(composite_kem_prov_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # Composite ML-KEM KAT interop: decapsulate the draft-18 reference ciphertexts
+    # (lamps-wg/draft-composite-kem, distilled into composite_kem_kat.txt) and check
+    # each recovers the reference shared secret.
+    add_executable(composite_kem_kat_test test/composite_kem_kat_test.c)
+    target_include_directories(composite_kem_kat_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_kem_kat_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_kem_kat_test hybrid-provider)
+    add_test(NAME composite_kem_kat_test
+        COMMAND composite_kem_kat_test ${CMAKE_SOURCE_DIR}/test/composite_kem_kat.txt)
+    set_tests_properties(composite_kem_kat_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 endif()
