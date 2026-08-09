@@ -298,11 +298,13 @@ int composite_kem_key_load_prv(COMPOSITE_KEM_KEY *key,
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
                                                  key->pq_propq);
-    /* ML-KEM private key is its 64-byte seed. */
+    /* Reconstruct the PQ component from the param named by the row: the ML-KEM
+     * seed for standardized combos; a different seed param or the raw private key
+     * for a future non-ML-KEM combo. No ML-KEM assumption. */
     OSSL_PARAM p[2];
     int ok = 0;
 
-    p[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_ML_KEM_SEED,
+    p[0] = OSSL_PARAM_construct_octet_string(key->info->pq_priv_param,
                                              (void *)pqpriv, pqlen);
     p[1] = OSSL_PARAM_construct_end();
     if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
@@ -358,11 +360,10 @@ static size_t discover_pq_priv_len(COMPOSITE_KEM_KEY *key)
     size_t n = 0;
 
     if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &t) > 0)
-        EVP_PKEY_get_octet_string_param(t, OSSL_PKEY_PARAM_ML_KEM_SEED,
-                                        NULL, 0, &n);
+        EVP_PKEY_get_octet_string_param(t, key->info->pq_priv_param, NULL, 0, &n);
     EVP_PKEY_free(t);
     EVP_PKEY_CTX_free(c);
-    return n != 0 ? n : COMPOSITE_KEM_MLKEM_SEED_BYTES;
+    return n;
 }
 
 static int import_pub_blob(COMPOSITE_KEM_KEY *key, const unsigned char *blob,

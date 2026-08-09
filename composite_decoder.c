@@ -210,20 +210,18 @@ static int composite_dec_does_selection_priv(void *provctx, int selection)
         || (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0;
 }
 
-/* Fixed PQ private length: the ML-DSA seed (standardized) or, for an
- * experimental raw-priv combo, the component's raw private size. */
+/* PQ private split length, discovered from the component algorithm: the length of
+ * the row's pq_priv_param (ML-DSA seed for standardized combos, raw-private length
+ * for experimental). No hardcoded seed size. */
 static size_t pq_priv_len(COMPOSITE_KEY *key)
 {
-    EVP_PKEY_CTX *c;
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
+                                                 key->pq_propq);
     EVP_PKEY *t = NULL;
     size_t n = 0;
 
-    if (key->info->pq_priv_seed)
-        return COMPOSITE_MLDSA_SEED_BYTES;
-    c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                   key->pq_propq);
     if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &t) > 0)
-        EVP_PKEY_get_octet_string_param(t, OSSL_PKEY_PARAM_PRIV_KEY, NULL, 0, &n);
+        EVP_PKEY_get_octet_string_param(t, key->info->pq_priv_param, NULL, 0, &n);
     EVP_PKEY_free(t);
     EVP_PKEY_CTX_free(c);
     return n;

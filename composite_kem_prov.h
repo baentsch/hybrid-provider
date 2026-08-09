@@ -39,9 +39,17 @@
 #include <openssl/types.h>
 #include <openssl/core.h>
 #include <openssl/core_dispatch.h>
+#include <openssl/core_names.h>   /* OSSL_PKEY_PARAM_* used in the master list */
 #include <stddef.h>
 #include "hybrid_prov.h"   /* composite is a capability OF the hybrid provider;
                             * it shares HYBRID_PROV_CTX (libctx + BIO up-calls). */
+
+/* OSSL_PKEY_PARAM_ML_KEM_SEED is 3.5+ (like ML_DSA_SEED, see composite_prov.h).
+ * Fallback so the master list compiles on <3.5; the composite KEM family is all
+ * standardized (seed-based), so it is simply not registered below 3.5. */
+#ifndef OSSL_PKEY_PARAM_ML_KEM_SEED
+# define OSSL_PKEY_PARAM_ML_KEM_SEED "seed"
+#endif
 
 /* Composite ss and the ML-KEM component ss are both 256-bit (draft-18 §3.2/§3.4);
  * RSA-OAEP also carries a 32-byte tradSS "at all security levels". */
@@ -73,6 +81,15 @@ typedef struct {
                              /* so strlen() gives the length — true even for the */
                              /* X25519 raw-byte label 5c 2e 2f 2f 5e 5c)         */
     int         security_bits;/* ML-KEM level strength (768 -> 192, 1024 -> 256) */
+    const char *pq_priv_param;/* OSSL_PKEY param naming the PQ private material to  */
+                             /* serialize. Standardized rows use the ML-KEM seed   */
+                             /* (OSSL_PKEY_PARAM_ML_KEM_SEED); a future seed-based  */
+                             /* KEM would name ITS OWN seed param, and a raw-private*/
+                             /* KEM (Frodo/BIKE/HQC) OSSL_PKEY_PARAM_PRIV_KEY. The  */
+                             /* code never assumes ML-KEM: it reads this param and  */
+                             /* discovers the length from the algorithm, with no    */
+                             /* hardcoded seed size. Generalizes the sig family's   */
+                             /* boolean pq_priv_seed.                               */
 } COMPOSITE_KEM_INFO;
 
 /*
@@ -95,7 +112,13 @@ typedef struct composite_kem_key_st {
  * Master composite-ML-KEM list — single source of truth (mirrors
  * COMPOSITE_SIG_LIST). One row per combination. To add a combo, add one row.
  *
- * X(cfield, name, pq_alg, trad_alg, trad_group, rsa_bits, oid, label, secbits)
+ * X(cfield, name, pq_alg, trad_alg, trad_group, rsa_bits, oid, label, secbits,
+ *   pq_priv_param)
+ *
+ * All standardized rows name the ML-KEM seed param (PQ private = ML-KEM seed, per
+ * the draft). A future experimental row would name a different seed param (for a
+ * seed-based non-ML-KEM KEM) or OSSL_PKEY_PARAM_PRIV_KEY (for a raw-private KEM
+ * such as Frodo/BIKE/HQC), exactly like the experimental composite-signature tier.
  *
  * The FULL draft-18 standardized matrix (12 combos, OIDs 1.3.6.1.5.5.7.6.55 .. .66),
  * each field taken from lamps-wg/draft-composite-kem src/algParams.md and the
@@ -107,33 +130,45 @@ typedef struct composite_kem_key_st {
 
 #define COMPOSITE_KEM_LIST(X)                                                  \
   X(mlkem768_rsa2048, "mlkem768_rsa2048", "ML-KEM-768", "RSA-OAEP", NULL,      \
-      2048, COMPOSITE_KEM_OID(55), "MLKEM768-RSAOAEP2048", 192)                \
+      2048, COMPOSITE_KEM_OID(55), "MLKEM768-RSAOAEP2048", 192,                \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem768_rsa3072, "mlkem768_rsa3072", "ML-KEM-768", "RSA-OAEP", NULL,      \
-      3072, COMPOSITE_KEM_OID(56), "MLKEM768-RSAOAEP3072", 192)                \
+      3072, COMPOSITE_KEM_OID(56), "MLKEM768-RSAOAEP3072", 192,                \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem768_rsa4096, "mlkem768_rsa4096", "ML-KEM-768", "RSA-OAEP", NULL,      \
-      4096, COMPOSITE_KEM_OID(57), "MLKEM768-RSAOAEP4096", 192)                \
+      4096, COMPOSITE_KEM_OID(57), "MLKEM768-RSAOAEP4096", 192,                \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem768_x25519, "mlkem768_x25519", "ML-KEM-768", "X25519", NULL,          \
-      0, COMPOSITE_KEM_OID(58), "\x5c\x2e\x2f\x2f\x5e\x5c", 192)               \
+      0, COMPOSITE_KEM_OID(58), "\x5c\x2e\x2f\x2f\x5e\x5c", 192,               \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem768_p256, "mlkem768_p256", "ML-KEM-768", "EC", "P-256",               \
-      0, COMPOSITE_KEM_OID(59), "MLKEM768-P256", 192)                          \
+      0, COMPOSITE_KEM_OID(59), "MLKEM768-P256", 192,                          \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem768_p384, "mlkem768_p384", "ML-KEM-768", "EC", "P-384",               \
-      0, COMPOSITE_KEM_OID(60), "MLKEM768-P384", 192)                          \
+      0, COMPOSITE_KEM_OID(60), "MLKEM768-P384", 192,                          \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem768_bp256, "mlkem768_bp256", "ML-KEM-768", "EC", "brainpoolP256r1",   \
-      0, COMPOSITE_KEM_OID(61), "MLKEM768-BP256", 192)                         \
+      0, COMPOSITE_KEM_OID(61), "MLKEM768-BP256", 192,                         \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem1024_rsa3072, "mlkem1024_rsa3072", "ML-KEM-1024", "RSA-OAEP", NULL,   \
-      3072, COMPOSITE_KEM_OID(62), "MLKEM1024-RSAOAEP3072", 256)               \
+      3072, COMPOSITE_KEM_OID(62), "MLKEM1024-RSAOAEP3072", 256,               \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem1024_p384, "mlkem1024_p384", "ML-KEM-1024", "EC", "P-384",            \
-      0, COMPOSITE_KEM_OID(63), "MLKEM1024-P384", 256)                         \
+      0, COMPOSITE_KEM_OID(63), "MLKEM1024-P384", 256,                         \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem1024_bp384, "mlkem1024_bp384", "ML-KEM-1024", "EC", "brainpoolP384r1",\
-      0, COMPOSITE_KEM_OID(64), "MLKEM1024-BP384", 256)                        \
+      0, COMPOSITE_KEM_OID(64), "MLKEM1024-BP384", 256,                        \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem1024_x448, "mlkem1024_x448", "ML-KEM-1024", "X448", NULL,             \
-      0, COMPOSITE_KEM_OID(65), "MLKEM1024-X448", 256)                         \
+      0, COMPOSITE_KEM_OID(65), "MLKEM1024-X448", 256,                         \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
   X(mlkem1024_p521, "mlkem1024_p521", "ML-KEM-1024", "EC", "P-521",            \
-      0, COMPOSITE_KEM_OID(66), "MLKEM1024-P521", 256)
+      0, COMPOSITE_KEM_OID(66), "MLKEM1024-P521", 256,                         \
+      OSSL_PKEY_PARAM_ML_KEM_SEED)
 
 /* Generate the info table from the master list. */
-#define COMPOSITE_KEM_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, sb)             \
-    { nm, pq, tr, grp, bits, oid, lbl, sb },
+#define COMPOSITE_KEM_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, sb, pqpp)       \
+    { nm, pq, tr, grp, bits, oid, lbl, sb, pqpp },
 static const COMPOSITE_KEM_INFO composite_kem_table[] = {
     COMPOSITE_KEM_LIST(COMPOSITE_KEM_ROW)
 };
@@ -182,10 +217,9 @@ int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
 /* Provider KEM dispatch (wraps the combiner over a COMPOSITE_KEM_KEY). */
 extern const OSSL_DISPATCH composite_kem_functions[];
 
-/* ML-KEM private key is serialized as its 64-byte seed d||z (draft-18 §4.2, all
- * levels). Discovered at runtime from the seed param; this is the documented
- * fallback / sanity value. */
-#define COMPOSITE_KEM_MLKEM_SEED_BYTES  64
+/* The PQ private split length is discovered at runtime from the component
+ * algorithm (info->pq_priv_param on a fresh key) — no hardcoded seed size, so a
+ * non-ML-KEM PQ component with a different seed / raw-private length works. */
 
 /* --- keymgmt (composite_kem_keymgmt.c) --- */
 /* Build the raw-concat public blob mlkemPK||tradPK (draft-18 order). Caller frees. */

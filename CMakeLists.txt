@@ -39,16 +39,28 @@ option(HYBRID_KEM_ENCODERS "Build encoders/decoders for hybrid KEM key files" OF
 # expected to be turned off (or removed) once OpenSSL's default provider offers
 # native composite signatures.
 option(HYBRID_COMPOSITE "Build the composite (LAMPS) signature family" ON)
-# Composite requires OpenSSL 3.5+ — because of the SEED, not ML-DSA availability as
-# such. ML-DSA the algorithm exists on 3.4 too (via oqsprovider), but draft-19
-# mandates the composite private key BE the ML-DSA 32-byte seed, and retaining /
-# serializing that seed uses OpenSSL's ML-DSA seed API (OSSL_PKEY_PARAM_ML_DSA_SEED),
-# added in 3.5. On 3.4 that symbol is not even declared (composite would not
-# compile) and there is no standard seed plumbing to form a conformant composite
-# private key regardless of which provider supplies ML-DSA. So force off below 3.5.
-if(HYBRID_COMPOSITE AND OPENSSL_VERSION VERSION_LESS 3.5)
-    message(STATUS "HYBRID_COMPOSITE needs OpenSSL 3.5+ (ML-DSA seed API); disabling on ${OPENSSL_VERSION}")
+# Composite tiers have different OpenSSL floors:
+#   - standardized (ML-DSA / ML-KEM): 3.5+. draft-19 mandates the composite private
+#     key BE the ML-DSA/ML-KEM seed, and serializing that seed uses OpenSSL's seed
+#     API (OSSL_PKEY_PARAM_ML_DSA_SEED / _ML_KEM_SEED), added in 3.5. The header
+#     names those macros, but composite_prov.h provides a compile fallback and the
+#     provider does not *register* the standardized tiers below 3.5 (see
+#     hybrid_prov.c / COMPOSITE_SEED_AVAILABLE).
+#   - experimental (Falcon/MAYO/CROSS/UOV/SNOVA/MQOM2): serialize the RAW private
+#     key (OSSL_PKEY_PARAM_PRIV_KEY, present since 3.0) and take their PQ half from
+#     oqsprovider, so they run on the oqsprovider floor (3.2+) — no seed API needed.
+# So the composite family builds on 3.2+; the standardized tiers self-activate at
+# runtime on 3.5+. Below 3.2 (no TLS-SIGALG advertising) force off.
+if(HYBRID_COMPOSITE AND OPENSSL_VERSION VERSION_LESS 3.2)
+    message(STATUS "HYBRID_COMPOSITE needs OpenSSL 3.2+ (oqsprovider floor); disabling on ${OPENSSL_VERSION}")
     set(HYBRID_COMPOSITE OFF)
+endif()
+# Whether the standardized (seed-based) composite tiers are usable here (3.5+).
+# Gates the standardized-only tests below; the experimental tier runs regardless.
+if(OPENSSL_VERSION VERSION_GREATER_EQUAL 3.5)
+    set(COMPOSITE_SEED ON)
+else()
+    set(COMPOSITE_SEED OFF)
 endif()
 
 # Provider shared library
@@ -273,6 +285,12 @@ if(HYBRID_COMPOSITE)
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 
+    # Standardized-tier tests: the composite draft KATs and the whole composite
+    # ML-KEM family are seed-based, so they only apply on OpenSSL 3.5+. On <3.5 the
+    # standardized tiers are not registered; the experimental composite signatures
+    # are covered by composite_sig_test / composite_test, which self-skip the
+    # standardized rows.
+    if(COMPOSITE_SEED)
     # KAT interop: verify the draft-19 reference test vectors (real cross-impl
     # check against lamps-wg/draft-composite-sigs, distilled into composite_kat.txt).
     add_executable(composite_kat_test test/composite_kat_test.c)
@@ -318,6 +336,7 @@ if(HYBRID_COMPOSITE)
     set_tests_properties(composite_kem_kat_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
+    endif()   # COMPOSITE_SEED (standardized-tier tests, 3.5+)
 
     # Certificate benchmark: self-signed X.509 cert size + cert-gen/verify time
     # for every composite (standardized ML-DSA + experimental OQS families). Runs

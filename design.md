@@ -209,9 +209,14 @@ MQOM2. The authoritative list is `HYBRID_SIG_LIST` in `hybrid_prov.h`.
 
 ### Composite signatures (LAMPS)
 
-An optional, build-flag-gated (`-DHYBRID_COMPOSITE`, default on; needs OpenSSL
-3.5+) capability *of this same provider* implements composite ML-DSA
-(draft-ietf-lamps-pq-composite-sigs). Unlike the concatenation hybrids, composite
+An optional, build-flag-gated (`-DHYBRID_COMPOSITE`, default on) capability *of
+this same provider* implements composite ML-DSA
+(draft-ietf-lamps-pq-composite-sigs). The **standardized** tier needs OpenSSL
+3.5+ (it serializes the PQ private key as its ML-DSA/ML-KEM seed via the 3.5 seed
+API); the **experimental** tier serializes the raw private key and so runs from
+the oqsprovider floor (3.2+). Below 3.5 the standardized tiers self-deactivate at
+registration (`COMPOSITE_SEED_AVAILABLE` in `composite_prov.h`), leaving only the
+experimental composite signatures. Unlike the concatenation hybrids, composite
 uses the draft's message representative and raw-concat serialization, keyed off
 `COMPOSITE_SIG_LIST` in `composite_prov.h`:
 
@@ -240,7 +245,7 @@ are never blurred:
 | Tier | PQ component | OID arc | Wire contract |
 | --- | --- | --- | --- |
 | **standardized** | ML-DSA only | IANA/LAMPS registered (`…6.37`–`.54`) | byte-exact vs BouncyCastle / future OpenSSL-native; normative |
-| **experimental** | any other PQ sig — one per NIST level per OQS family: Falcon (padded), MAYO, CROSS, UOV, SNOVA, MQOM2 | disjoint private arc `1.3.9999.99.*` (a leaf of the arc OQS uses for its own hybrids) | non-normative; interop only with ourselves / oqsprovider-if-it-matches |
+| **experimental** | any other PQ sig — one per NIST level per OQS family: Falcon (padded), MAYO, CROSS, UOV, SNOVA, MQOM2 | disjoint private arc `1.3.9999.99.*` (a leaf of the arc OQS uses for its own hybrids) | non-normative; interop only with this provider (oqsprovider supplies the PQ components but implements no composites) |
 
 The split keeps *cede-to-default* symmetric with the hybrid family (see Future
 work): when OpenSSL ships native composite (ML-DSA only), the standardized subset

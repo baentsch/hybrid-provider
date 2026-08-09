@@ -231,17 +231,19 @@ static int component_priv(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
     return 1;
 }
 
-/* PQ private material: the ML-KEM 64-byte seed. */
-static int component_pq_priv(EVP_PKEY *pq, unsigned char **buf, size_t *len)
+/* PQ private material: the param named by the row (the ML-KEM seed for
+ * standardized combos; a different seed param or the raw private key for a future
+ * non-ML-KEM combo). No ML-KEM assumption. */
+static int component_pq_priv(EVP_PKEY *pq, const COMPOSITE_KEM_INFO *info,
+                             unsigned char **buf, size_t *len)
 {
+    const char *param = info->pq_priv_param;
     size_t n = 0;
 
-    if (EVP_PKEY_get_octet_string_param(pq, OSSL_PKEY_PARAM_ML_KEM_SEED,
-                                        NULL, 0, &n) <= 0 || n == 0)
+    if (EVP_PKEY_get_octet_string_param(pq, param, NULL, 0, &n) <= 0 || n == 0)
         return 0;
     if ((*buf = OPENSSL_malloc(n)) == NULL
-            || EVP_PKEY_get_octet_string_param(pq, OSSL_PKEY_PARAM_ML_KEM_SEED,
-                                               *buf, n, len) <= 0) {
+            || EVP_PKEY_get_octet_string_param(pq, param, *buf, n, len) <= 0) {
         OPENSSL_clear_free(*buf, n);
         *buf = NULL;
         return 0;
@@ -258,7 +260,7 @@ int composite_kem_encode_priv_blob(COMPOSITE_KEM_KEY *key, unsigned char **out,
 
     if (key->state < COMPOSITE_KEM_HAVE_PRVKEY)
         return 0;
-    if (!component_pq_priv(key->pq_key, &pqbuf, &pqlen)
+    if (!component_pq_priv(key->pq_key, key->info, &pqbuf, &pqlen)
             || !component_priv(key->trad_key, &trbuf, &trlen))
         goto end;
     if ((buf = OPENSSL_malloc(pqlen + trlen)) == NULL)
@@ -416,7 +418,7 @@ static int composite_kem_encode_text(void *vctx, OSSL_CORE_BIO *cout,
            && ckey->state >= COMPOSITE_KEM_HAVE_PRVKEY;
 
     if (priv) {
-        if (!component_pq_priv(ckey->pq_key, &pqbuf, &pqlen)
+        if (!component_pq_priv(ckey->pq_key, info, &pqbuf, &pqlen)
             || !component_priv(ckey->trad_key, &trbuf, &trlen))
             goto end;
     } else if (ckey->state < COMPOSITE_KEM_HAVE_PUBKEY
