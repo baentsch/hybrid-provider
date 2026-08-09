@@ -308,15 +308,14 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
                                                  key->pq_propq);
-    /* Standardized combos serialize the ML-DSA private key as its seed; any
-     * other PQ component uses its raw private octet. */
-    const char *pqparam = key->info->pq_priv_seed
-                              ? OSSL_PKEY_PARAM_ML_DSA_SEED
-                              : OSSL_PKEY_PARAM_PRIV_KEY;
+    /* Reconstruct the PQ component from the param named by the row: the ML-DSA
+     * seed for standardized combos, the raw private key for experimental. No
+     * ML-DSA assumption. */
     OSSL_PARAM p[2];
     int ok = 0;
 
-    p[0] = OSSL_PARAM_construct_octet_string(pqparam, (void *)pqpriv, pqlen);
+    p[0] = OSSL_PARAM_construct_octet_string(key->info->pq_priv_param,
+                                             (void *)pqpriv, pqlen);
     p[1] = OSSL_PARAM_construct_end();
     if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
             && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_KEYPAIR, p) > 0
@@ -365,15 +364,13 @@ static size_t discover_pq_pub_len(COMPOSITE_KEY *key)
 
 static size_t discover_pq_priv_len(COMPOSITE_KEY *key)
 {
-    EVP_PKEY_CTX *c;
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
+                                                 key->pq_propq);
     EVP_PKEY *t = NULL;
     size_t n = 0;
 
-    if (key->info->pq_priv_seed)
-        return COMPOSITE_MLDSA_SEED_BYTES;
-    c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg, key->pq_propq);
     if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &t) > 0)
-        EVP_PKEY_get_octet_string_param(t, OSSL_PKEY_PARAM_PRIV_KEY, NULL, 0, &n);
+        EVP_PKEY_get_octet_string_param(t, key->info->pq_priv_param, NULL, 0, &n);
     EVP_PKEY_free(t);
     EVP_PKEY_CTX_free(c);
     return n;
