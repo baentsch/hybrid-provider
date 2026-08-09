@@ -24,9 +24,11 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
+**Algorithms served:** 42 hybrid KEMs + 26 hybrid signatures = 68 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 12 composite KEMs = 43 more, for 111 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.)
+
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
-`hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`) — those tables are
-the single source of truth. Names, OIDs and TLS code points match their origins:
+`hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
+in `composite_kem_prov.h`) — those tables are the single source of truth. Names, OIDs and TLS code points match their origins:
 the MLX hybrids follow the OpenSSL default provider, and every OQS-legacy hybrid
 follows [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 byte-for-byte (verified by the interop tests).
@@ -113,10 +115,20 @@ test vectors:
 | ML-DSA-44 | `mldsa44_rsa2048_pss`, `mldsa44_rsa2048_pkcs15`, `mldsa44_ed25519`, `mldsa44_ecdsa_p256` |
 | ML-DSA-65 | `mldsa65_rsa3072_pss`, `mldsa65_rsa3072_pkcs15`, `mldsa65_rsa4096_pss`, `mldsa65_rsa4096_pkcs15`, `mldsa65_ecdsa_p256`, `mldsa65_ecdsa_p384`, `mldsa65_ecdsa_bp256`, `mldsa65_ed25519` |
 | ML-DSA-87 | `mldsa87_ecdsa_p384`, `mldsa87_ecdsa_bp384`, `mldsa87_ed448`, `mldsa87_rsa3072_pss`, `mldsa87_rsa4096_pss`, `mldsa87_ecdsa_p521` |
-| Experimental (other PQ) | `exp_mayo2_ecdsa_p256` |
+| Experimental (other PQ) | `exp_falconpadded512_ecdsa_p256`, `exp_falconpadded1024_ecdsa_p521`, `exp_mayo2_ecdsa_p256`, `exp_mayo3_ecdsa_p384`, `exp_mayo5_ecdsa_p521`, `exp_cross128bal_ecdsa_p256`, `exp_ovIspkc_ecdsa_p256`, `exp_snova2454_ecdsa_p256`, `exp_snova2455_ecdsa_p384`, `exp_snova2965_ecdsa_p521`, `exp_mqom2cat1_ecdsa_p256`, `exp_mqom2cat3_ecdsa_p384`, `exp_mqom2cat5_ecdsa_p521` |
 
 Traditional components span RSA-2048/3072/4096 (both PSS and PKCS#1 v1.5), ECDSA
 on P-256/P-384/P-521 and brainpoolP256r1/P384r1, and Ed25519/Ed448.
+
+The **experimental tier** pairs one OQS signature per NIST level (where a
+parameter set exists) from each family — Falcon (padded, so the signature is
+fixed-length), MAYO, CROSS, UOV, SNOVA and MQOM2 — with a level-matched ECDSA
+half (L1→P-256, L3→P-384, L5→P-521). These are **not** standardized: they carry
+non-normative labels and OIDs in the private arc OQS uses for its own hybrids
+(`1.3.9999.99.*`), and interoperate only with this provider (oqsprovider supplies
+the PQ components but does not itself implement composites). Their component sizes
+and cert-gen/verify costs are reported by the `composite_bench` benchmark (see
+[TESTING.md](TESTING.md)).
 
 ### Composite ML-KEM (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 

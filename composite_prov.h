@@ -77,7 +77,16 @@ typedef struct {
     const char *trad_md;     /* traditional component's OWN hash — distinct from */
                              /* prehash (e.g. RSA3072-PSS uses SHA256 here even  */
                              /* though the label says SHA512); NULL = pure (Ed)  */
-    int         pq_priv_seed;/* 1: PQ priv serialized as seed (ML-DSA 32B); 0 raw*/
+    int         pq_priv_seed;/* PQ private-key serialization: 1 = seed (ML-DSA    */
+                             /* 32B, draft-mandated; the reason composite needs   */
+                             /* OpenSSL 3.5's ML-DSA seed API); 0 = raw priv       */
+                             /* (experimental sigs, OSSL_PKEY_PARAM_PRIV_KEY).     */
+                             /* Touches ONLY the PKCS#8 private key + interop: the */
+                             /* SPKI/cert and signature are identical either way,  */
+                             /* so cert size is unaffected. ML-DSA could use raw   */
+                             /* too (self-consistent, and would drop the 3.5 floor)*/
+                             /* but that breaks draft interop, hence seed. The KEM */
+                             /* family lacks this knob — parity tracked in #34.    */
     int         tier;        /* COMPOSITE_TIER_STANDARD | _EXPERIMENTAL         */
     int         tls_codepoint;/* TLS SignatureScheme code point (0 = none), the  */
                              /* single source consumed by composite_caps.c —     */
@@ -189,11 +198,73 @@ typedef struct composite_key_st {
       0, "1.3.6.1.5.5.7.6.54", "COMPSIG-MLDSA87-ECDSA-P521-SHA512",            \
       "SHA512", "SHA512", 1, COMPOSITE_TIER_STANDARD, 0, 256)                  \
   /* --- experimental (non-ML-DSA PQ; DISJOINT arc; non-normative label) ---   \
-   * Illustrative single row — proves the family is generic over the PQ         \
-   * component. No TLS code point (0): experimental combos are not TLS sigalgs.*/\
+   * One combo per NIST level per OQS signature family, proving the combiner is \
+   * generic over the PQ component. Each PQ half is paired with a level-matched  \
+   * ECDSA classical half (L1->P-256, L3->P-384, L5->P-521), mirroring the       \
+   * prehash/trad_md conventions of the standardized ECDSA rows above (L1:        \
+   * SHA256/SHA256; L3: SHA512/SHA384; L5: SHA512/SHA512).                        \
+   *                                                                             \
+   * OIDs live in a dedicated leaf of the private arc OQS uses for its own       \
+   * hybrids (1.3.9999): 1.3.9999.99.<n>, clearly marked experimental so they    \
+   * never collide with the OQS per-family hybrid arcs (.3/.8/.9/.10/.11) or the  \
+   * LAMPS standardized composite arc. Labels are our own non-normative strings; \
+   * no TLS code point (0): experimental combos are not TLS sigalgs.             \
+   *                                                                             \
+   * The concat serialization splits the signature at the fixed PQ length        \
+   * (EVP_PKEY_get_size), so every PQ component here MUST be fixed-length: Falcon \
+   * therefore uses the *padded* variants (constant-size sig); MAYO/CROSS/OV/     \
+   * SNOVA/MQOM are already fixed-length. pq_priv_seed=0: raw PQ private keys.   */\
+  /* Falcon (padded, fixed-length): L1, L5 (no L3 parameter set) */             \
+  X(exp_falconpadded512_ecdsa_p256, "exp_falconpadded512_ecdsa_p256",          \
+      "falconpadded512", "EC", "P-256", 0, "1.3.9999.99.1",                    \
+      "COMPSIG-EXP-FALCONPADDED512-ECDSA-P256-SHA256", "SHA256", "SHA256", 0,  \
+      COMPOSITE_TIER_EXPERIMENTAL, 0, 128)                                     \
+  X(exp_falconpadded1024_ecdsa_p521, "exp_falconpadded1024_ecdsa_p521",        \
+      "falconpadded1024", "EC", "P-521", 0, "1.3.9999.99.2",                   \
+      "COMPSIG-EXP-FALCONPADDED1024-ECDSA-P521-SHA512", "SHA512", "SHA512", 0, \
+      COMPOSITE_TIER_EXPERIMENTAL, 0, 256)                                     \
+  /* MAYO: L1 (mayo2), L3 (mayo3), L5 (mayo5) */                               \
   X(exp_mayo2_ecdsa_p256, "exp_mayo2_ecdsa_p256", "mayo2", "EC", "P-256",      \
-      0, NULL, "COMPSIG-EXP-MAYO2-ECDSA-P256-SHA256", "SHA256", "SHA256", 0,   \
-      COMPOSITE_TIER_EXPERIMENTAL, 0, 128)
+      0, "1.3.9999.99.3", "COMPSIG-EXP-MAYO2-ECDSA-P256-SHA256",              \
+      "SHA256", "SHA256", 0, COMPOSITE_TIER_EXPERIMENTAL, 0, 128)             \
+  X(exp_mayo3_ecdsa_p384, "exp_mayo3_ecdsa_p384", "mayo3", "EC", "P-384",      \
+      0, "1.3.9999.99.4", "COMPSIG-EXP-MAYO3-ECDSA-P384-SHA512",              \
+      "SHA512", "SHA384", 0, COMPOSITE_TIER_EXPERIMENTAL, 0, 192)             \
+  X(exp_mayo5_ecdsa_p521, "exp_mayo5_ecdsa_p521", "mayo5", "EC", "P-521",      \
+      0, "1.3.9999.99.5", "COMPSIG-EXP-MAYO5-ECDSA-P521-SHA512",              \
+      "SHA512", "SHA512", 0, COMPOSITE_TIER_EXPERIMENTAL, 0, 256)             \
+  /* CROSS (RSDP, category-1 balanced): only L1 built in this oqsprovider */   \
+  X(exp_cross128bal_ecdsa_p256, "exp_cross128bal_ecdsa_p256",                  \
+      "CROSSrsdp128balanced", "EC", "P-256", 0, "1.3.9999.99.6",              \
+      "COMPSIG-EXP-CROSSR128B-ECDSA-P256-SHA256", "SHA256", "SHA256", 0,      \
+      COMPOSITE_TIER_EXPERIMENTAL, 0, 128)                                     \
+  /* UOV (OV_Is, pkc): only category-1 built in this oqsprovider */            \
+  X(exp_ovIspkc_ecdsa_p256, "exp_ovIspkc_ecdsa_p256", "OV_Is_pkc", "EC",       \
+      "P-256", 0, "1.3.9999.99.7", "COMPSIG-EXP-OVIS-ECDSA-P256-SHA256",      \
+      "SHA256", "SHA256", 0, COMPOSITE_TIER_EXPERIMENTAL, 0, 128)             \
+  /* SNOVA: L1 (24-5-4), L3 (24-5-5), L5 (29-6-5) */                          \
+  X(exp_snova2454_ecdsa_p256, "exp_snova2454_ecdsa_p256", "snova2454", "EC",   \
+      "P-256", 0, "1.3.9999.99.8", "COMPSIG-EXP-SNOVA2454-ECDSA-P256-SHA256", \
+      "SHA256", "SHA256", 0, COMPOSITE_TIER_EXPERIMENTAL, 0, 128)             \
+  X(exp_snova2455_ecdsa_p384, "exp_snova2455_ecdsa_p384", "snova2455", "EC",   \
+      "P-384", 0, "1.3.9999.99.9", "COMPSIG-EXP-SNOVA2455-ECDSA-P384-SHA512", \
+      "SHA512", "SHA384", 0, COMPOSITE_TIER_EXPERIMENTAL, 0, 192)             \
+  X(exp_snova2965_ecdsa_p521, "exp_snova2965_ecdsa_p521", "snova2965", "EC",   \
+      "P-521", 0, "1.3.9999.99.10", "COMPSIG-EXP-SNOVA2965-ECDSA-P521-SHA512",\
+      "SHA512", "SHA512", 0, COMPOSITE_TIER_EXPERIMENTAL, 0, 256)             \
+  /* MQOM2 (GF16, fast, r5): L1 (cat1), L3 (cat3), L5 (cat5) */               \
+  X(exp_mqom2cat1_ecdsa_p256, "exp_mqom2cat1_ecdsa_p256",                      \
+      "mqom2cat1gf16fastr5", "EC", "P-256", 0, "1.3.9999.99.11",             \
+      "COMPSIG-EXP-MQOM2C1-ECDSA-P256-SHA256", "SHA256", "SHA256", 0,         \
+      COMPOSITE_TIER_EXPERIMENTAL, 0, 128)                                     \
+  X(exp_mqom2cat3_ecdsa_p384, "exp_mqom2cat3_ecdsa_p384",                      \
+      "mqom2cat3gf16fastr5", "EC", "P-384", 0, "1.3.9999.99.12",             \
+      "COMPSIG-EXP-MQOM2C3-ECDSA-P384-SHA512", "SHA512", "SHA384", 0,         \
+      COMPOSITE_TIER_EXPERIMENTAL, 0, 192)                                     \
+  X(exp_mqom2cat5_ecdsa_p521, "exp_mqom2cat5_ecdsa_p521",                      \
+      "mqom2cat5gf16fastr5", "EC", "P-521", 0, "1.3.9999.99.13",             \
+      "COMPSIG-EXP-MQOM2C5-ECDSA-P521-SHA512", "SHA512", "SHA512", 0,         \
+      COMPOSITE_TIER_EXPERIMENTAL, 0, 256)
 
 /* Generate the info table from the master list. */
 #define COMPOSITE_SIG_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, ph, tmd, seed,  \

@@ -205,3 +205,37 @@ glue. The remaining configurations compare component implementations (e.g.
 default-provider vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) ML-KEM/ML-DSA)
 in the same process. Run `hybrid_bench` in your own environment for numbers.
+
+### Composite certificate benchmark
+
+`composite_bench` (built only with `-DHYBRID_COMPOSITE`) reports, for **every**
+composite signature — the standardized ML-DSA combos *and* the experimental
+OQS-family combos — the three quantities that matter for a PKI deployment:
+
+- **cert size** — DER length of a self-signed X.509 certificate
+- **cert-gen** — keypair-generation time and `X509_sign` time (reported
+  separately, in ms)
+- **cert-verify** — `X509_verify` time (ms)
+
+Rows are grouped by NIST security level (L1/L3/L5) so the standardized ML-DSA
+composites sit side-by-side with the experimental OQS-family composites at the
+same level. A few single-algorithm reference rows (pure ML-DSA / Ed25519 from
+the default provider) are included so the composite "tax" is readable. The experimental
+rows need [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) on
+the module search path; combos whose components are unavailable are skipped, not
+failed.
+
+```sh
+cd build
+LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_bench [budget_ms]
+```
+
+The optional `budget_ms` argument is the per-operation wall-clock budget: each
+measurement loops until that budget (or an iteration cap) is reached, so slow
+keygens (UOV/MQOM/CROSS) don't dominate while fast verifies still get enough
+samples. It defaults to 1000; `ctest` runs it with a short budget as a smoke
+test, so pass a larger value (e.g. `./composite_bench 2000`) for stable numbers.
+
+An illustrative results snapshot and the deployment recommendations that follow
+from it are in [composite-bench-results.md](composite-bench-results.md) (numbers
+are hardware-specific — regenerate for your own environment).

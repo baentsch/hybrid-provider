@@ -318,6 +318,30 @@ if(HYBRID_COMPOSITE)
     set_tests_properties(composite_kem_kat_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
+
+    # Certificate benchmark: self-signed X.509 cert size + cert-gen/verify time
+    # for every composite (standardized ML-DSA + experimental OQS families). Runs
+    # a short per-op budget under ctest (smoke); pass a larger budget in ms for
+    # real numbers, e.g. `composite_bench 2000`.
+    add_executable(composite_bench test/composite_bench.c)
+    target_include_directories(composite_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_bench PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_bench hybrid-provider)
+    add_test(NAME composite_bench COMMAND composite_bench 20)
+    set_tests_properties(composite_bench PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # Guard the README "Algorithms served:" headline against silent drift:
+    # recomputes the KEM/SIG/composite counts from the source-of-truth tables
+    # and asserts the README number still matches. Built here (HYBRID_COMPOSITE)
+    # so all four tables — incl. composite sig/KEM — are in scope. Loads no
+    # provider; just includes the headers and reads ${CMAKE_SOURCE_DIR}/README.md.
+    add_executable(hybrid_count_test test/hybrid_count_test.c)
+    target_include_directories(hybrid_count_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_compile_definitions(hybrid_count_test PRIVATE HYBRID_COMPOSITE)
+    target_link_libraries(hybrid_count_test PRIVATE OpenSSL::Crypto)
+    add_test(NAME hybrid_count_test COMMAND hybrid_count_test ${CMAKE_SOURCE_DIR}/README.md)
 endif()
 
 # Separate-process CLI harnesses driven by test/hybrid_scenarios.sh. These are
