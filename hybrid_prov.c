@@ -530,33 +530,67 @@ static OSSL_ALGORITHM *hybrid_filter_algs(const OSSL_ALGORITHM *src)
     return out;
 }
 
+#ifdef HYBRID_COMPOSITE
 /*
- * Withdraw everything the default provider already serves in `libctx`. Matching
- * is by any identifier we might share with it — algorithm name, TLS code point
- * or OID — so it is not a fixed list but tracks whatever the default provider
- * offers now (the standardized hybrid KEM groups) or later (e.g. native
- * composite signatures). Runs at init: this provider is not yet active in the
- * store, so the probing fetches/capability queries cannot recurse into
- * hybrid_query. Returns 0 only on allocation failure.
+ * Withdraw the composite algorithms that require the 3.5 ML-DSA/ML-KEM seed API.
+ * The standardized composite tiers serialize the PQ private key AS its seed
+ * (draft mandate), which needs OpenSSL 3.5; below that the seed API is absent, so
+ * on <3.5 mark every standardized composite signature (tier STANDARD) and every
+ * composite ML-KEM (all seed-based) as ceded. That leaves only the experimental
+ * composite signatures — which serialize the raw private key (present since 3.0)
+ * — advertised. Compiles to nothing on >=3.5. Independent of cede-to-default:
+ * these are withdrawn because we cannot honor them, not because the default
+ * provider serves them.
  */
-static int hybrid_apply_cede(OSSL_LIB_CTX *libctx)
+static void hybrid_withdraw_seedless_composites(void)
 {
-    OSSL_PROVIDER *def = NULL;
+#if !COMPOSITE_SEED_AVAILABLE
+    size_t i;
 
+    for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
+        if (composite_sig_table[i].tier == COMPOSITE_TIER_STANDARD)
+            hybrid_mark_ceded(composite_sig_table[i].name);
+    for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
+        hybrid_mark_ceded(composite_kem_table[i].name);
+#endif
+}
+#endif /* HYBRID_COMPOSITE */
+
+/*
+ * Apply all algorithm withdrawals at init. Two independent sources:
+ *   1. seed-less composites — always withdrawn below 3.5 (we cannot honor them);
+ *   2. cede-to-default — when `cede`, withdraw everything the default provider
+ *      already serves in `libctx`, matched by any shared identifier (name, TLS
+ *      code point or OID), tracking whatever it offers now (the hybrid KEM
+ *      groups) or later (e.g. native composite signatures).
+ * Runs at init: this provider is not yet active in the store, so the probing
+ * fetches/capability queries cannot recurse into hybrid_query. Returns 0 only on
+ * allocation failure.
+ */
+static int hybrid_apply_cede(OSSL_LIB_CTX *libctx, int cede)
+{
     hybrid_cede_reset();
-    OSSL_PROVIDER_do_all(libctx, hybrid_find_default_cb, &def);
-    if (def == NULL)
-        return 1;   /* no default provider here: nothing to cede */
 
-    /* Probing pushes "unable to fetch" errors for absent identifiers; a miss is
-     * the expected case, so keep them off the caller's error stack. */
-    ERR_set_mark();
-    hybrid_cede_by_fetch(libctx);
-    (void)OSSL_PROVIDER_get_capabilities(def, "TLS-GROUP",
-                                         hybrid_cede_group_cb, NULL);
-    (void)OSSL_PROVIDER_get_capabilities(def, "TLS-SIGALG",
-                                         hybrid_cede_sigalg_cb, NULL);
-    ERR_pop_to_mark();
+#ifdef HYBRID_COMPOSITE
+    hybrid_withdraw_seedless_composites();
+#endif
+
+    if (cede) {
+        OSSL_PROVIDER *def = NULL;
+
+        OSSL_PROVIDER_do_all(libctx, hybrid_find_default_cb, &def);
+        if (def != NULL) {
+            /* Probing pushes "unable to fetch" errors for absent identifiers; a
+             * miss is the expected case, so keep them off the error stack. */
+            ERR_set_mark();
+            hybrid_cede_by_fetch(libctx);
+            (void)OSSL_PROVIDER_get_capabilities(def, "TLS-GROUP",
+                                                 hybrid_cede_group_cb, NULL);
+            (void)OSSL_PROVIDER_get_capabilities(def, "TLS-SIGALG",
+                                                 hybrid_cede_sigalg_cb, NULL);
+            ERR_pop_to_mark();
+        }
+    }
 
     if (hybrid_n_ceded == 0)
         return 1;
@@ -702,11 +736,12 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
         }
     }
 
-    /* Environment variable overrides the config key when set. Then withdraw the
-     * algorithms the default provider already serves in this context. */
+    /* Environment variable overrides the config key when set. Then apply
+     * withdrawals: the seed-less composites (always, below 3.5) and — when
+     * enabled — everything the default provider already serves in this context. */
     cede_to_default = hybrid_parse_bool(getenv(HYBRID_ENV_CEDE_TO_DEFAULT),
                                         cede_to_default);
-    if (cede_to_default && !hybrid_apply_cede(ctx->libctx))
+    if (!hybrid_apply_cede(ctx->libctx, cede_to_default))
         goto err;
 
     /*
@@ -726,7 +761,9 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
         HYBRID_SIG_LIST(HYBRID_SIG_OID_REG)
 #undef HYBRID_SIG_OID_REG
 #ifdef HYBRID_COMPOSITE
-        {   /* composite: skip the experimental rows (NULL oid) */
+        {   /* composite signatures: register OID<->name for the rows we serve.
+             * Skip rows with no OID, and — below 3.5, where the standardized tier
+             * is not served (no seed API) — skip the standardized rows too. */
             size_t ci;
 
             for (ci = 0; ci < COMPOSITE_SIG_ALG_COUNT; ci++) {
@@ -734,13 +771,18 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
 
                 if (cin->oid == NULL)
                     continue;
+                if (!COMPOSITE_SEED_AVAILABLE
+                        && cin->tier == COMPOSITE_TIER_STANDARD)
+                    continue;
                 (void)c_obj_create(handle, cin->oid, cin->name, cin->name);
                 (void)c_obj_add_sigid(handle, cin->name, "", cin->name);
             }
         }
+#if COMPOSITE_SEED_AVAILABLE
         {   /* composite ML-KEM: register the OID<->name mapping only (a KEM is
              * not a signature, so no add_sigid). Lets the X.509 / CLI layers map
-             * a composite-KEM SPKI OID back to the algorithm name. */
+             * a composite-KEM SPKI OID back to the algorithm name. All composite
+             * ML-KEM combos are seed-based, so this whole tier is 3.5+ only. */
             size_t ki;
 
             for (ki = 0; ki < COMPOSITE_KEM_ALG_COUNT; ki++)
@@ -748,6 +790,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
                                    composite_kem_table[ki].name,
                                    composite_kem_table[ki].name);
         }
+#endif
 #endif
         ERR_pop_to_mark();
     }

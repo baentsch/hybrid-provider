@@ -24,7 +24,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 42 hybrid KEMs + 26 hybrid signatures = 68 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 12 composite KEMs = 43 more, for 111 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.)
+**Algorithms served:** 42 hybrid KEMs + 26 hybrid signatures = 68 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 12 composite KEMs = 43 more, for 111 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the 13 *experimental* composite signatures are served alongside the 68 hybrids.
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -126,9 +126,11 @@ fixed-length), MAYO, CROSS, UOV, SNOVA and MQOM2 — with a level-matched ECDSA
 half (L1→P-256, L3→P-384, L5→P-521). These are **not** standardized: they carry
 non-normative labels and OIDs in the private arc OQS uses for its own hybrids
 (`1.3.9999.99.*`), and interoperate only with this provider (oqsprovider supplies
-the PQ components but does not itself implement composites). Their component sizes
-and cert-gen/verify costs are reported by the `composite_bench` benchmark (see
-[TESTING.md](TESTING.md)).
+the PQ components but does not itself implement composites). Because they
+serialize the raw PQ private key rather than a seed, they need no 3.5 seed API and
+run from the oqsprovider floor (OpenSSL 3.2+) — unlike the standardized tiers,
+which require 3.5. Their component sizes and cert-gen/verify costs are reported by
+the `composite_bench` benchmark (see [TESTING.md](TESTING.md)).
 
 ### Composite ML-KEM (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 

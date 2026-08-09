@@ -31,9 +31,28 @@
 #include <openssl/types.h>
 #include <openssl/core.h>
 #include <openssl/core_dispatch.h>
+#include <openssl/core_names.h>   /* OSSL_PKEY_PARAM_* used in the master list */
+#include <openssl/opensslv.h>     /* OPENSSL_VERSION_NUMBER (seed-API gate) */
 #include <stddef.h>
 #include "hybrid_prov.h"   /* composite is a capability OF the hybrid provider;
                             * it shares HYBRID_PROV_CTX (libctx + BIO up-calls). */
+
+/*
+ * Seed API gate. The standardized composite tier serializes the PQ private key
+ * as its ML-DSA seed, which needs OpenSSL 3.5's seed param API
+ * (OSSL_PKEY_PARAM_ML_DSA_SEED). Below 3.5 that macro is not even declared, so
+ * define a fallback to its stable value ("seed") purely so the master list, which
+ * names it for the standardized rows, still *compiles*. The standardized rows are
+ * not registered below 3.5 (see hybrid_prov.c); only the experimental tier —
+ * which names OSSL_PKEY_PARAM_PRIV_KEY (raw private key, present since 3.0) — runs
+ * there, so this fallback value is never actually exercised on <3.5. */
+#ifndef OSSL_PKEY_PARAM_ML_DSA_SEED
+# define OSSL_PKEY_PARAM_ML_DSA_SEED "seed"
+#endif
+
+/* True when the ML-DSA/ML-KEM seed API is available (>=3.5); gates the
+ * standardized composite tiers at build (tests) and at registration time. */
+#define COMPOSITE_SEED_AVAILABLE (OPENSSL_VERSION_NUMBER >= 0x30500000L)
 
 /* Whole-scheme domain separator (fixed ASCII, draft-19). Shared by every combo,
  * standardized and experimental; the per-combo `label` differentiates them. */

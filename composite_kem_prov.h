@@ -44,6 +44,13 @@
 #include "hybrid_prov.h"   /* composite is a capability OF the hybrid provider;
                             * it shares HYBRID_PROV_CTX (libctx + BIO up-calls). */
 
+/* OSSL_PKEY_PARAM_ML_KEM_SEED is 3.5+ (like ML_DSA_SEED, see composite_prov.h).
+ * Fallback so the master list compiles on <3.5; the composite KEM family is all
+ * standardized (seed-based), so it is simply not registered below 3.5. */
+#ifndef OSSL_PKEY_PARAM_ML_KEM_SEED
+# define OSSL_PKEY_PARAM_ML_KEM_SEED "seed"
+#endif
+
 /* Composite ss and the ML-KEM component ss are both 256-bit (draft-18 §3.2/§3.4);
  * RSA-OAEP also carries a 32-byte tradSS "at all security levels". */
 #define COMPOSITE_KEM_SS_BYTES  32

@@ -76,7 +76,9 @@ asserts the version contract per running OpenSSL:
 
 - **hybrid KEMs** — OpenSSL **3.0+** (always exercised),
 - **hybrid signatures** — OpenSSL **3.2+** (skipped below),
-- **composite** — OpenSSL **3.5+**, and only when built with the composite family.
+- **composite** — standardized tiers OpenSSL **3.5+** (seed API); experimental
+  composite signatures **3.2+** (raw private key). Only when built with the
+  composite family.
 
 The Frodo/BIKE/HQC hybrids make the "PQ from
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)" claim concrete

@@ -99,17 +99,20 @@ jobs:
         working-directory: build
         run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
 
-      # Pre-3.5 the default provider has no native ML-KEM/ML-DSA (and no ML-DSA
-      # seed API), so MLX-vs-default and composite tests self-skip. The PQ half
-      # comes from the cede-patched, PQ-only oqsprovider, so the drop-in
-      # replacement and oqs-compose tests still apply: hybrid_replace_test proves
-      # hybrid-provider serves the hybrid KEMs on 3.0+ and, from 3.2, the sigs.
+      # Pre-3.5 the default provider has no native ML-KEM/ML-DSA (and no seed
+      # API), so MLX-vs-default checks and the STANDARDIZED composite tiers
+      # self-skip. The PQ half comes from the cede-patched, PQ-only oqsprovider, so
+      # the drop-in replacement and oqs-compose tests still apply: hybrid_replace_test
+      # proves hybrid-provider serves the hybrid KEMs on 3.0+ and, from 3.2, the
+      # sigs. The EXPERIMENTAL composite signatures (raw private key, no seed API)
+      # also run here — composite_sig_test/composite_test exercise them and self-skip
+      # the standardized rows, proving composite works below 3.5 for that tier.
       - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
         if: matrix.openssl.pre35 == 'true'
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_bench'
 
   # ----------------------------------------------------------------- weekly ---
   # Exhaustive per-OpenSSL-version floor matrix against bleeding-edge liboqs +
@@ -205,4 +208,4 @@ jobs:
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_bench'

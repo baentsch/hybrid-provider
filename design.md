@@ -209,9 +209,14 @@ MQOM2. The authoritative list is `HYBRID_SIG_LIST` in `hybrid_prov.h`.
 
 ### Composite signatures (LAMPS)
 
-An optional, build-flag-gated (`-DHYBRID_COMPOSITE`, default on; needs OpenSSL
-3.5+) capability *of this same provider* implements composite ML-DSA
-(draft-ietf-lamps-pq-composite-sigs). Unlike the concatenation hybrids, composite
+An optional, build-flag-gated (`-DHYBRID_COMPOSITE`, default on) capability *of
+this same provider* implements composite ML-DSA
+(draft-ietf-lamps-pq-composite-sigs). The **standardized** tier needs OpenSSL
+3.5+ (it serializes the PQ private key as its ML-DSA/ML-KEM seed via the 3.5 seed
+API); the **experimental** tier serializes the raw private key and so runs from
+the oqsprovider floor (3.2+). Below 3.5 the standardized tiers self-deactivate at
+registration (`COMPOSITE_SEED_AVAILABLE` in `composite_prov.h`), leaving only the
+experimental composite signatures. Unlike the concatenation hybrids, composite
 uses the draft's message representative and raw-concat serialization, keyed off
 `COMPOSITE_SIG_LIST` in `composite_prov.h`:
 
