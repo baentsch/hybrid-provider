@@ -6,12 +6,14 @@ measures and how to run it). Numbers are hardware-, build- and run-specific —
 regenerate them in your own environment before drawing conclusions; do **not**
 treat the values below as authoritative.
 
-> ⚠️ **Interop scope.** The **experimental** rows are *not* deployable in an
-> interoperating PKI: non-normative labels and OIDs in the private
-> `1.3.9999.99.*` arc, interoperable only with ourselves / a matching
-> oqsprovider. Deployment advice below therefore applies to the **standardized
-> ML-DSA composite tier**; the experimental numbers are for research and for
-> informing which families are worth pushing toward standardization.
+> ⚠️ **Interop scope.** Only the **standardized ML-DSA composite tier** has real
+> LAMPS OIDs and can interoperate with other implementations. The
+> **experimental** rows use non-normative labels and OIDs in the private
+> `1.3.9999.99.*` arc and interoperate only with this provider — they are here
+> for research (measuring what each PQ family costs inside a certificate), not
+> for deployment. The analysis below is a per-axis "what wins on which metric"
+> comparison across *all* rows; where deployability matters it is called out as
+> a separate, factual constraint rather than folded into the ranking.
 
 ## How to reproduce
 
@@ -21,104 +23,129 @@ LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_bench 2000
 ```
 
 The experimental rows need [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
-on the module search path; combos whose components are unavailable are skipped.
+on the module search path (it supplies the PQ *components* — the composite
+combination itself is done by this provider); combos whose components are
+unavailable are skipped.
 
 ## Snapshot
 
 Measured on an **AMD Ryzen 7 5800U**, **OpenSSL 3.5.6**, PQ components from
 oqsprovider, per-op budget `2000` ms. `keygen`/`sign`/`verify` are milliseconds
-per operation; `cert` is the DER length of a self-signed X.509 certificate.
-Rows are grouped by NIST level so the standardized ML-DSA composites sit
-side-by-side with the experimental OQS-family composites at the same level.
+per operation; `cert` is the DER length of a self-signed X.509 certificate; `sk`
+is the DER length of the PKCS8 private key. Rows are grouped by NIST level so the
+standardized ML-DSA composites sit side-by-side with the experimental OQS-family
+composites at the same level.
 
 ```
-algorithm                          tier   keygen(ms)  sign(ms) verify(ms)  cert(bytes)
+algorithm                          tier     keygen      sign    verify      cert      sk
+                                              (ms)      (ms)      (ms)   (bytes) (bytes)
 --- NIST level 1 (128-bit): ML-DSA-44 vs experimental ---
-mldsa44_rsa2048_pss                std      29.440     1.026     0.120       4400
-mldsa44_rsa2048_pkcs15             std      39.824     1.009     0.115       4400
-mldsa44_ed25519                    std       0.114     0.527     0.189       3970
-mldsa44_ecdsa_p256                 std       0.108     0.505     0.156       4009
-exp_falconpadded512_ecdsa_p256     exp       5.191     0.425     0.307       1833
-exp_mayo2_ecdsa_p256               exp       0.211     0.319     0.297       5367
-exp_cross128bal_ecdsa_p256         exp       0.189     0.859     0.700      13495
-exp_ovIspkc_ecdsa_p256             exp       1.051     0.314     0.381      66945
-exp_snova2454_ecdsa_p256           exp       0.244     0.549     0.349       1533
-exp_mqom2cat1_ecdsa_p256           exp       0.256     1.008     0.875       3604
+mldsa44_rsa2048_pss                std      36.391     1.028     0.119      4400    1245
+mldsa44_rsa2048_pkcs15             std      38.852     1.037     0.117      4400    1246
+mldsa44_ed25519                    std       0.119     0.509     0.187      3970      83
+mldsa44_ecdsa_p256                 std       0.103     0.529     0.157      4010     174
+exp_falconpadded512_ecdsa_p256     exp       5.484     0.428     0.303      1833    1422
+exp_mayo2_ecdsa_p256               exp       0.206     0.309     0.288      5367     163
+exp_cross128bal_ecdsa_p256         exp       0.180     0.860     0.683     13494     171
+exp_ovIspkc_ecdsa_p256             exp       0.973     0.297     0.380     66943  348847
+exp_snova2454_ecdsa_p256           exp       0.237     0.687     0.426      1533     187
+exp_mqom2cat1_ecdsa_p256           exp       0.303     1.078     0.907      3605     227
 --- NIST level 3 (192-bit): ML-DSA-65 vs experimental ---
-mldsa65_rsa3072_pss                std     143.350     2.344     0.198       6185
-mldsa65_rsa3072_pkcs15             std     136.361     2.345     0.188       6185
-mldsa65_rsa4096_pss                std     395.560     4.564     0.213       6441
-mldsa65_rsa4096_pkcs15             std     490.554     4.282     0.215       6441
-mldsa65_ecdsa_p256                 std       0.172     0.900     0.215       5539
-mldsa65_ecdsa_p384                 std       0.822     1.536     0.729       5604
-mldsa65_ecdsa_bp256                std       0.450     1.160     0.457       5539
-mldsa65_ed25519                    std       0.183     0.843     0.248       5499
-exp_mayo3_ecdsa_p384               exp       1.132     1.236     0.961       4000
-exp_snova2455_ecdsa_p384           exp       0.997     1.756     1.081       2291
-exp_mqom2cat3_ecdsa_p384           exp       1.239     3.874     3.395       8159
+mldsa65_rsa3072_pss                std     118.167     2.452     0.198      6185    1822
+mldsa65_rsa3072_pkcs15             std     167.490     2.484     0.197      6185    1824
+mldsa65_rsa4096_pss                std     422.615     4.559     0.235      6441    2403
+mldsa65_rsa4096_pkcs15             std     327.145     4.600     0.226      6441    2402
+mldsa65_ecdsa_p256                 std       0.177     0.923     0.225      5538     174
+mldsa65_ecdsa_p384                 std       0.843     1.562     0.763      5602     220
+mldsa65_ecdsa_bp256                std       0.477     1.251     0.470      5539     175
+mldsa65_ed25519                    std       0.189     0.931     0.260      5499      83
+exp_mayo3_ecdsa_p384               exp       1.032     1.302     0.998      4000     217
+exp_snova2455_ecdsa_p384           exp       1.063     1.804     1.089      2291     233
+exp_mqom2cat3_ecdsa_p384           exp       1.235     3.881     3.542      8159     319
 --- NIST level 5 (256-bit): ML-DSA-87 vs experimental ---
-mldsa87_ecdsa_p384                 std       0.925     1.713     0.818       7561
-mldsa87_ecdsa_bp384                std       0.903     1.691     0.865       7560
-mldsa87_ed448                      std       0.402     1.128     0.426       7532
-mldsa87_rsa3072_pss                std     131.766     2.505     0.273       8143
-mldsa87_rsa4096_pss                std     605.155     4.493     0.309       8399
-mldsa87_ecdsa_p521                 std       1.845     2.688     1.565       7633
-exp_falconpadded1024_ecdsa_p521    exp      16.522     2.333     1.674       3477
-exp_mayo5_ecdsa_p521               exp       2.006     2.518     1.795       6922
-exp_snova2965_ecdsa_p521           exp       1.972     3.065     1.875       3575
-exp_mqom2cat5_ecdsa_p521           exp       2.506     7.990     7.103      14299
+mldsa87_ecdsa_p384                 std       0.943     1.776     0.871      7561     220
+mldsa87_ecdsa_bp384                std       0.948     1.682     0.902      7560     224
+mldsa87_ed448                      std       0.425     1.160     0.454      7532     108
+mldsa87_rsa3072_pss                std     120.872     2.632     0.292      8143    1821
+mldsa87_rsa4096_pss                std     364.361     4.568     0.319      8399    2404
+mldsa87_ecdsa_p521                 std       1.835     2.699     1.599      7633     277
+exp_falconpadded1024_ecdsa_p521    exp      18.000     2.407     1.700      3477    2548
+exp_mayo5_ecdsa_p521               exp       2.155     2.751     1.974      6922     283
+exp_snova2965_ecdsa_p521           exp       2.138     3.340     2.039      3575     291
+exp_mqom2cat5_ecdsa_p521           exp       2.704     8.546     7.677     14299     423
 --- reference (single algorithm, default provider) ---
-ML-DSA-44                          ref       0.084     0.483     0.099       3877
-ML-DSA-65                          ref       0.147     0.861     0.152       5406
-ML-DSA-87                          ref       0.209     0.967     0.235       7364
-ED25519                            ref       0.027     0.029     0.088        215
+ML-DSA-44                          ref       0.093     0.536     0.107      3877    2626
+ML-DSA-65                          ref       0.159     0.887     0.165      5406    4098
+ML-DSA-87                          ref       0.223     1.035     0.257      7364    4962
+ED25519                            ref       0.029     0.031     0.094       215      48
 ```
 
-## Deployment recommendations (standardized tier)
+## What wins on which axis
 
-**Prefer ECDSA- or EdDSA-paired combos over RSA-paired ones.** At the same
-security level the RSA halves cost **130–605 ms** to keygen (e.g.
-`mldsa87_rsa4096_pss` ~605 ms) versus **< 2 ms** for every EC/Ed combo — a
-100–1000× keygen penalty — while sign/verify and cert size are otherwise
-comparable. Choose an RSA half only when policy or legacy-verifier compatibility
-forces it; for fresh deployments the `*_ecdsa_*` / `*_ed25519` / `*_ed448`
-combos are strictly better operationally.
+There is no single best composite: each metric has a different winner, and the
+right choice depends on which axis binds in your deployment. The rankings below
+cover **all** rows (standardized and experimental); deployability is treated as
+a separate constraint in the next section, not baked into the ranking.
 
-**Verify is cheap everywhere.** All standardized composites verify in
-**0.12–1.6 ms**, and the cost rides the classical curve (P-521 ~1.5 ms, P-256
-~0.15 ms), not the ML-DSA half. Against network RTT this is noise, so let curve
-choice follow the security level, not verify speed.
+**Certificate size** (per-connection bandwidth and chain-depth budget — usually
+the metric most likely to bite in TLS). The smallest certs at every level come
+from the experimental families: **SNOVA** (1.5 KB L1, 2.3 KB L3, 3.6 KB L5) and
+**Falcon-padded** (1.8 KB L1, 3.5 KB L5) — roughly half the size of the smallest
+standardized composite at the same level. Among the standardized (deployable)
+rows the EdDSA pairings are smallest (`mldsa44_ed25519` 4.0 KB, `mldsa65_ed25519`
+5.5 KB, `mldsa87_ed448` 7.5 KB). At the far end, **UOV** (67 KB) and **CROSS**
+(13.5 KB) carry a large public key in-band and are the worst fit for certificates.
 
-**The composite "tax" is small.** A composite cert is only ~130 bytes larger
-than the pure ML-DSA cert of the same level, with negligible added sign/verify
-time — the cost is in the primitives, not the EVP composition. Classical + PQ
-defence-in-depth is therefore inexpensive insurance.
+**Private-key size.** The composites store the PQ half as a 32-byte seed (see
+`pq_priv_seed`), so most composite private keys are tiny — 83–423 bytes — and are
+in fact *smaller* than the corresponding pure-ML-DSA reference key, which the
+default provider serializes in expanded form (2.6–5.0 KB). The exceptions are the
+families whose components have no seed encoding through the EVP path: RSA halves
+(1.2–2.4 KB), Falcon-padded (1.4–2.5 KB), and **UOV**, whose ~349 KB private key
+dwarfs everything else and rules it out where private keys are stored at scale.
 
-**Sensible default: `mldsa65_ecdsa_p384` (L3)** — 192-bit, ~5.6 KB cert, sub-ms
-keygen, ~0.7 ms verify. Drop to `mldsa44_ecdsa_p256` / `mldsa44_ed25519` (L1,
-~4 KB) only when size-constrained; go L5 only if the threat model demands it.
+**Keygen.** Cheapest are the EC/EdDSA-paired ML-DSA composites (0.1–0.2 ms at L1,
+still < 2 ms at L5) — indistinguishable from the pure-ML-DSA references, because
+the classical half is nearly free. The outliers are the **RSA** halves, whose
+keygen explodes to 36–423 ms (a 100–1000× penalty over EC at the same level), and
+**Falcon-padded**, which is the slowest experimental keygen (5.5 ms L1, 18 ms L5).
 
-**Weight the metrics by role.** `keygen + sign` is per-issuance cost (matters
-for a CA minting many / short-lived certs → avoid RSA halves there); `verify` is
-per-use cost (sub-2 ms, rarely the bottleneck); `cert` size is per-connection
-bandwidth and chain-depth budget (the metric most likely to bite in TLS).
+**Sign.** Fastest signers at L1 are the multivariate experimentals — **UOV**
+(0.30 ms) and **MAYO** (0.31 ms) — ahead of every ML-DSA composite; at higher
+levels the EdDSA pairings lead the standardized rows. The slowest signer by a
+wide margin is **MQOM2** (up to 8.5 ms at L5).
 
-## Informational (experimental families — not for deployment)
+**Verify.** Verify cost rides the *classical* curve, not the PQ half: fastest are
+the RSA and small-curve EC combos (0.12–0.16 ms at L1), rising with curve size
+(P-521 ≈ 1.6 ms). Against network RTT all standardized composites (0.12–1.6 ms)
+are noise. The only genuinely slow verifier is **MQOM2** (7.7 ms at L5).
 
-If certificate **size** is the binding constraint (constrained links, deep
-chains, embedded), the experimental data shows what a future *standardized*
-non-ML-DSA composite could offer: **SNOVA** (1.5 KB at L1, 3.6 KB at L5) and
-**Falcon-padded** (1.8 / 3.5 KB) produce the smallest certs — roughly half an
-ML-DSA composite. Worth tracking, not deploying.
+**Composite overhead vs. the pure PQ signature.** Comparing a composite to the
+pure ML-DSA reference of the same level, the added cost of carrying a classical
+half is small: the certificate grows by only ~130–500 bytes and sign/verify by a
+fraction of a millisecond — the cost lives in the primitives, not in the EVP
+composition. Classical + PQ defence-in-depth is therefore inexpensive on every
+axis except keygen (and there only for the RSA pairings).
 
-Some families are poor fits for **certificates specifically**, regardless of
-standardization status:
+## Deployability constraint (a fact, not a ranking)
 
-- **UOV** — 67 KB cert (huge public key). Disqualifying wherever the public key
-  travels in-band (TLS chains).
-- **MQOM2** — slowest sign + verify (up to ~8 ms / ~7 ms at L5) and 14 KB cert.
-- **CROSS** — 13.5 KB cert.
+Only the **standardized ML-DSA composite tier** carries real LAMPS OIDs, so today
+it is the only tier that can be presented to a non-cooperating relying party.
+That does not make ML-DSA the winner on any performance axis above — on cert size
+and (at L1) on sign speed the experimental families beat it — it only means the
+experimental rows are, for now, research artifacts. Several of them (SNOVA,
+Falcon-padded) are attractive enough on the size axis that they are worth
+tracking as standardization candidates; if standardized they would be the ones to
+prefer where certificate size binds. UOV, CROSS and MQOM2 remain poor fits for
+certificates regardless of standardization status:
 
-These have legitimate uses elsewhere (e.g. UOV's tiny, fast signatures suit
-sign-heavy scenarios where the public key is distributed out of band), but for
-X.509 certificates they are the ones to avoid.
+- **UOV** — 67 KB cert and ~349 KB private key (huge public/private key).
+  Disqualifying wherever the public key travels in-band (TLS chains) or private
+  keys are stored at scale, despite its very fast sign.
+- **MQOM2** — slowest sign + verify (up to ~8.5 ms / ~7.7 ms at L5) and 14 KB
+  cert at L5.
+- **CROSS** — 13.5 KB cert at L1.
+
+These families have legitimate uses elsewhere (e.g. UOV's tiny, fast signatures
+suit sign-heavy scenarios where the public key is distributed out of band), but
+for X.509 certificates they are the ones to avoid.

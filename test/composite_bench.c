@@ -9,6 +9,7 @@
  * for a PKI deployment:
  *
  *   - cert size   : DER length of a self-signed X.509 certificate
+ *   - sk size     : DER length of the PKCS8 private key (PrivateKeyInfo)
  *   - cert-gen    : keypair generation time + X509_sign time (reported separately)
  *   - cert-verify : X509_verify time
  *
@@ -95,9 +96,9 @@ static int bench_one(OSSL_LIB_CTX *ctx, const char *name, const char *tier,
 {
     EVP_PKEY *key = NULL;
     X509 *cert = NULL;
-    unsigned char *der = NULL;
+    unsigned char *der = NULL, *skder = NULL;
     double t0, keygen_ms, sign_ms, verify_ms;
-    int n, derlen = 0, ret = 0;
+    int n, derlen = 0, sklen = 0, ret = 0;
 
     /* Probe: if the first keygen fails, the components aren't available. */
     if ((key = gen_key(ctx, name, propq)) == NULL) {
@@ -117,6 +118,10 @@ static int bench_one(OSSL_LIB_CTX *ctx, const char *name, const char *tier,
         }
     }
     keygen_ms = (now_ms() - t0) / n;
+
+    /* private-key size: DER length of the PKCS8 PrivateKeyInfo */
+    if ((sklen = i2d_PrivateKey(key, &skder)) <= 0)
+        goto err;
 
     if ((cert = make_cert(ctx, key)) == NULL)
         goto err;
@@ -148,12 +153,13 @@ static int bench_one(OSSL_LIB_CTX *ctx, const char *name, const char *tier,
     }
     verify_ms = (now_ms() - t0) / n;
 
-    printf("  %-34s %-4s  %9.3f %9.3f %9.3f   %7d\n",
-           name, tier, keygen_ms, sign_ms, verify_ms, derlen);
+    printf("  %-34s %-4s  %9.3f %9.3f %9.3f   %7d %7d\n",
+           name, tier, keygen_ms, sign_ms, verify_ms, derlen, sklen);
     ret = 1;
 err:
     if (ret == 0)
         printf("  %-34s %-4s  ERROR\n", name, tier);
+    OPENSSL_free(skder);
     OPENSSL_free(der);
     X509_free(cert);
     EVP_PKEY_free(key);
@@ -185,10 +191,10 @@ int main(int argc, char **argv)
     OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier */
 
     printf("composite certificate benchmark — self-signed X.509 (DER)\n");
-    printf("  %-34s %-4s  %9s %9s %9s   %7s\n",
-           "algorithm", "tier", "keygen", "sign", "verify", "cert");
-    printf("  %-34s %-4s  %9s %9s %9s   %7s\n",
-           "", "", "(ms)", "(ms)", "(ms)", "(bytes)");
+    printf("  %-34s %-4s  %9s %9s %9s   %7s %7s\n",
+           "algorithm", "tier", "keygen", "sign", "verify", "cert", "sk");
+    printf("  %-34s %-4s  %9s %9s %9s   %7s %7s\n",
+           "", "", "(ms)", "(ms)", "(ms)", "(bytes)", "(bytes)");
 
     /*
      * Grouped by NIST security level so the standardized ML-DSA composites sit

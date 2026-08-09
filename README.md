@@ -24,9 +24,11 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
+**Algorithms served:** 42 hybrid KEMs + 26 hybrid signatures = 68 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 12 composite KEMs = 43 more, for 111 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.)
+
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
-`hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`) — those tables are
-the single source of truth. Names, OIDs and TLS code points match their origins:
+`hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
+in `composite_kem_prov.h`) — those tables are the single source of truth. Names, OIDs and TLS code points match their origins:
 the MLX hybrids follow the OpenSSL default provider, and every OQS-legacy hybrid
 follows [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 byte-for-byte (verified by the interop tests).
@@ -123,9 +125,10 @@ parameter set exists) from each family — Falcon (padded, so the signature is
 fixed-length), MAYO, CROSS, UOV, SNOVA and MQOM2 — with a level-matched ECDSA
 half (L1→P-256, L3→P-384, L5→P-521). These are **not** standardized: they carry
 non-normative labels and OIDs in the private arc OQS uses for its own hybrids
-(`1.3.9999.99.*`), and interoperate only with ourselves / a matching
-oqsprovider. Their component sizes and cert-gen/verify costs are reported by the
-`composite_bench` benchmark (see [TESTING.md](TESTING.md)).
+(`1.3.9999.99.*`), and interoperate only with this provider (oqsprovider supplies
+the PQ components but does not itself implement composites). Their component sizes
+and cert-gen/verify costs are reported by the `composite_bench` benchmark (see
+[TESTING.md](TESTING.md)).
 
 ### Composite ML-KEM (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 

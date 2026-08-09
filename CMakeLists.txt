@@ -331,6 +331,17 @@ if(HYBRID_COMPOSITE)
     set_tests_properties(composite_bench PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
+
+    # Guard the README "Algorithms served:" headline against silent drift:
+    # recomputes the KEM/SIG/composite counts from the source-of-truth tables
+    # and asserts the README number still matches. Built here (HYBRID_COMPOSITE)
+    # so all four tables — incl. composite sig/KEM — are in scope. Loads no
+    # provider; just includes the headers and reads ${CMAKE_SOURCE_DIR}/README.md.
+    add_executable(hybrid_count_test test/hybrid_count_test.c)
+    target_include_directories(hybrid_count_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_compile_definitions(hybrid_count_test PRIVATE HYBRID_COMPOSITE)
+    target_link_libraries(hybrid_count_test PRIVATE OpenSSL::Crypto)
+    add_test(NAME hybrid_count_test COMMAND hybrid_count_test ${CMAKE_SOURCE_DIR}/README.md)
 endif()
 
 # Separate-process CLI harnesses driven by test/hybrid_scenarios.sh. These are
