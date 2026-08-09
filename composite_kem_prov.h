@@ -73,6 +73,11 @@ typedef struct {
                              /* so strlen() gives the length — true even for the */
                              /* X25519 raw-byte label 5c 2e 2f 2f 5e 5c)         */
     int         security_bits;/* ML-KEM level strength (768 -> 192, 1024 -> 256) */
+    int         pq_priv_seed;/* PQ private-key serialization (mirrors the sig      */
+                             /* family): 1 = seed (ML-KEM seed, all standardized   */
+                             /* rows), 0 = raw private key (a future non-ML-KEM    */
+                             /* experimental combo, e.g. Frodo/BIKE/HQC, which      */
+                             /* serialize raw privs, not seeds).                   */
 } COMPOSITE_KEM_INFO;
 
 /*
@@ -95,7 +100,11 @@ typedef struct composite_kem_key_st {
  * Master composite-ML-KEM list — single source of truth (mirrors
  * COMPOSITE_SIG_LIST). One row per combination. To add a combo, add one row.
  *
- * X(cfield, name, pq_alg, trad_alg, trad_group, rsa_bits, oid, label, secbits)
+ * X(cfield, name, pq_alg, trad_alg, trad_group, rsa_bits, oid, label, secbits, seed)
+ *
+ * All standardized rows set seed=1 (PQ private = ML-KEM seed, per the draft); a
+ * future non-ML-KEM experimental row would set seed=0 to serialize a raw private
+ * key, exactly like the experimental composite-signature tier.
  *
  * The FULL draft-18 standardized matrix (12 combos, OIDs 1.3.6.1.5.5.7.6.55 .. .66),
  * each field taken from lamps-wg/draft-composite-kem src/algParams.md and the
@@ -107,33 +116,33 @@ typedef struct composite_kem_key_st {
 
 #define COMPOSITE_KEM_LIST(X)                                                  \
   X(mlkem768_rsa2048, "mlkem768_rsa2048", "ML-KEM-768", "RSA-OAEP", NULL,      \
-      2048, COMPOSITE_KEM_OID(55), "MLKEM768-RSAOAEP2048", 192)                \
+      2048, COMPOSITE_KEM_OID(55), "MLKEM768-RSAOAEP2048", 192, 1)             \
   X(mlkem768_rsa3072, "mlkem768_rsa3072", "ML-KEM-768", "RSA-OAEP", NULL,      \
-      3072, COMPOSITE_KEM_OID(56), "MLKEM768-RSAOAEP3072", 192)                \
+      3072, COMPOSITE_KEM_OID(56), "MLKEM768-RSAOAEP3072", 192, 1)             \
   X(mlkem768_rsa4096, "mlkem768_rsa4096", "ML-KEM-768", "RSA-OAEP", NULL,      \
-      4096, COMPOSITE_KEM_OID(57), "MLKEM768-RSAOAEP4096", 192)                \
+      4096, COMPOSITE_KEM_OID(57), "MLKEM768-RSAOAEP4096", 192, 1)             \
   X(mlkem768_x25519, "mlkem768_x25519", "ML-KEM-768", "X25519", NULL,          \
-      0, COMPOSITE_KEM_OID(58), "\x5c\x2e\x2f\x2f\x5e\x5c", 192)               \
+      0, COMPOSITE_KEM_OID(58), "\x5c\x2e\x2f\x2f\x5e\x5c", 192, 1)            \
   X(mlkem768_p256, "mlkem768_p256", "ML-KEM-768", "EC", "P-256",               \
-      0, COMPOSITE_KEM_OID(59), "MLKEM768-P256", 192)                          \
+      0, COMPOSITE_KEM_OID(59), "MLKEM768-P256", 192, 1)                       \
   X(mlkem768_p384, "mlkem768_p384", "ML-KEM-768", "EC", "P-384",               \
-      0, COMPOSITE_KEM_OID(60), "MLKEM768-P384", 192)                          \
+      0, COMPOSITE_KEM_OID(60), "MLKEM768-P384", 192, 1)                       \
   X(mlkem768_bp256, "mlkem768_bp256", "ML-KEM-768", "EC", "brainpoolP256r1",   \
-      0, COMPOSITE_KEM_OID(61), "MLKEM768-BP256", 192)                         \
+      0, COMPOSITE_KEM_OID(61), "MLKEM768-BP256", 192, 1)                      \
   X(mlkem1024_rsa3072, "mlkem1024_rsa3072", "ML-KEM-1024", "RSA-OAEP", NULL,   \
-      3072, COMPOSITE_KEM_OID(62), "MLKEM1024-RSAOAEP3072", 256)               \
+      3072, COMPOSITE_KEM_OID(62), "MLKEM1024-RSAOAEP3072", 256, 1)            \
   X(mlkem1024_p384, "mlkem1024_p384", "ML-KEM-1024", "EC", "P-384",            \
-      0, COMPOSITE_KEM_OID(63), "MLKEM1024-P384", 256)                         \
+      0, COMPOSITE_KEM_OID(63), "MLKEM1024-P384", 256, 1)                      \
   X(mlkem1024_bp384, "mlkem1024_bp384", "ML-KEM-1024", "EC", "brainpoolP384r1",\
-      0, COMPOSITE_KEM_OID(64), "MLKEM1024-BP384", 256)                        \
+      0, COMPOSITE_KEM_OID(64), "MLKEM1024-BP384", 256, 1)                     \
   X(mlkem1024_x448, "mlkem1024_x448", "ML-KEM-1024", "X448", NULL,             \
-      0, COMPOSITE_KEM_OID(65), "MLKEM1024-X448", 256)                         \
+      0, COMPOSITE_KEM_OID(65), "MLKEM1024-X448", 256, 1)                      \
   X(mlkem1024_p521, "mlkem1024_p521", "ML-KEM-1024", "EC", "P-521",            \
-      0, COMPOSITE_KEM_OID(66), "MLKEM1024-P521", 256)
+      0, COMPOSITE_KEM_OID(66), "MLKEM1024-P521", 256, 1)
 
 /* Generate the info table from the master list. */
-#define COMPOSITE_KEM_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, sb)             \
-    { nm, pq, tr, grp, bits, oid, lbl, sb },
+#define COMPOSITE_KEM_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, sb, seed)       \
+    { nm, pq, tr, grp, bits, oid, lbl, sb, seed },
 static const COMPOSITE_KEM_INFO composite_kem_table[] = {
     COMPOSITE_KEM_LIST(COMPOSITE_KEM_ROW)
 };

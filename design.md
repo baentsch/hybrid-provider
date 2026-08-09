@@ -240,7 +240,7 @@ are never blurred:
 | Tier | PQ component | OID arc | Wire contract |
 | --- | --- | --- | --- |
 | **standardized** | ML-DSA only | IANA/LAMPS registered (`…6.37`–`.54`) | byte-exact vs BouncyCastle / future OpenSSL-native; normative |
-| **experimental** | any other PQ sig — one per NIST level per OQS family: Falcon (padded), MAYO, CROSS, UOV, SNOVA, MQOM2 | disjoint private arc `1.3.9999.99.*` (a leaf of the arc OQS uses for its own hybrids) | non-normative; interop only with ourselves / oqsprovider-if-it-matches |
+| **experimental** | any other PQ sig — one per NIST level per OQS family: Falcon (padded), MAYO, CROSS, UOV, SNOVA, MQOM2 | disjoint private arc `1.3.9999.99.*` (a leaf of the arc OQS uses for its own hybrids) | non-normative; interop only with this provider (oqsprovider supplies the PQ components but implements no composites) |
 
 The split keeps *cede-to-default* symmetric with the hybrid family (see Future
 work): when OpenSSL ships native composite (ML-DSA only), the standardized subset

@@ -109,20 +109,24 @@ static size_t discover_pq_pub_len(COMPOSITE_KEM_KEY *key)
     return n;
 }
 
-/* Fixed ML-KEM seed length (64) — the composite private key's PQ split. */
+/* Fixed PQ private split: the ML-KEM seed (64, standardized) or, for a future
+ * non-ML-KEM combo, the component's raw private size. Mirrors the sig family. */
 static size_t discover_pq_priv_len(COMPOSITE_KEM_KEY *key)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
                                                  key->pq_propq);
+    const char *param = key->info->pq_priv_seed ? OSSL_PKEY_PARAM_ML_KEM_SEED
+                                                : OSSL_PKEY_PARAM_PRIV_KEY;
     EVP_PKEY *t = NULL;
     size_t n = 0;
 
     if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &t) > 0)
-        EVP_PKEY_get_octet_string_param(t, OSSL_PKEY_PARAM_ML_KEM_SEED,
-                                        NULL, 0, &n);
+        EVP_PKEY_get_octet_string_param(t, param, NULL, 0, &n);
     EVP_PKEY_free(t);
     EVP_PKEY_CTX_free(c);
-    return n != 0 ? n : COMPOSITE_KEM_MLKEM_SEED_BYTES;
+    if (n == 0 && key->info->pq_priv_seed)
+        n = COMPOSITE_KEM_MLKEM_SEED_BYTES;
+    return n;
 }
 
 /* Hand the decoded key back as an object reference (keymgmt LOAD materializes). */
