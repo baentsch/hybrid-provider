@@ -272,16 +272,26 @@ derr:
     }
 }
 
-/* ML-KEM ciphertext length for this key (fixed per level), via a size query. */
-static size_t mlkem_ct_len(EVP_PKEY *pq_key, OSSL_LIB_CTX *libctx,
-                           const char *propq)
+/* Fixed PQ ciphertext length for this combo, learned from a FRESH keypair rather
+ * than the decapsulation private key: a private key reconstructed from a raw octet
+ * (the experimental tier) may lack the public key that the encaps size query
+ * needs, whereas the ciphertext length is a fixed scheme parameter, so any
+ * freshly generated key of the same algorithm yields it. */
+static size_t pq_ct_len(const char *pq_alg, OSSL_LIB_CTX *libctx,
+                        const char *propq)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_pkey(libctx, pq_key, propq);
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, pq_alg, propq);
+    EVP_PKEY_CTX *e = NULL;
+    EVP_PKEY *t = NULL;
     size_t ctlen = 0, sslen = 0;
 
-    if (c != NULL && EVP_PKEY_encapsulate_init(c, NULL) > 0)
-        EVP_PKEY_encapsulate(c, NULL, &ctlen, NULL, &sslen);
-    EVP_PKEY_CTX_free(c);
+    if (g != NULL && EVP_PKEY_keygen_init(g) > 0 && EVP_PKEY_keygen(g, &t) > 0
+            && (e = EVP_PKEY_CTX_new_from_pkey(libctx, t, propq)) != NULL
+            && EVP_PKEY_encapsulate_init(e, NULL) > 0)
+        EVP_PKEY_encapsulate(e, NULL, &ctlen, NULL, &sslen);
+    EVP_PKEY_CTX_free(e);
+    EVP_PKEY_free(t);
+    EVP_PKEY_CTX_free(g);
     return ctlen;
 }
 
@@ -355,7 +365,7 @@ int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
     unsigned char *mlss = NULL, *trss = NULL, *trpk = NULL;
     unsigned char out_ss[COMPOSITE_KEM_SS_BYTES];
     size_t mlsslen = 0, trsslen = 0, trpklen = 0;
-    size_t mlctlen = mlkem_ct_len(pq_priv, libctx, pq_propq);
+    size_t mlctlen = pq_ct_len(info->pq_alg, libctx, pq_propq);
     int ret = 0;
 
     *ss = NULL;
