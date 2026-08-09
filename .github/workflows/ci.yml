@@ -114,6 +114,63 @@ jobs:
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
             -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_bench'
 
+  # ------------------------------------------------------------ deprecations ---
+  # Deprecation tripwire. hybrid-provider builds with -Werror=deprecated-declarations
+  # set unconditionally in CMakeLists, so any use of an API OpenSSL has deprecated
+  # is a hard error. This job arms that against BLEEDING-EDGE master, where new
+  # deprecations land first — e.g. the OpenSSL 4.1 int->size_t ASN.1 string
+  # accessors (ASN1_STRING_set/_length -> _set_data/_length_ex). Deliberately
+  # minimal: build OpenSSL master + the provider and every test target, no
+  # liboqs/oqs-provider and no test run, so it is a fast, isolated compile-time
+  # signal distinct from the exhaustive weekly matrix (which also enforces the flag
+  # but can go red for unrelated reasons). Non-gating, per the "don't track master
+  # on PRs" design; run it on demand with workflow_dispatch.
+  deprecations:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Deprecation tripwire (OpenSSL master)
+    runs-on: ubuntu-latest
+    env:
+      PREFIX: ${{ github.workspace }}/.local
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve OpenSSL master ref
+        id: ossl
+        run: |
+          set -euo pipefail
+          SHA=$(git ls-remote https://github.com/openssl/openssl refs/heads/master | cut -f1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL master: $SHA"
+
+      - name: Cache OpenSSL master
+        id: cache-ossl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PREFIX }}
+          key: deprec-ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
+
+      - name: Build OpenSSL master
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch master \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      # -Werror=deprecated-declarations is enforced by CMakeLists; the compile-only
+      # ASN1_STRING_length_ex feature test also runs here and must resolve to the
+      # new size_t API on master (see hybrid_asn1_compat.h).
+      - name: Configure hybrid provider
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON
+
+      # Compiles the provider and all test targets; a newly deprecated API fails
+      # the build. No ctest: the signal is compile-time, so no PQ toolchain needed.
+      - name: Build provider + tests (deprecation is a hard error)
+        run: cmake --build build -j"$(nproc)"
+
   # ----------------------------------------------------------------- weekly ---
   # Exhaustive per-OpenSSL-version floor matrix against bleeding-edge liboqs +
   # oqs-provider main. Re-validates the drop-in replacement contract as upstream

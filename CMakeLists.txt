@@ -3,6 +3,16 @@ project(hybrid-provider C)
 
 set(CMAKE_C_STANDARD 11)
 
+# Treat use of deprecated OpenSSL APIs as a hard error, for the provider and
+# every test target in this directory. Rationale: OpenSSL 4.1 deprecates the
+# int-typed ASN.1 string accessors (ASN1_STRING_set/_length) in favour of the
+# size_t _ex variants; we want that (and any future deprecation) to fail the
+# build here rather than slip by as a warning the way it does upstream. GCC/Clang
+# only — MSVC spells this differently and Linux is the target platform.
+if(NOT MSVC)
+    add_compile_options(-Werror=deprecated-declarations)
+endif()
+
 # Allow pointing to a local OpenSSL build:
 #   cmake .. -DOPENSSL_ROOT_DIR=../.local
 if(DEFINED OPENSSL_ROOT_DIR)
@@ -15,6 +25,34 @@ endif()
 # and composite needs 3.5+ (gated below), but neither raises the compile floor.
 find_package(OpenSSL 3.0 REQUIRED)
 message(STATUS "Using OpenSSL ${OPENSSL_VERSION} from ${OPENSSL_INCLUDE_DIR}")
+
+# OpenSSL 4.1 deprecated the int-typed ASN1_STRING_set()/ASN1_STRING_length() in
+# favour of the size_t ASN1_STRING_set_data()/ASN1_STRING_length_ex(). Detect the
+# new API by feature test, NOT by version: 4.1.0-dev reports the same version both
+# before and after the symbols landed, so OPENSSL_VERSION_NUMBER cannot tell them
+# apart. hybrid_asn1_compat.h selects on the resulting define.
+#
+# The probe is compile-only (STATIC_LIBRARY try-compile, so no link step) and
+# treats an implicit declaration as an error: that way it keys purely off whether
+# the OpenSSL *headers* declare the new symbol, independent of which libcrypto the
+# link resolves to (find_package can pick a mismatched system library).
+include(CheckCSourceCompiles)
+set(_hp_saved_ttype "${CMAKE_TRY_COMPILE_TARGET_TYPE}")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+set(CMAKE_REQUIRED_INCLUDES "${OPENSSL_INCLUDE_DIR}")
+if(NOT MSVC)
+    set(CMAKE_REQUIRED_FLAGS "-Werror=implicit-function-declaration")
+endif()
+check_c_source_compiles("
+#include <openssl/asn1.h>
+size_t hp_probe(const ASN1_STRING *s) { return ASN1_STRING_length_ex(s); }
+" HAVE_ASN1_STRING_LENGTH_EX)
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_FLAGS)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_hp_saved_ttype}")
+if(HAVE_ASN1_STRING_LENGTH_EX)
+    add_compile_definitions(HAVE_ASN1_STRING_LENGTH_EX)
+endif()
 
 # Locate the matching `openssl` CLI (next to the OpenSSL we build against), used
 # by the separate-process shell scenario tests. Derived from the crypto lib's

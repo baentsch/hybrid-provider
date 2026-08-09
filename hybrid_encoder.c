@@ -14,6 +14,7 @@
  */
 
 #include "hybrid_prov.h"
+#include "hybrid_asn1_compat.h"
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/encoder.h>
@@ -215,7 +216,7 @@ static PKCS8_PRIV_KEY_INFO *hybrid_key_to_p8info(HYBRID_KEY *key)
     if (oidstr == NULL || (oid = OBJ_txt2obj(oidstr, 1)) == NULL
         || !hybrid_encode_priv_blob(key, &blob, &bloblen)
         || (oct = ASN1_OCTET_STRING_new()) == NULL
-        || !ASN1_STRING_set(oct, blob, (int)bloblen)
+        || !hybrid_asn1_octet_set(oct, blob, bloblen)
         || (innerlen = i2d_ASN1_OCTET_STRING(oct, &inner)) < 0
         || (p8 = PKCS8_PRIV_KEY_INFO_new()) == NULL)
         goto err;
