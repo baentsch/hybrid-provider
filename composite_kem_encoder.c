@@ -231,13 +231,13 @@ static int component_priv(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
     return 1;
 }
 
-/* PQ private material: the ML-KEM 64-byte seed for standardized combos, else the
- * raw private key (a future non-ML-KEM combo). Mirrors composite_encoder.c. */
+/* PQ private material: the param named by the row (the ML-KEM seed for
+ * standardized combos; a different seed param or the raw private key for a future
+ * non-ML-KEM combo). No ML-KEM assumption. */
 static int component_pq_priv(EVP_PKEY *pq, const COMPOSITE_KEM_INFO *info,
                              unsigned char **buf, size_t *len)
 {
-    const char *param = info->pq_priv_seed ? OSSL_PKEY_PARAM_ML_KEM_SEED
-                                           : OSSL_PKEY_PARAM_PRIV_KEY;
+    const char *param = info->pq_priv_param;
     size_t n = 0;
 
     if (EVP_PKEY_get_octet_string_param(pq, param, NULL, 0, &n) <= 0 || n == 0)
