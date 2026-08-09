@@ -19,6 +19,24 @@
 
 #include <limits.h>
 #include <openssl/asn1.h>
+#include <openssl/opensslv.h>       /* OPENSSL_VERSION_NUMBER (build-system fallback) */
+
+/*
+ * HAVE_ASN1_STRING_LENGTH_EX is normally provided by the CMake feature test (see
+ * CMakeLists.txt) — the reliable signal. If this header is compiled outside that
+ * build system the macro is absent; rather than silently drop to the deprecated
+ * int API on an OpenSSL that offers the size_t one, fall back to a version check
+ * (best effort — 4.1.0-dev is ambiguous, hence the feature test) and warn loudly
+ * that the proper detection did not run.
+ */
+#if !defined(HAVE_ASN1_STRING_LENGTH_EX) && OPENSSL_VERSION_NUMBER >= 0x40100000L
+#  if defined(_MSC_VER)
+#    pragma message("hybrid_asn1_compat.h: HAVE_ASN1_STRING_LENGTH_EX not set by the build system; assuming the OpenSSL 4.1 size_t ASN.1 API. Build via CMake for a reliable feature test.")
+#  else
+#    warning "hybrid_asn1_compat.h: HAVE_ASN1_STRING_LENGTH_EX not set by the build system; assuming the OpenSSL 4.1 size_t ASN.1 API. Build via CMake for a reliable feature test."
+#  endif
+#  define HAVE_ASN1_STRING_LENGTH_EX 1
+#endif
 
 /* Set an ASN1_STRING's contents from a size_t-length buffer. Returns 1 on
  * success, 0 on failure (including a length the legacy int API cannot hold). */
