@@ -15,7 +15,8 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+    - cron: "0 3 * * *"   # nightly 03:00 UTC — deprecation tripwire
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC — weekly exhaustive matrix
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -122,13 +123,20 @@ jobs:
   # accessors (ASN1_STRING_set/_length -> _set_data/_length_ex). Deliberately
   # minimal: build OpenSSL master + the provider and every test target, no
   # liboqs/oqs-provider and no test run, so it is a fast, isolated compile-time
-  # signal distinct from the exhaustive weekly matrix (which also enforces the flag
-  # but can go red for unrelated reasons). Non-gating, per the "don't track master
-  # on PRs" design; run it on demand with workflow_dispatch.
+  # signal distinct from the exhaustive weekly matrix.
+  #
+  # NIGHTLY, never gating: it does not run on push/PR (see regular's `if`), so it
+  # never blocks a merge. When the provider build breaks — i.e. master deprecated
+  # an API we use — it opens (or bumps) a tracking issue in THIS repo so the
+  # regression is not lost in the Actions history. Run on demand with
+  # workflow_dispatch.
   deprecations:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 3 * * *'
     name: Deprecation tripwire (OpenSSL master)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     env:
       PREFIX: ${{ github.workspace }}/.local
     steps:
@@ -169,14 +177,51 @@ jobs:
       # Compiles the provider and all test targets; a newly deprecated API fails
       # the build. No ctest: the signal is compile-time, so no PQ toolchain needed.
       - name: Build provider + tests (deprecation is a hard error)
+        id: build
         run: cmake --build build -j"$(nproc)"
+
+      # Only when the *provider build* itself broke (not an OpenSSL/infra failure,
+      # which leaves this step 'skipped'): open a tracking issue, or bump an
+      # existing open one, so a new upstream deprecation is not lost in the Actions
+      # history. Idempotent — one issue at a time, deduped by title.
+      - name: Open/refresh a tracking issue on build failure
+        if: always() && steps.build.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Deprecation tripwire: hybrid-provider fails to build against OpenSSL master"
+          cat > /tmp/tripwire-body.md <<EOF
+          The nightly deprecation tripwire failed: hybrid-provider no longer builds
+          against OpenSSL master under -Werror=deprecated-declarations.
+
+          Most likely an OpenSSL API our code uses was newly deprecated on master.
+          See hybrid_asn1_compat.h for the pattern used for the 4.1 ASN.1 deprecation
+          (compile-time feature test + size_t shim, no #pragma silencing).
+
+          - Run: ${RUN_URL}
+          - Commit: ${GITHUB_SHA}
+          EOF
+          # Ensure the label exists (ignore if already present), then dedupe by title.
+          gh label create deprecation --color b60205 \
+            --description "Nightly OpenSSL deprecation tripwire" 2>/dev/null || true
+          NUM=$(gh issue list --state open --search "in:title $TITLE" \
+                  --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "Still failing — ${RUN_URL} (commit ${GITHUB_SHA})."
+          else
+            gh issue create --title "$TITLE" --label deprecation --body-file /tmp/tripwire-body.md
+          fi
 
   # ----------------------------------------------------------------- weekly ---
   # Exhaustive per-OpenSSL-version floor matrix against bleeding-edge liboqs +
   # oqs-provider main. Re-validates the drop-in replacement contract as upstream
   # moves and surfaces OQS_CEDE_HYBRIDS patch drift early. Never gates a PR.
   weekly:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Monday cron or manual only — NOT the nightly cron (that is the tripwire's).
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 * * 1'
     name: OpenSSL ${{ matrix.openssl.name }} (main deps)
     runs-on: ubuntu-latest
     strategy:
