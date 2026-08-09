@@ -535,12 +535,12 @@ static OSSL_ALGORITHM *hybrid_filter_algs(const OSSL_ALGORITHM *src)
  * Withdraw the composite algorithms that require the 3.5 ML-DSA/ML-KEM seed API.
  * The standardized composite tiers serialize the PQ private key AS its seed
  * (draft mandate), which needs OpenSSL 3.5; below that the seed API is absent, so
- * on <3.5 mark every standardized composite signature (tier STANDARD) and every
- * composite ML-KEM (all seed-based) as ceded. That leaves only the experimental
- * composite signatures — which serialize the raw private key (present since 3.0)
- * — advertised. Compiles to nothing on >=3.5. Independent of cede-to-default:
- * these are withdrawn because we cannot honor them, not because the default
- * provider serves them.
+ * on <3.5 mark every standardized composite signature and every standardized
+ * composite ML-KEM (both seed-based, tier STANDARD) as ceded. That leaves the
+ * experimental tiers — which serialize the raw private key (present since 3.0) —
+ * advertised. Compiles to nothing on >=3.5. Independent of cede-to-default: these
+ * are withdrawn because we cannot honor them, not because the default provider
+ * serves them.
  */
 static void hybrid_withdraw_seedless_composites(void)
 {
@@ -551,7 +551,8 @@ static void hybrid_withdraw_seedless_composites(void)
         if (composite_sig_table[i].tier == COMPOSITE_TIER_STANDARD)
             hybrid_mark_ceded(composite_sig_table[i].name);
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
-        hybrid_mark_ceded(composite_kem_table[i].name);
+        if (composite_kem_table[i].tier == COMPOSITE_KEM_TIER_STANDARD)
+            hybrid_mark_ceded(composite_kem_table[i].name);
 #endif
 }
 #endif /* HYBRID_COMPOSITE */
@@ -778,19 +779,22 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
                 (void)c_obj_add_sigid(handle, cin->name, "", cin->name);
             }
         }
-#if COMPOSITE_SEED_AVAILABLE
         {   /* composite ML-KEM: register the OID<->name mapping only (a KEM is
              * not a signature, so no add_sigid). Lets the X.509 / CLI layers map
-             * a composite-KEM SPKI OID back to the algorithm name. All composite
-             * ML-KEM combos are seed-based, so this whole tier is 3.5+ only. */
+             * a composite-KEM SPKI OID back to the algorithm name. Skip the
+             * standardized (seed-based) rows below 3.5, where they are not
+             * served; the experimental raw-private rows are registered always. */
             size_t ki;
 
-            for (ki = 0; ki < COMPOSITE_KEM_ALG_COUNT; ki++)
-                (void)c_obj_create(handle, composite_kem_table[ki].oid,
-                                   composite_kem_table[ki].name,
-                                   composite_kem_table[ki].name);
+            for (ki = 0; ki < COMPOSITE_KEM_ALG_COUNT; ki++) {
+                const COMPOSITE_KEM_INFO *kin = &composite_kem_table[ki];
+
+                if (!COMPOSITE_SEED_AVAILABLE
+                        && kin->tier == COMPOSITE_KEM_TIER_STANDARD)
+                    continue;
+                (void)c_obj_create(handle, kin->oid, kin->name, kin->name);
+            }
         }
-#endif
 #endif
         ERR_pop_to_mark();
     }

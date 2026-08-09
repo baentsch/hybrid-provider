@@ -323,11 +323,25 @@ if(HYBRID_COMPOSITE)
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 
-    # Standardized-tier tests: the composite draft KATs and the whole composite
-    # ML-KEM family are seed-based, so they only apply on OpenSSL 3.5+. On <3.5 the
+    # Composite ML-KEM provider round-trip: keygen/encaps/decaps + SPKI + PKCS8
+    # for every combo, driven through EVP by name (provider=hybrid). Runs on all
+    # versions: the standardized rows self-skip below 3.5 (not registered), the
+    # experimental Frodo/BIKE/HQC rows run from the oqsprovider floor (3.2+).
+    add_executable(composite_kem_prov_test test/composite_kem_prov_test.c)
+    target_include_directories(composite_kem_prov_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_kem_prov_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_kem_prov_test hybrid-provider)
+    add_test(NAME composite_kem_prov_test COMMAND composite_kem_prov_test)
+    set_tests_properties(composite_kem_prov_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # Standardized-tier tests: the composite draft KATs and the ML-KEM combiner /
+    # KAT tests are seed-based, so they only apply on OpenSSL 3.5+. On <3.5 the
     # standardized tiers are not registered; the experimental composite signatures
-    # are covered by composite_sig_test / composite_test, which self-skip the
-    # standardized rows.
+    # are covered by composite_sig_test / composite_test and the experimental
+    # composite KEMs by composite_kem_prov_test, which self-skip the standardized
+    # rows.
     if(COMPOSITE_SEED)
     # KAT interop: verify the draft-19 reference test vectors (real cross-impl
     # check against lamps-wg/draft-composite-sigs, distilled into composite_kat.txt).
@@ -348,17 +362,6 @@ if(HYBRID_COMPOSITE)
     target_link_libraries(composite_kem_test PRIVATE OpenSSL::Crypto)
     add_test(NAME composite_kem_test COMMAND composite_kem_test)
     set_tests_properties(composite_kem_test PROPERTIES
-        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
-    )
-
-    # Composite ML-KEM provider round-trip: keygen/encaps/decaps + SPKI + PKCS8
-    # for every combo, driven through EVP by name (provider=hybrid).
-    add_executable(composite_kem_prov_test test/composite_kem_prov_test.c)
-    target_include_directories(composite_kem_prov_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
-    target_link_libraries(composite_kem_prov_test PRIVATE OpenSSL::Crypto)
-    add_dependencies(composite_kem_prov_test hybrid-provider)
-    add_test(NAME composite_kem_prov_test COMMAND composite_kem_prov_test)
-    set_tests_properties(composite_kem_prov_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 

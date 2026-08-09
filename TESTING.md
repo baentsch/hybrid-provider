@@ -79,11 +79,11 @@ asserts the version contract per running OpenSSL:
 - **composite signatures** — standardized (ML-DSA) tier OpenSSL **3.5+** (the
   draft mandates a *seed* private key, which needs the 3.5 seed API); experimental
   (Falcon/MAYO/CROSS/UOV/SNOVA/MQOM2) tier **3.2+** (raw private key, no seed API),
-- **composite KEMs** — OpenSSL **3.5+**. Every composite ML-KEM combo is
-  standardized (seed-based), so there is no lower experimental floor here yet: the
-  KEM family has no experimental tier (see #34), so below 3.5 it is not served at
-  all. (A non-normative raw-private research KEM tier *could* run on 3.2+, exactly
-  like the experimental sigs — the machinery supports it — but no such rows exist.)
+- **composite KEMs** — standardized (ML-KEM) tier OpenSSL **3.5+** (seed private
+  key); experimental (FrodoKEM/BIKE/HQC) tier **3.2+** (raw private key, no seed
+  API). Below 3.5 the standardized ML-KEM combos self-deactivate and only the
+  experimental composite KEMs are served; `composite_kem_prov_test` self-skips the
+  rows it cannot serve on a given version.
 
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).

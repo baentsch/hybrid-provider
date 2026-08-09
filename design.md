@@ -216,7 +216,9 @@ this same provider* implements composite ML-DSA
 API); the **experimental** tier serializes the raw private key and so runs from
 the oqsprovider floor (3.2+). Below 3.5 the standardized tiers self-deactivate at
 registration (`COMPOSITE_SEED_AVAILABLE` in `composite_prov.h`), leaving only the
-experimental composite signatures. Unlike the concatenation hybrids, composite
+experimental composite signatures and KEMs (the composite ML-KEM family has the
+same two-tier split — standardized ML-KEM 3.5+, experimental FrodoKEM/BIKE/HQC
+3.2+). Unlike the concatenation hybrids, composite
 uses the draft's message representative and raw-concat serialization, keyed off
 `COMPOSITE_SIG_LIST` in `composite_prov.h`:
 

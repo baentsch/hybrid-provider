@@ -27,12 +27,12 @@ make
 
 Requires OpenSSL 3.0+ (3.0-era EVP only). Effective floor is per component:
 hybrid KEMs 3.0+, hybrid sigs 3.2+ (oqsprovider floor), experimental composite
-signatures 3.2+ (raw private key, no seed API), standardized composite
+signatures and KEMs 3.2+ (raw private key, no seed API), standardized composite
 (ML-DSA/ML-KEM) and any use of the default provider's native ML-KEM/ML-DSA 3.5+
 (seed API; native PQ landed in 3.5.0). On 3.0–3.4 the PQ half comes from
 oqsprovider; on 3.5+ from the default provider. The standardized composite tiers
-self-deactivate below 3.5 (only the experimental composite signatures are served
-there). Interop tests against default provider hybrid KEMs require 3.5+.
+self-deactivate below 3.5 (only the experimental composite signatures and KEMs
+are served there). Interop tests against default provider hybrid KEMs require 3.5+.
 
 ## Testing Requirements
 
