@@ -130,7 +130,7 @@ the PQ components but does not itself implement composites). Because they
 serialize the raw PQ private key rather than a seed, they need no 3.5 seed API and
 run from the oqsprovider floor (OpenSSL 3.2+) — unlike the standardized tiers,
 which require 3.5. Their component sizes and cert-gen/verify costs are reported by
-the `composite_bench` benchmark (see [TESTING.md](TESTING.md)).
+the `composite_sig_bench` benchmark (see [TESTING.md](TESTING.md)).
 
 ### Composite ML-KEM (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 

@@ -97,7 +97,8 @@ hybrid-provider/
     ├── hybrid_replace_test.c      ← drop-in replacement over PQ-only oqsprovider (OQS_CEDE_HYBRIDS)
     ├── patches/                   ← in-repo oqsprovider patches (cede-hybrids lever)
     ├── composite_*_test.c         ← composite combiner/provider/draft-19 KAT
-    ├── composite_bench.c          ← composite cert size + cert-gen/verify benchmark
+    ├── composite_sig_bench.c      ← composite cert size + cert-gen/verify benchmark
+│   ├── composite_kem_bench.c      ← composite KEM keygen/encaps/decaps + pk/ct/sk sizes
     ├── hybrid_bench.c             ← keygen/encaps/decaps benchmark vs default provider
     └── hybrid_scenarios.sh        ← CLI (s_server/s_client) TLS interop harness
 ```
