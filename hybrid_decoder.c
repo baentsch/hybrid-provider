@@ -21,6 +21,7 @@
  */
 
 #include "hybrid_prov.h"
+#include "hybrid_asn1_compat.h"
 #include <openssl/x509.h>
 #include <openssl/asn1t.h>
 #include <openssl/core_object.h>
@@ -179,7 +180,13 @@ void *hybrid_spki_parse(const unsigned char *der, size_t derlen,
      */
     X509_ALGOR_get0(oid, NULL, NULL, spki->algor);
     *pub = ASN1_STRING_get0_data(spki->public_key);
-    *publen = ASN1_STRING_length(spki->public_key);
+    {
+        size_t plen = hybrid_asn1_string_length(spki->public_key);
+
+        /* publen is int (shared signature); a public key that large is
+         * impossible, but flag it so callers' length checks decline it. */
+        *publen = plen > (size_t)INT_MAX ? -1 : (int)plen;
+    }
     return spki;
 }
 
@@ -301,12 +308,14 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         goto end;
 
     /* Inner OCTET STRING wraps the raw blob. Use ASN1_STRING accessors: the
-     * struct is opaque under OpenSSL 4.x. */
-    if ((oct = d2i_ASN1_OCTET_STRING(NULL, &inner, innerlen)) == NULL
-        || ASN1_STRING_length(oct) < 4)
+     * struct is opaque under OpenSSL 4.x, and hybrid_asn1_string_length() also
+     * shields the 4.1 int->size_t deprecation (see hybrid_asn1_compat.h). */
+    if ((oct = d2i_ASN1_OCTET_STRING(NULL, &inner, innerlen)) == NULL)
         goto end;
     octdata = ASN1_STRING_get0_data(oct);
-    octlen = (size_t)ASN1_STRING_length(oct);
+    octlen = hybrid_asn1_string_length(oct);
+    if (octlen < 4)
+        goto end;
     clen = ((uint32_t)octdata[0] << 24) | ((uint32_t)octdata[1] << 16)
          | ((uint32_t)octdata[2] << 8) | (uint32_t)octdata[3];
 

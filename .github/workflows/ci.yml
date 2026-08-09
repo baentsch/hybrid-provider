@@ -15,7 +15,8 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC — weekly exhaustive matrix
+                          # (the nightly deprecation tripwire is its own workflow)
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

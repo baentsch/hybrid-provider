@@ -1,0 +1,109 @@
+name: Deprecation tripwire
+
+# Nightly, never gating. hybrid-provider builds with -Werror=deprecated-declarations
+# set unconditionally in CMakeLists, so any use of an API OpenSSL has deprecated is a
+# hard error. This workflow arms that against BLEEDING-EDGE OpenSSL master, where new
+# deprecations land first — e.g. the OpenSSL 4.1 int->size_t ASN.1 string accessors
+# (ASN1_STRING_set/_length -> _set_data/_length_ex). Deliberately minimal: build
+# OpenSSL master + the provider and every test target, no liboqs/oqs-provider and no
+# ctest, so it is a fast, isolated compile-time signal.
+#
+# It lives in its own file (rather than a job gated on a cron string inside ci.yml) so
+# the schedule is unambiguous: this workflow only ever runs on the nightly cron and on
+# demand, and it never runs on push/PR, so it cannot block a merge. When the provider
+# build breaks — i.e. master deprecated an API we use — it opens (or bumps) a tracking
+# issue in THIS repo so the regression is not lost in the Actions history.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"   # nightly 03:00 UTC
+
+concurrency:
+  group: deprecation-tripwire-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tripwire:
+    name: OpenSSL master build (deprecation = hard error)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      PREFIX: ${{ github.workspace }}/.local
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve OpenSSL master ref
+        id: ossl
+        run: |
+          set -euo pipefail
+          SHA=$(git ls-remote https://github.com/openssl/openssl refs/heads/master | cut -f1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL master: $SHA"
+
+      - name: Cache OpenSSL master
+        id: cache-ossl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PREFIX }}
+          key: deprec-ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
+
+      - name: Build OpenSSL master
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch master \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      # -Werror=deprecated-declarations is enforced by CMakeLists; the compile-only
+      # ASN1_STRING_length_ex feature test also runs here and must resolve to the new
+      # size_t API on master (see hybrid_asn1_compat.h).
+      - name: Configure hybrid provider
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON
+
+      # Compiles the provider and all test targets; a newly deprecated API fails the
+      # build. No ctest: the signal is compile-time, so no PQ toolchain needed.
+      - name: Build provider + tests (deprecation is a hard error)
+        id: build
+        run: cmake --build build -j"$(nproc)"
+
+      # Only when the *provider build* itself broke (not an OpenSSL/infra failure,
+      # which leaves this step 'skipped'): open a tracking issue, or bump an existing
+      # open one, so a new upstream deprecation is not lost in the Actions history.
+      # Idempotent — one issue at a time, deduped by title.
+      - name: Open/refresh a tracking issue on build failure
+        if: always() && steps.build.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Deprecation tripwire: hybrid-provider fails to build against OpenSSL master"
+          cat > /tmp/tripwire-body.md <<EOF
+          The nightly deprecation tripwire failed: hybrid-provider no longer builds
+          against OpenSSL master under -Werror=deprecated-declarations.
+
+          Most likely an OpenSSL API our code uses was newly deprecated on master.
+          See hybrid_asn1_compat.h for the pattern used for the 4.1 ASN.1 deprecation
+          (compile-time feature test + size_t shim, no #pragma silencing).
+
+          - Run: ${RUN_URL}
+          - Commit: ${GITHUB_SHA}
+          EOF
+          # Ensure the label exists (ignore if already present), then dedupe by title.
+          gh label create deprecation --color b60205 \
+            --description "Nightly OpenSSL deprecation tripwire" 2>/dev/null || true
+          NUM=$(gh issue list --state open --search "in:title $TITLE" \
+                  --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "Still failing — ${RUN_URL} (commit ${GITHUB_SHA})."
+          else
+            gh issue create --title "$TITLE" --label deprecation --body-file /tmp/tripwire-body.md
+          fi
