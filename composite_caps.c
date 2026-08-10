@@ -12,10 +12,19 @@
  * is 0 (the experimental tier, and any combo the TLS draft does not enumerate)
  * are skipped at advertisement time.
  *
- * The code points are from draft-reddy-tls-composite-mldsa (an early *individual*
- * draft, not WG-adopted) and are still **TBD in IANA**, so they are provisional
- * and only guaranteed to interoperate between peers that agree on them out of
- * band (e.g. two instances of this provider). See design.md (Composite signatures).
+ * draft-reddy-tls-composite-mldsa (an early *individual* draft, not WG-adopted)
+ * enumerates which combos get a TLS sigalg, but we deliberately do NOT reuse its
+ * code points: they sit in IANA-managed SignatureScheme space and a real
+ * allocation can overrun a provisional value. OpenSSL 4.1 added native SLH-DSA at
+ * 0x0911-0x091C, colliding with draft-reddy's 0x0912 for mldsa87_ed448 and
+ * silently shadowing our advertisement in libssl's dedup (issue #38). Instead we
+ * assign private-use code points (RFC 8446 SignatureScheme 0xFE00-0xFFFF) like the
+ * hybrid families, which can never collide with an IANA allocation. They are still
+ * provisional and only interoperate between peers that agree out of band (e.g. two
+ * instances of this provider). See design.md (Composite signatures).
+ *
+ * As a guard against regressing into managed space, advertisement below refuses
+ * any code point outside the private-use range.
  */
 #include "composite_prov.h"
 #include <openssl/core_names.h>
@@ -85,6 +94,13 @@ int composite_get_capabilities(void *provctx, const char *capability,
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {
         if (composite_sigalg_list[i].code_point == 0)
             continue;   /* no (provisional) TLS code point -> not advertised */
+        /* Advertise only private-use code points (RFC 8446 SignatureScheme
+         * 0xFE00-0xFFFF). A provisional value in IANA-managed space can be
+         * silently shadowed by a later native sigalg (SLH-DSA took 0x0911-0x091C
+         * in OpenSSL 4.1, overrunning draft-reddy's 0x0912; issue #38), so any
+         * code point outside the private-use range is refused here. */
+        if (composite_sigalg_list[i].code_point < 0xFE00)
+            continue;
         /* Withdrawn because the default provider serves it (cede-to-default,
          * e.g. once OpenSSL ships native composite signatures). */
         if (hybrid_is_ceded(composite_sig_table[i].name))
