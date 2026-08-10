@@ -509,6 +509,21 @@ the KEM API. The code points are kept in lockstep with their origins by
 `hybrid_capability_test`, which compares them against the live default/oqsprovider
 capabilities.
 
+The **standardized composite signatures** (`composite_caps.c`) are the one
+exception to "code points match their origin". `draft-reddy-tls-composite-mldsa`
+(an individual draft, not WG-adopted, TBD in IANA) enumerates which composite
+combos become TLS sigalgs, but its own code points sit in IANA-managed
+SignatureScheme space — where a later real allocation can overrun a provisional
+value. That happened: OpenSSL 4.1 added native SLH-DSA at `0x0911`–`0x091C`,
+colliding with draft-reddy's `0x0912` for `mldsa87_ed448`; libssl's sigalg dedup
+then silently shadowed the provider's advertisement, so a server holding an
+`mldsa87_ed448` certificate could find no usable sigalg (issue #38). Because these
+combos are provisional and only interoperate between peers that agree out of band,
+we assign them **private-use** code points (RFC 8446 SignatureScheme
+`0xFE00`–`0xFFFF`, sub-block `0xFFE0`..) like the hybrid families — collision-proof
+against future IANA allocations. `composite_caps.c` enforces the private-use range
+as a guard, refusing to advertise any composite code point outside it.
+
 The MLX groups are advertised under their **canonical names and codepoints**,
 identical to the default provider's. Because the default provider also
 implements them, both would collide on the group name — so **by default the

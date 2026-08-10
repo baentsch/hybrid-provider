@@ -159,9 +159,18 @@ typedef struct composite_key_st {
  * SHA-384, P-521 -> SHA-512); for RSA-PKCS#1v1.5 it is the shaNNNWithRSAEncryption
  * hash; for RSA-PSS it is the PSS hash; NULL for the pure EdDSA combos. Every row
  * here is KAT-validated against src/testvectors.json (test/composite_kat.txt).
- * `tls_codepoint` (provisional draft-reddy-tls-composite-mldsa, TBD in IANA) is
- * the single source read by composite_caps.c, set only for the combos the TLS
- * draft enumerates and 0 otherwise; `security_bits` is the ML-DSA level's strength.
+ * `tls_codepoint` is the single source read by composite_caps.c, set only for
+ * the combos the TLS draft (draft-reddy-tls-composite-mldsa) enumerates and 0
+ * otherwise; `security_bits` is the ML-DSA level's strength. NOTE: we do NOT use
+ * draft-reddy's own code points. That individual draft (not WG-adopted, TBD in
+ * IANA) places its values in IANA-managed SignatureScheme space, where a real
+ * allocation can overrun them: OpenSSL 4.1 added native SLH-DSA at 0x0911-0x091C,
+ * which collided with draft-reddy's 0x0912 for mldsa87_ed448 and silently
+ * shadowed our advertisement (issue #38). Since these combos are provisional and
+ * only interoperate between peers that agree out of band anyway, we assign
+ * private-use code points (RFC 8446 SignatureScheme 0xFE00-0xFFFF, sub-block
+ * 0xFFE0..) like the hybrid families -- collision-proof against future IANA
+ * allocations. composite_caps.c enforces the private-use range as a guard.
  */
 #define COMPOSITE_SIG_LIST(X)                                                  \
   /* --- standardized (LAMPS Composite ML-DSA), OID order .37 .. .54 --- */    \
@@ -176,10 +185,10 @@ typedef struct composite_key_st {
       "SHA512", NULL, OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0, 128)                      \
   X(mldsa44_ecdsa_p256, "mldsa44_ecdsa_p256", "ML-DSA-44", "EC", "P-256",      \
       0, "1.3.6.1.5.5.7.6.40", "COMPSIG-MLDSA44-ECDSA-P256-SHA256",            \
-      "SHA256", "SHA256", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0x0907, 128)             \
+      "SHA256", "SHA256", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0xFFE0, 128)             \
   X(mldsa65_rsa3072_pss, "mldsa65_rsa3072_pss", "ML-DSA-65", "RSA-PSS", NULL,  \
       3072, "1.3.6.1.5.5.7.6.41", "COMPSIG-MLDSA65-RSA3072-PSS-SHA512",        \
-      "SHA512", "SHA256", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0x0910, 192)             \
+      "SHA512", "SHA256", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0xFFE1, 192)             \
   X(mldsa65_rsa3072_pkcs15, "mldsa65_rsa3072_pkcs15", "ML-DSA-65", "RSA", NULL,\
       3072, "1.3.6.1.5.5.7.6.42", "COMPSIG-MLDSA65-RSA3072-PKCS15-SHA512",     \
       "SHA512", "SHA256", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0, 192)                  \
@@ -201,17 +210,17 @@ typedef struct composite_key_st {
       "SHA512", "SHA256", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0, 192)                  \
   X(mldsa65_ed25519, "mldsa65_ed25519", "ML-DSA-65", "ED25519", NULL,          \
       0, "1.3.6.1.5.5.7.6.48", "COMPSIG-MLDSA65-Ed25519-SHA512",               \
-      "SHA512", NULL, OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0x090B, 192)                 \
+      "SHA512", NULL, OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0xFFE2, 192)                 \
   X(mldsa87_ecdsa_p384, "mldsa87_ecdsa_p384", "ML-DSA-87", "EC", "P-384",      \
       0, "1.3.6.1.5.5.7.6.49", "COMPSIG-MLDSA87-ECDSA-P384-SHA512",            \
-      "SHA512", "SHA384", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0x0909, 256)             \
+      "SHA512", "SHA384", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0xFFE3, 256)             \
   X(mldsa87_ecdsa_bp384, "mldsa87_ecdsa_bp384", "ML-DSA-87", "EC",             \
       "brainpoolP384r1", 0, "1.3.6.1.5.5.7.6.50",                              \
       "COMPSIG-MLDSA87-ECDSA-BP384-SHA512",                                    \
       "SHA512", "SHA384", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0, 256)                  \
   X(mldsa87_ed448, "mldsa87_ed448", "ML-DSA-87", "ED448", NULL,                \
       0, "1.3.6.1.5.5.7.6.51", "COMPSIG-MLDSA87-Ed448-SHAKE256",               \
-      "SHAKE256", NULL, OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0x0912, 256)               \
+      "SHAKE256", NULL, OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0xFFE4, 256)               \
   X(mldsa87_rsa3072_pss, "mldsa87_rsa3072_pss", "ML-DSA-87", "RSA-PSS", NULL,  \
       3072, "1.3.6.1.5.5.7.6.52", "COMPSIG-MLDSA87-RSA3072-PSS-SHA512",        \
       "SHA512", "SHA256", OSSL_PKEY_PARAM_ML_DSA_SEED, COMPOSITE_TIER_STANDARD, 0, 256)                  \
