@@ -323,11 +323,25 @@ if(HYBRID_COMPOSITE)
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 
-    # Standardized-tier tests: the composite draft KATs and the whole composite
-    # ML-KEM family are seed-based, so they only apply on OpenSSL 3.5+. On <3.5 the
+    # Composite ML-KEM provider round-trip: keygen/encaps/decaps + SPKI + PKCS8
+    # for every combo, driven through EVP by name (provider=hybrid). Runs on all
+    # versions: the standardized rows self-skip below 3.5 (not registered), the
+    # experimental Frodo/BIKE/HQC rows run from the oqsprovider floor (3.2+).
+    add_executable(composite_kem_prov_test test/composite_kem_prov_test.c)
+    target_include_directories(composite_kem_prov_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_kem_prov_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_kem_prov_test hybrid-provider)
+    add_test(NAME composite_kem_prov_test COMMAND composite_kem_prov_test)
+    set_tests_properties(composite_kem_prov_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # Standardized-tier tests: the composite draft KATs and the ML-KEM combiner /
+    # KAT tests are seed-based, so they only apply on OpenSSL 3.5+. On <3.5 the
     # standardized tiers are not registered; the experimental composite signatures
-    # are covered by composite_sig_test / composite_test, which self-skip the
-    # standardized rows.
+    # are covered by composite_sig_test / composite_test and the experimental
+    # composite KEMs by composite_kem_prov_test, which self-skip the standardized
+    # rows.
     if(COMPOSITE_SEED)
     # KAT interop: verify the draft-19 reference test vectors (real cross-impl
     # check against lamps-wg/draft-composite-sigs, distilled into composite_kat.txt).
@@ -351,17 +365,6 @@ if(HYBRID_COMPOSITE)
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 
-    # Composite ML-KEM provider round-trip: keygen/encaps/decaps + SPKI + PKCS8
-    # for every combo, driven through EVP by name (provider=hybrid).
-    add_executable(composite_kem_prov_test test/composite_kem_prov_test.c)
-    target_include_directories(composite_kem_prov_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
-    target_link_libraries(composite_kem_prov_test PRIVATE OpenSSL::Crypto)
-    add_dependencies(composite_kem_prov_test hybrid-provider)
-    add_test(NAME composite_kem_prov_test COMMAND composite_kem_prov_test)
-    set_tests_properties(composite_kem_prov_test PROPERTIES
-        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
-    )
-
     # Composite ML-KEM KAT interop: decapsulate the draft-18 reference ciphertexts
     # (lamps-wg/draft-composite-kem, distilled into composite_kem_kat.txt) and check
     # each recovers the reference shared secret.
@@ -379,13 +382,25 @@ if(HYBRID_COMPOSITE)
     # Certificate benchmark: self-signed X.509 cert size + cert-gen/verify time
     # for every composite (standardized ML-DSA + experimental OQS families). Runs
     # a short per-op budget under ctest (smoke); pass a larger budget in ms for
-    # real numbers, e.g. `composite_bench 2000`.
-    add_executable(composite_bench test/composite_bench.c)
-    target_include_directories(composite_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
-    target_link_libraries(composite_bench PRIVATE OpenSSL::Crypto)
-    add_dependencies(composite_bench hybrid-provider)
-    add_test(NAME composite_bench COMMAND composite_bench 20)
-    set_tests_properties(composite_bench PROPERTIES
+    # real numbers, e.g. `composite_sig_bench 2000`.
+    add_executable(composite_sig_bench test/composite_sig_bench.c)
+    target_include_directories(composite_sig_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_sig_bench PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_sig_bench hybrid-provider)
+    add_test(NAME composite_sig_bench COMMAND composite_sig_bench 20)
+    set_tests_properties(composite_sig_bench PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
+    # KEM benchmark: keygen/encaps/decaps time + pk/ct/sk sizes for every composite
+    # ML-KEM (standardized + experimental Frodo/BIKE/HQC). The KEM analogue of
+    # composite_sig_bench; same short smoke budget under ctest, larger via argv[1].
+    add_executable(composite_kem_bench test/composite_kem_bench.c)
+    target_include_directories(composite_kem_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_kem_bench PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_kem_bench hybrid-provider)
+    add_test(NAME composite_kem_bench COMMAND composite_kem_bench 20)
+    set_tests_properties(composite_kem_bench PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 

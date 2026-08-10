@@ -79,11 +79,11 @@ asserts the version contract per running OpenSSL:
 - **composite signatures** — standardized (ML-DSA) tier OpenSSL **3.5+** (the
   draft mandates a *seed* private key, which needs the 3.5 seed API); experimental
   (Falcon/MAYO/CROSS/UOV/SNOVA/MQOM2) tier **3.2+** (raw private key, no seed API),
-- **composite KEMs** — OpenSSL **3.5+**. Every composite ML-KEM combo is
-  standardized (seed-based), so there is no lower experimental floor here yet: the
-  KEM family has no experimental tier (see #34), so below 3.5 it is not served at
-  all. (A non-normative raw-private research KEM tier *could* run on 3.2+, exactly
-  like the experimental sigs — the machinery supports it — but no such rows exist.)
+- **composite KEMs** — standardized (ML-KEM) tier OpenSSL **3.5+** (seed private
+  key); experimental (FrodoKEM/BIKE/HQC) tier **3.2+** (raw private key, no seed
+  API). Below 3.5 the standardized ML-KEM combos self-deactivate and only the
+  experimental composite KEMs are served; `composite_kem_prov_test` self-skips the
+  rows it cannot serve on a given version.
 
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).
@@ -216,9 +216,9 @@ default-provider vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) ML-KEM/ML-DSA)
 in the same process. Run `hybrid_bench` in your own environment for numbers.
 
-### Composite certificate benchmark
+### Composite signature benchmark
 
-`composite_bench` (built only with `-DHYBRID_COMPOSITE`) reports, for **every**
+`composite_sig_bench` (built only with `-DHYBRID_COMPOSITE`) reports, for **every**
 composite signature — the standardized ML-DSA combos *and* the experimental
 OQS-family combos — the three quantities that matter for a PKI deployment:
 
@@ -237,15 +237,37 @@ failed.
 
 ```sh
 cd build
-LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_bench [budget_ms]
+LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_sig_bench [budget_ms]
 ```
 
 The optional `budget_ms` argument is the per-operation wall-clock budget: each
 measurement loops until that budget (or an iteration cap) is reached, so slow
 keygens (UOV/MQOM/CROSS) don't dominate while fast verifies still get enough
 samples. It defaults to 1000; `ctest` runs it with a short budget as a smoke
-test, so pass a larger value (e.g. `./composite_bench 2000`) for stable numbers.
+test, so pass a larger value (e.g. `./composite_sig_bench 2000`) for stable numbers.
 
 An illustrative results snapshot and the deployment recommendations that follow
-from it are in [composite-bench-results.md](composite-bench-results.md) (numbers
-are hardware-specific — regenerate for your own environment).
+from it are in [composite-sig-bench-results.md](composite-sig-bench-results.md)
+(numbers are hardware-specific — regenerate for your own environment).
+
+### Composite KEM benchmark
+
+`composite_kem_bench` is the KEM analogue: for **every** composite ML-KEM — the
+standardized combos *and* the experimental FrodoKEM/BIKE/HQC combos — plus a few
+pure-ML-KEM reference rows, it reports
+
+- **keygen / encaps / decaps** time (ms),
+- **pk** (SubjectPublicKeyInfo DER length), **ct** (composite ciphertext length)
+  and **sk** (PKCS8 private-key DER length) in bytes.
+
+Same grouping (by NIST level), budget argument and skip-on-unavailable behaviour
+as `composite_sig_bench`; the experimental rows need
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider).
+
+```sh
+cd build
+LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_kem_bench [budget_ms]
+```
+
+An illustrative snapshot and per-axis analysis are in
+[composite-kem-bench-results.md](composite-kem-bench-results.md).

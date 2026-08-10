@@ -1,7 +1,7 @@
-# Composite certificate benchmark — results snapshot & deployment notes
+# Composite signature benchmark — results snapshot & deployment notes
 
-This is an **illustrative snapshot** of `composite_bench` (see the *Composite
-certificate benchmark* section of [../TESTING.md](../TESTING.md) for what it
+This is an **illustrative snapshot** of `composite_sig_bench` (see the *Composite
+signature benchmark* section of [../TESTING.md](../TESTING.md) for what it
 measures and how to run it). Numbers are hardware-, build- and run-specific —
 regenerate them in your own environment before drawing conclusions; do **not**
 treat the values below as authoritative.
@@ -19,7 +19,7 @@ treat the values below as authoritative.
 
 ```sh
 cd build
-LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_bench 2000
+LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_sig_bench 2000
 ```
 
 The experimental rows need [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)

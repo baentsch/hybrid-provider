@@ -26,9 +26,12 @@
 
 static int tests, passed, failed, skipped;
 
+/* Resolve from ANY loaded provider (no provider= restriction): standardized ML-KEM
+ * comes from the default provider (3.5+), the experimental Frodo/BIKE/HQC halves
+ * from oqsprovider. */
 static int have_alg(OSSL_LIB_CTX *ctx, const char *name)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, name, "provider=default");
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, name, NULL);
     int ok = c != NULL && EVP_PKEY_keygen_init(c) > 0;
 
     EVP_PKEY_CTX_free(c);
@@ -131,8 +134,14 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info)
         return;
     }
 
-    /* 1-2. keygen + direct encaps/decaps round-trip. */
-    if ((key = keygen(ctx, info->name)) == NULL) goto fail;
+    /* 1-2. keygen + direct encaps/decaps round-trip. A NULL key here means the
+     * composite algorithm is not registered on this build (e.g. a standardized,
+     * seed-based combo below 3.5, where that tier is withdrawn) — skip, not fail. */
+    if ((key = keygen(ctx, info->name)) == NULL) {
+        printf("SKIP (%s not registered here)\n", info->name);
+        skipped++; tests--; ERR_clear_error();
+        goto done;
+    }
     step = 1;
     if (!encaps(ctx, key, &ct, &ctlen, &ss1, &ss1l)) goto fail;
     if (!decaps(ctx, key, ct, ctlen, &ss2, &ss2l)) goto fail;
@@ -186,6 +195,7 @@ int main(void)
         fprintf(stderr, "failed to load default/hybrid providers\n");
         return 1;
     }
+    OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier */
     ERR_clear_error();
 
     printf("composite (LAMPS) ML-KEM provider round-trips\n");

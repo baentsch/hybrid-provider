@@ -40,10 +40,15 @@ static void *composite_kem_key_new(void *provctx, const COMPOSITE_KEM_INFO *info
     k->libctx = pc != NULL ? pc->libctx : NULL;
     k->info = info;
     /* Config-driven component sourcing (shared with the hybrid family). Absent
-     * config, both halves resolve from the default provider: the ML-KEM seed API
-     * and the classical algorithms all live there on 3.5+. */
+     * config, the classical half resolves from the default provider, and the PQ
+     * half from the default provider for the standardized ML-KEM combos (whose
+     * seed-based private key needs it) or from whichever loaded provider offers it
+     * for the experimental research KEMs (Frodo/BIKE/HQC → oqsprovider). Mirrors
+     * the composite-signature keymgmt. */
     k->pq_propq = pc != NULL && pc->pq_propq != NULL
-                      ? pc->pq_propq : "provider=default";
+                      ? pc->pq_propq
+                      : (info->tier == COMPOSITE_KEM_TIER_EXPERIMENTAL
+                             ? NULL : "provider=default");
     k->trad_propq = pc != NULL && pc->classic_propq != NULL
                         ? pc->classic_propq : "provider=default";
     k->state = COMPOSITE_KEM_HAVE_NOKEYS;

@@ -272,9 +272,36 @@ derr:
     }
 }
 
-/* ML-KEM ciphertext length for this key (fixed per level), via a size query. */
-static size_t mlkem_ct_len(EVP_PKEY *pq_key, OSSL_LIB_CTX *libctx,
-                           const char *propq)
+/* Fixed PQ ciphertext length for this combo, learned from a FRESH keypair rather
+ * than the decapsulation private key: a private key reconstructed from a raw octet
+ * (the experimental tier) may lack the public key that the encaps size query
+ * needs, whereas the ciphertext length is a fixed scheme parameter, so any
+ * freshly generated key of the same algorithm yields it. */
+static size_t pq_ct_len(const char *pq_alg, OSSL_LIB_CTX *libctx,
+                        const char *propq)
+{
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, pq_alg, propq);
+    EVP_PKEY_CTX *e = NULL;
+    EVP_PKEY *t = NULL;
+    size_t ctlen = 0, sslen = 0;
+
+    if (g != NULL && EVP_PKEY_keygen_init(g) > 0 && EVP_PKEY_keygen(g, &t) > 0
+            && (e = EVP_PKEY_CTX_new_from_pkey(libctx, t, propq)) != NULL
+            && EVP_PKEY_encapsulate_init(e, NULL) > 0)
+        EVP_PKEY_encapsulate(e, NULL, &ctlen, NULL, &sslen);
+    EVP_PKEY_CTX_free(e);
+    EVP_PKEY_free(t);
+    EVP_PKEY_CTX_free(g);
+    return ctlen;
+}
+
+/* Cheap PQ ciphertext length: an encaps size query on the actual key. Returns 0
+ * when the key cannot encapsulate — e.g. a private key reconstructed from a raw
+ * octet (the experimental tier), which has no public half — so the caller falls
+ * back to pq_ct_len (a throwaway keypair). Keygen'd keys keep their public half,
+ * so this avoids the keygen entirely for them. */
+static size_t pq_encaps_ctlen(EVP_PKEY *pq_key, OSSL_LIB_CTX *libctx,
+                              const char *propq)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_pkey(libctx, pq_key, propq);
     size_t ctlen = 0, sslen = 0;
@@ -293,17 +320,21 @@ int composite_kem_encaps(const COMPOSITE_KEM_INFO *info,
                          unsigned char **ss, size_t *sslen)
 {
     EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_from_pkey(libctx, pq_pub, pq_propq);
-    unsigned char *mlct = NULL, *trct = NULL, *trss = NULL, *trpk = NULL;
-    unsigned char mlss[COMPOSITE_KEM_SS_BYTES], out_ss[COMPOSITE_KEM_SS_BYTES];
-    size_t mlctlen = 0, mlsslen = COMPOSITE_KEM_SS_BYTES;
+    unsigned char *mlct = NULL, *mlss = NULL, *trct = NULL, *trss = NULL,
+                  *trpk = NULL;
+    unsigned char out_ss[COMPOSITE_KEM_SS_BYTES];
+    size_t mlctlen = 0, mlsslen = 0;
     size_t trctlen = 0, trsslen = 0, trpklen = 0;
     int ret = 0;
 
     *ct = NULL; *ss = NULL;
-    /* ML-KEM encapsulation -> mlkemCT, mlkemSS. */
+    /* PQ KEM encapsulation -> pqCT, pqSS. The PQ shared-secret length is queried,
+     * not assumed to be ML-KEM's 32 bytes, so a non-ML-KEM PQ component with a
+     * different SS length (e.g. HQC's 64) works — the combiner just hashes it. */
     if (pctx == NULL || EVP_PKEY_encapsulate_init(pctx, NULL) <= 0
             || EVP_PKEY_encapsulate(pctx, NULL, &mlctlen, NULL, &mlsslen) <= 0
             || (mlct = OPENSSL_malloc(mlctlen)) == NULL
+            || (mlss = OPENSSL_malloc(mlsslen)) == NULL
             || EVP_PKEY_encapsulate(pctx, mlct, &mlctlen, mlss, &mlsslen) <= 0)
         goto end;
     /* Traditional encapsulation -> tradCT, tradSS; plus tradPK for the combiner. */
@@ -330,7 +361,7 @@ int composite_kem_encaps(const COMPOSITE_KEM_INFO *info,
     *sslen = COMPOSITE_KEM_SS_BYTES;
     ret = 1;
 end:
-    OPENSSL_cleanse(mlss, sizeof(mlss));
+    OPENSSL_clear_free(mlss, mlsslen);
     OPENSSL_cleanse(out_ss, sizeof(out_ss));
     OPENSSL_free(mlct);
     OPENSSL_free(trct);
@@ -345,21 +376,39 @@ int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
                          OSSL_LIB_CTX *libctx, const char *pq_propq,
                          const char *trad_propq,
                          const unsigned char *ct, size_t ctlen,
-                         unsigned char **ss, size_t *sslen)
+                         unsigned char **ss, size_t *sslen,
+                         size_t *pq_ctlen)
 {
     EVP_PKEY_CTX *pctx = NULL;
-    unsigned char *trss = NULL, *trpk = NULL;
-    unsigned char mlss[COMPOSITE_KEM_SS_BYTES], out_ss[COMPOSITE_KEM_SS_BYTES];
-    size_t mlsslen = COMPOSITE_KEM_SS_BYTES, trsslen = 0, trpklen = 0;
-    size_t mlctlen = mlkem_ct_len(pq_priv, libctx, pq_propq);
+    unsigned char *mlss = NULL, *trss = NULL, *trpk = NULL;
+    unsigned char out_ss[COMPOSITE_KEM_SS_BYTES];
+    size_t mlsslen = 0, trsslen = 0, trpklen = 0, mlctlen;
     int ret = 0;
 
     *ss = NULL;
+    /* The PQ ciphertext length is fixed per algorithm — learn it once and memoize
+     * via *pq_ctlen (the provider passes its per-key cache). Cheap path: an encaps
+     * size query on the actual private key (works, and no keygen, when the key
+     * carries its public half); fall back to a throwaway keypair for a private key
+     * reconstructed from a raw octet, which cannot encapsulate. */
+    if (pq_ctlen != NULL && *pq_ctlen != 0) {
+        mlctlen = *pq_ctlen;
+    } else {
+        mlctlen = pq_encaps_ctlen(pq_priv, libctx, pq_propq);
+        if (mlctlen == 0)
+            mlctlen = pq_ct_len(info->pq_alg, libctx, pq_propq);
+        if (pq_ctlen != NULL)
+            *pq_ctlen = mlctlen;
+    }
     if (mlctlen == 0 || mlctlen >= ctlen)   /* need both components present */
         goto end;
-    /* ML-KEM decapsulation of the leading mlkemCT. */
+    /* PQ KEM decapsulation of the leading pqCT. The PQ shared-secret length is
+     * queried (NULL-buffer size call) rather than assumed to be 32, so non-ML-KEM
+     * PQ components (e.g. HQC's 64-byte SS) work. */
     pctx = EVP_PKEY_CTX_new_from_pkey(libctx, pq_priv, pq_propq);
     if (pctx == NULL || EVP_PKEY_decapsulate_init(pctx, NULL) <= 0
+            || EVP_PKEY_decapsulate(pctx, NULL, &mlsslen, ct, mlctlen) <= 0
+            || (mlss = OPENSSL_malloc(mlsslen)) == NULL
             || EVP_PKEY_decapsulate(pctx, mlss, &mlsslen, ct, mlctlen) <= 0)
         goto end;
     /* Traditional decapsulation of the trailing tradCT; own tradPK for combiner. */
@@ -378,7 +427,7 @@ int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
     *sslen = COMPOSITE_KEM_SS_BYTES;
     ret = 1;
 end:
-    OPENSSL_cleanse(mlss, sizeof(mlss));
+    OPENSSL_clear_free(mlss, mlsslen);
     OPENSSL_cleanse(out_ss, sizeof(out_ss));
     OPENSSL_clear_free(trss, trsslen);
     OPENSSL_free(trpk);
@@ -493,7 +542,7 @@ static int composite_kem_decapsulate(void *vctx,
         return 0;
     if (!composite_kem_decaps(k->info, k->pq_key, k->trad_key, k->libctx,
                               k->pq_propq, k->trad_propq, ctext, clen,
-                              &ss, &sslen))
+                              &ss, &sslen, &k->pq_ctlen))
         return 0;
     if (*slen >= sslen) {
         memcpy(shsec, ss, sslen);

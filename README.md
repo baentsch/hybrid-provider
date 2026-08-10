@@ -24,7 +24,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 42 hybrid KEMs + 26 hybrid signatures = 68 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 12 composite KEMs = 43 more, for 111 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the 13 *experimental* composite signatures are served alongside the 68 hybrids.
+**Algorithms served:** 42 hybrid KEMs + 26 hybrid signatures = 68 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 120 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 68 hybrids (90 total).
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -130,7 +130,7 @@ the PQ components but does not itself implement composites). Because they
 serialize the raw PQ private key rather than a seed, they need no 3.5 seed API and
 run from the oqsprovider floor (OpenSSL 3.2+) — unlike the standardized tiers,
 which require 3.5. Their component sizes and cert-gen/verify costs are reported by
-the `composite_bench` benchmark (see [TESTING.md](TESTING.md)).
+the `composite_sig_bench` benchmark (see [TESTING.md](TESTING.md)).
 
 ### Composite ML-KEM (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 
@@ -153,6 +153,22 @@ composite-KEM reference implementation (see
 
 Traditional components are RSA-OAEP-2048/3072/4096 (SHA-256), ECDH on
 P-256/P-384/P-521 and brainpoolP256r1/P384r1, and X25519/X448.
+
+The **experimental tier** pairs one OQS KEM per NIST level from each research
+family — FrodoKEM, BIKE and HQC — with a level-matched ECDH half (L1→P-256,
+L3→P-384, L5→P-521), the KEM analogue of the experimental composite-signature
+tier:
+
+| Family | Algorithms |
+|---|---|
+| Experimental (other PQ) | `exp_frodo640aes_p256`, `exp_frodo976aes_p384`, `exp_frodo1344aes_p521`, `exp_bikel1_p256`, `exp_bikel3_p384`, `exp_bikel5_p521`, `exp_hqc1_p256`, `exp_hqc3_p384`, `exp_hqc5_p521` |
+
+Like the experimental signatures, these are **not** standardized: non-normative
+labels and OIDs in the private `1.3.9999.99.*` arc, interoperable only with this
+provider. Because they serialize the raw PQ private key (no seed), they run from
+the oqsprovider floor (OpenSSL 3.2+), unlike the standardized ML-KEM tier (3.5+).
+The combiner queries each component's shared-secret length rather than assuming
+ML-KEM's 32 bytes, so families with a different SS length (e.g. HQC's 64) work.
 
 ## Key Principles
 

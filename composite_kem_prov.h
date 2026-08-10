@@ -66,6 +66,15 @@ enum {
     COMPOSITE_KEM_HAVE_PRVKEY
 };
 
+/* Tier — mirrors the sig family's COMPOSITE_TIER_* (a separate enum keeps this
+ * header standalone; same 0/1 values and meaning). Governs OID arc + the
+ * seed-API floor: the standardized tier is ML-KEM (seed private key, 3.5+); the
+ * experimental tier is any other PQ KEM (raw private key, oqsprovider floor). */
+enum {
+    COMPOSITE_KEM_TIER_STANDARD = 0,  /* ML-KEM only; IANA/LAMPS OID; seed priv */
+    COMPOSITE_KEM_TIER_EXPERIMENTAL   /* other PQ KEM; our experimental arc; raw */
+};
+
 /*
  * One composite ML-KEM combination. The combiner reads a row and delegates to
  * both components via EVP with no ML-KEM hardcoding; adding a combo is one row.
@@ -90,6 +99,7 @@ typedef struct {
                              /* discovers the length from the algorithm, with no    */
                              /* hardcoded seed size. Generalizes the sig family's   */
                              /* boolean pq_priv_seed.                               */
+    int         tier;        /* COMPOSITE_KEM_TIER_STANDARD | _EXPERIMENTAL      */
 } COMPOSITE_KEM_INFO;
 
 /*
@@ -106,6 +116,9 @@ typedef struct composite_kem_key_st {
     unsigned int state;         /* COMPOSITE_KEM_HAVE_*                         */
     const char *pq_propq;       /* source for the ML-KEM component              */
     const char *trad_propq;     /* source for the classical component          */
+    size_t pq_ctlen;            /* memoized PQ ciphertext length (0 = not yet   */
+                                /* computed); fixed per algorithm, learned once */
+                                /* and reused across decapsulations            */
 } COMPOSITE_KEM_KEY;
 
 /*
@@ -113,62 +126,104 @@ typedef struct composite_kem_key_st {
  * COMPOSITE_SIG_LIST). One row per combination. To add a combo, add one row.
  *
  * X(cfield, name, pq_alg, trad_alg, trad_group, rsa_bits, oid, label, secbits,
- *   pq_priv_param)
+ *   pq_priv_param, tier)
  *
- * All standardized rows name the ML-KEM seed param (PQ private = ML-KEM seed, per
- * the draft). A future experimental row would name a different seed param (for a
- * seed-based non-ML-KEM KEM) or OSSL_PKEY_PARAM_PRIV_KEY (for a raw-private KEM
- * such as Frodo/BIKE/HQC), exactly like the experimental composite-signature tier.
- *
- * The FULL draft-18 standardized matrix (12 combos, OIDs 1.3.6.1.5.5.7.6.55 .. .66),
- * each field taken from lamps-wg/draft-composite-kem src/algParams.md and the
- * draft §6.1 parameter table. Labels are verbatim; the X25519 label is the raw
- * 6-byte value, written as separate \x escapes so the compiler does not fold it
- * into one over-long hex escape.
+ * Two tiers, mirroring the composite-signature family:
+ *   - standardized: the FULL draft-18 matrix (12 combos, OIDs 1.3.6.1.5.5.7.6.55
+ *     .. .66), each field taken from lamps-wg/draft-composite-kem src/algParams.md
+ *     and the draft §6.1 parameter table. ML-KEM only; PQ private = ML-KEM seed
+ *     (OSSL_PKEY_PARAM_ML_KEM_SEED), so 3.5+. Labels are verbatim; the X25519
+ *     label is the raw 6-byte value, written as separate \x escapes so the
+ *     compiler does not fold it into one over-long hex escape.
+ *   - experimental: one combo per NIST level per OQS KEM family (Frodo/BIKE/HQC),
+ *     paired with a level-matched ECDH half. Non-normative labels + a DISJOINT
+ *     private OID arc (1.3.9999.99.<n>); PQ private = raw key
+ *     (OSSL_PKEY_PARAM_PRIV_KEY), so no seed API — runs on 3.2+. Not registered
+ *     as standards-track and never mistaken for one.
  */
 #define COMPOSITE_KEM_OID(n)  "1.3.6.1.5.5.7.6." #n
 
 #define COMPOSITE_KEM_LIST(X)                                                  \
   X(mlkem768_rsa2048, "mlkem768_rsa2048", "ML-KEM-768", "RSA-OAEP", NULL,      \
       2048, COMPOSITE_KEM_OID(55), "MLKEM768-RSAOAEP2048", 192,                \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem768_rsa3072, "mlkem768_rsa3072", "ML-KEM-768", "RSA-OAEP", NULL,      \
       3072, COMPOSITE_KEM_OID(56), "MLKEM768-RSAOAEP3072", 192,                \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem768_rsa4096, "mlkem768_rsa4096", "ML-KEM-768", "RSA-OAEP", NULL,      \
       4096, COMPOSITE_KEM_OID(57), "MLKEM768-RSAOAEP4096", 192,                \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem768_x25519, "mlkem768_x25519", "ML-KEM-768", "X25519", NULL,          \
       0, COMPOSITE_KEM_OID(58), "\x5c\x2e\x2f\x2f\x5e\x5c", 192,               \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem768_p256, "mlkem768_p256", "ML-KEM-768", "EC", "P-256",               \
       0, COMPOSITE_KEM_OID(59), "MLKEM768-P256", 192,                          \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem768_p384, "mlkem768_p384", "ML-KEM-768", "EC", "P-384",               \
       0, COMPOSITE_KEM_OID(60), "MLKEM768-P384", 192,                          \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem768_bp256, "mlkem768_bp256", "ML-KEM-768", "EC", "brainpoolP256r1",   \
       0, COMPOSITE_KEM_OID(61), "MLKEM768-BP256", 192,                         \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem1024_rsa3072, "mlkem1024_rsa3072", "ML-KEM-1024", "RSA-OAEP", NULL,   \
       3072, COMPOSITE_KEM_OID(62), "MLKEM1024-RSAOAEP3072", 256,               \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem1024_p384, "mlkem1024_p384", "ML-KEM-1024", "EC", "P-384",            \
       0, COMPOSITE_KEM_OID(63), "MLKEM1024-P384", 256,                         \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem1024_bp384, "mlkem1024_bp384", "ML-KEM-1024", "EC", "brainpoolP384r1",\
       0, COMPOSITE_KEM_OID(64), "MLKEM1024-BP384", 256,                        \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem1024_x448, "mlkem1024_x448", "ML-KEM-1024", "X448", NULL,             \
       0, COMPOSITE_KEM_OID(65), "MLKEM1024-X448", 256,                         \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)                                             \
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                                             \
   X(mlkem1024_p521, "mlkem1024_p521", "ML-KEM-1024", "EC", "P-521",            \
       0, COMPOSITE_KEM_OID(66), "MLKEM1024-P521", 256,                         \
-      OSSL_PKEY_PARAM_ML_KEM_SEED)
+      OSSL_PKEY_PARAM_ML_KEM_SEED, COMPOSITE_KEM_TIER_STANDARD)                \
+  /* --- experimental (non-ML-KEM PQ; DISJOINT arc; non-normative label) ---   \
+   * One combo per NIST level per OQS KEM family (Frodo/BIKE/HQC), proving the  \
+   * combiner is generic over the PQ KEM. Each PQ half is paired with a         \
+   * level-matched ECDH classical half (L1->P-256, L3->P-384, L5->P-521).       \
+   * OIDs live in the private experimental arc 1.3.9999.99.<n> (disjoint from   \
+   * the sig experimental .1-.13 and the LAMPS standardized arc); labels are    \
+   * our own non-normative strings. pq_priv_param = OSSL_PKEY_PARAM_PRIV_KEY:   \
+   * raw PQ private keys (no seed API), so these run on the oqsprovider floor   \
+   * (3.2+), unlike the seed-based standardized tier. Frodo/BIKE/HQC shared     \
+   * secrets vary in length (16/24/32/64B); the combiner queries the length.  */\
+  /* FrodoKEM (AES): L1 (640), L3 (976), L5 (1344) */                          \
+  X(exp_frodo640aes_p256, "exp_frodo640aes_p256", "frodo640aes", "EC", "P-256",\
+      0, "1.3.9999.99.50", "COMPKEM-EXP-FRODO640AES-P256", 128,                \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)               \
+  X(exp_frodo976aes_p384, "exp_frodo976aes_p384", "frodo976aes", "EC", "P-384",\
+      0, "1.3.9999.99.51", "COMPKEM-EXP-FRODO976AES-P384", 192,                \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)               \
+  X(exp_frodo1344aes_p521, "exp_frodo1344aes_p521", "frodo1344aes", "EC",      \
+      "P-521", 0, "1.3.9999.99.52", "COMPKEM-EXP-FRODO1344AES-P521", 256,      \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)               \
+  /* BIKE: L1, L3, L5 */                                                       \
+  X(exp_bikel1_p256, "exp_bikel1_p256", "bikel1", "EC", "P-256",               \
+      0, "1.3.9999.99.53", "COMPKEM-EXP-BIKEL1-P256", 128,                     \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)               \
+  X(exp_bikel3_p384, "exp_bikel3_p384", "bikel3", "EC", "P-384",               \
+      0, "1.3.9999.99.54", "COMPKEM-EXP-BIKEL3-P384", 192,                     \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)               \
+  X(exp_bikel5_p521, "exp_bikel5_p521", "bikel5", "EC", "P-521",               \
+      0, "1.3.9999.99.55", "COMPKEM-EXP-BIKEL5-P521", 256,                     \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)               \
+  /* HQC: L1 (hqc1), L3 (hqc3), L5 (hqc5) — 64-byte shared secret */           \
+  X(exp_hqc1_p256, "exp_hqc1_p256", "hqc1", "EC", "P-256",                     \
+      0, "1.3.9999.99.56", "COMPKEM-EXP-HQC1-P256", 128,                       \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)               \
+  X(exp_hqc3_p384, "exp_hqc3_p384", "hqc3", "EC", "P-384",                     \
+      0, "1.3.9999.99.57", "COMPKEM-EXP-HQC3-P384", 192,                       \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)               \
+  X(exp_hqc5_p521, "exp_hqc5_p521", "hqc5", "EC", "P-521",                     \
+      0, "1.3.9999.99.58", "COMPKEM-EXP-HQC5-P521", 256,                       \
+      OSSL_PKEY_PARAM_PRIV_KEY, COMPOSITE_KEM_TIER_EXPERIMENTAL)
 
 /* Generate the info table from the master list. */
-#define COMPOSITE_KEM_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, sb, pqpp)       \
-    { nm, pq, tr, grp, bits, oid, lbl, sb, pqpp },
+#define COMPOSITE_KEM_ROW(cf, nm, pq, tr, grp, bits, oid, lbl, sb, pqpp, tier) \
+    { nm, pq, tr, grp, bits, oid, lbl, sb, pqpp, tier },
 static const COMPOSITE_KEM_INFO composite_kem_table[] = {
     COMPOSITE_KEM_LIST(COMPOSITE_KEM_ROW)
 };
@@ -206,13 +261,17 @@ int composite_kem_encaps(const COMPOSITE_KEM_INFO *info,
                          unsigned char **ct, size_t *ctlen,
                          unsigned char **ss, size_t *sslen);
 
-/* Decapsulate composite ct with (pq_priv, trad_priv); recompute ss. *ss malloc'd. */
+/* Decapsulate composite ct with (pq_priv, trad_priv); recompute ss. *ss malloc'd.
+ * pq_ctlen is an optional in/out cache for the fixed PQ ciphertext length: pass a
+ * pointer (the provider passes its per-key COMPOSITE_KEM_KEY.pq_ctlen) to learn it
+ * once and reuse; pass NULL to compute it each call. */
 int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
                          EVP_PKEY *pq_priv, EVP_PKEY *trad_priv,
                          OSSL_LIB_CTX *libctx, const char *pq_propq,
                          const char *trad_propq,
                          const unsigned char *ct, size_t ctlen,
-                         unsigned char **ss, size_t *sslen);
+                         unsigned char **ss, size_t *sslen,
+                         size_t *pq_ctlen);
 
 /* Provider KEM dispatch (wraps the combiner over a COMPOSITE_KEM_KEY). */
 extern const OSSL_DISPATCH composite_kem_functions[];

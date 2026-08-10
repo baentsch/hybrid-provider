@@ -113,7 +113,7 @@ jobs:
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_bench'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
 
   # ----------------------------------------------------------------- weekly ---
   # Exhaustive per-OpenSSL-version floor matrix against bleeding-edge liboqs +
@@ -209,4 +209,4 @@ jobs:
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_bench'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'

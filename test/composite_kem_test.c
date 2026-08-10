@@ -149,7 +149,8 @@ static void roundtrip(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info)
         printf("FAIL (encaps)\n"); failed++; goto done;
     }
     if (!composite_kem_decaps(info, pq, trad, ctx, "provider=default",
-                              "provider=default", ct, ctlen, &ss2, &ss2len)) {
+                              "provider=default", ct, ctlen, &ss2, &ss2len,
+                              NULL)) {
         printf("FAIL (decaps)\n"); failed++; goto done;
     }
     if (ss1len == COMPOSITE_KEM_SS_BYTES && ss1len == ss2len

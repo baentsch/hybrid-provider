@@ -216,7 +216,9 @@ this same provider* implements composite ML-DSA
 API); the **experimental** tier serializes the raw private key and so runs from
 the oqsprovider floor (3.2+). Below 3.5 the standardized tiers self-deactivate at
 registration (`COMPOSITE_SEED_AVAILABLE` in `composite_prov.h`), leaving only the
-experimental composite signatures. Unlike the concatenation hybrids, composite
+experimental composite signatures and KEMs (the composite ML-KEM family has the
+same two-tier split — standardized ML-KEM 3.5+, experimental FrodoKEM/BIKE/HQC
+3.2+). Unlike the concatenation hybrids, composite
 uses the draft's message representative and raw-concat serialization, keyed off
 `COMPOSITE_SIG_LIST` in `composite_prov.h`:
 
@@ -259,6 +261,37 @@ and deployment-surface isolation needs only a build flag (the `HYBRID_KEM_ENCODE
 precedent) — a separate provider would just duplicate the shared two-`EVP_PKEY`
 core. It is validated against the draft's published KAT vectors
 (`composite_kat_test`). See `composite_prov.h`.
+
+### Hybrid vs. composite: when to use which
+
+Both families combine a classical and a PQ algorithm for the same reason —
+defense-in-depth that is deployable now (if either component is later broken, the
+other still holds). They are **not redundant**: they sit at different layers and
+interoperate with different ecosystems, and neither is faster (both are
+primitive-bound; composition glue ≈ 0 — see *Performance*).
+
+| | Hybrid (concatenation) | Composite (LAMPS) |
+| --- | --- | --- |
+| **KEM role** | TLS 1.3 hybrid key exchange (`draft-ietf-tls-ecdhe-mlkem` / MLX); registered TLS named groups (`HYBRID_KEM_INFO.tls_codepoint`) | PKI / CMS only; SPKI OID, **no** TLS key-exchange codepoint (`COMPOSITE_KEM_INFO` has no `tls_codepoint`) |
+| **Signature role** | oqsprovider-compatible concat sigs; any PQ family | X.509 / CMS certificate signatures; standardized tier is ML-DSA-only |
+| **Binding** | two independent signatures with a length prefix (separable) | joint message representative `M'` — **non-separable** |
+| **Interop peer** | default provider + oqsprovider (TLS wire, OQS ecosystem) | LAMPS implementations (BouncyCastle, future OpenSSL-native) in certificates |
+| **Standardization** | MLX KEM is IETF-standard; concat sigs follow the oqsprovider convention | IETF/LAMPS standards-track (composite-sigs draft-19, composite-kem draft-18) |
+| **Performance** | primitive-bound | primitive-bound + one SHA3-256 combiner pass (negligible) |
+
+**Can the hybrids be dropped in favour of composites only? No.**
+
+- **Hybrid KEMs cannot be dropped.** They are the standardized TLS 1.3 hybrid
+  key-exchange mechanism; composite ML-KEM is a PKIX/S-MIME (LAMPS) mechanism with
+  no TLS key-exchange role or codepoint. Removing them would remove interoperable
+  TLS hybrid key exchange — this provider's baseline mandate.
+- **Hybrid signatures are the droppable family** for PKI, where composite is both
+  standardized and cryptographically stronger (non-separable binding). They are
+  retained for oqsprovider wire-format interop and for PQ breadth (many families
+  in one concat format vs. standardized composite's ML-DSA-only) — not for speed.
+
+So the two families are a *layer / ecosystem* choice (TLS wire + OQS interop vs.
+PKI/CMS + LAMPS interop), not duplication.
 
 ## Hybrid Key Structure
 
