@@ -116,6 +116,9 @@ typedef struct composite_kem_key_st {
     unsigned int state;         /* COMPOSITE_KEM_HAVE_*                         */
     const char *pq_propq;       /* source for the ML-KEM component              */
     const char *trad_propq;     /* source for the classical component          */
+    size_t pq_ctlen;            /* memoized PQ ciphertext length (0 = not yet   */
+                                /* computed); fixed per algorithm, learned once */
+                                /* and reused across decapsulations            */
 } COMPOSITE_KEM_KEY;
 
 /*
@@ -258,13 +261,17 @@ int composite_kem_encaps(const COMPOSITE_KEM_INFO *info,
                          unsigned char **ct, size_t *ctlen,
                          unsigned char **ss, size_t *sslen);
 
-/* Decapsulate composite ct with (pq_priv, trad_priv); recompute ss. *ss malloc'd. */
+/* Decapsulate composite ct with (pq_priv, trad_priv); recompute ss. *ss malloc'd.
+ * pq_ctlen is an optional in/out cache for the fixed PQ ciphertext length: pass a
+ * pointer (the provider passes its per-key COMPOSITE_KEM_KEY.pq_ctlen) to learn it
+ * once and reuse; pass NULL to compute it each call. */
 int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
                          EVP_PKEY *pq_priv, EVP_PKEY *trad_priv,
                          OSSL_LIB_CTX *libctx, const char *pq_propq,
                          const char *trad_propq,
                          const unsigned char *ct, size_t ctlen,
-                         unsigned char **ss, size_t *sslen);
+                         unsigned char **ss, size_t *sslen,
+                         size_t *pq_ctlen);
 
 /* Provider KEM dispatch (wraps the combiner over a COMPOSITE_KEM_KEY). */
 extern const OSSL_DISPATCH composite_kem_functions[];

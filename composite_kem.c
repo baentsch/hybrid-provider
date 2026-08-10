@@ -295,6 +295,23 @@ static size_t pq_ct_len(const char *pq_alg, OSSL_LIB_CTX *libctx,
     return ctlen;
 }
 
+/* Cheap PQ ciphertext length: an encaps size query on the actual key. Returns 0
+ * when the key cannot encapsulate — e.g. a private key reconstructed from a raw
+ * octet (the experimental tier), which has no public half — so the caller falls
+ * back to pq_ct_len (a throwaway keypair). Keygen'd keys keep their public half,
+ * so this avoids the keygen entirely for them. */
+static size_t pq_encaps_ctlen(EVP_PKEY *pq_key, OSSL_LIB_CTX *libctx,
+                              const char *propq)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_pkey(libctx, pq_key, propq);
+    size_t ctlen = 0, sslen = 0;
+
+    if (c != NULL && EVP_PKEY_encapsulate_init(c, NULL) > 0)
+        EVP_PKEY_encapsulate(c, NULL, &ctlen, NULL, &sslen);
+    EVP_PKEY_CTX_free(c);
+    return ctlen;
+}
+
 int composite_kem_encaps(const COMPOSITE_KEM_INFO *info,
                          EVP_PKEY *pq_pub, EVP_PKEY *trad_pub,
                          OSSL_LIB_CTX *libctx, const char *pq_propq,
@@ -359,16 +376,30 @@ int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
                          OSSL_LIB_CTX *libctx, const char *pq_propq,
                          const char *trad_propq,
                          const unsigned char *ct, size_t ctlen,
-                         unsigned char **ss, size_t *sslen)
+                         unsigned char **ss, size_t *sslen,
+                         size_t *pq_ctlen)
 {
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char *mlss = NULL, *trss = NULL, *trpk = NULL;
     unsigned char out_ss[COMPOSITE_KEM_SS_BYTES];
-    size_t mlsslen = 0, trsslen = 0, trpklen = 0;
-    size_t mlctlen = pq_ct_len(info->pq_alg, libctx, pq_propq);
+    size_t mlsslen = 0, trsslen = 0, trpklen = 0, mlctlen;
     int ret = 0;
 
     *ss = NULL;
+    /* The PQ ciphertext length is fixed per algorithm — learn it once and memoize
+     * via *pq_ctlen (the provider passes its per-key cache). Cheap path: an encaps
+     * size query on the actual private key (works, and no keygen, when the key
+     * carries its public half); fall back to a throwaway keypair for a private key
+     * reconstructed from a raw octet, which cannot encapsulate. */
+    if (pq_ctlen != NULL && *pq_ctlen != 0) {
+        mlctlen = *pq_ctlen;
+    } else {
+        mlctlen = pq_encaps_ctlen(pq_priv, libctx, pq_propq);
+        if (mlctlen == 0)
+            mlctlen = pq_ct_len(info->pq_alg, libctx, pq_propq);
+        if (pq_ctlen != NULL)
+            *pq_ctlen = mlctlen;
+    }
     if (mlctlen == 0 || mlctlen >= ctlen)   /* need both components present */
         goto end;
     /* PQ KEM decapsulation of the leading pqCT. The PQ shared-secret length is
@@ -511,7 +542,7 @@ static int composite_kem_decapsulate(void *vctx,
         return 0;
     if (!composite_kem_decaps(k->info, k->pq_key, k->trad_key, k->libctx,
                               k->pq_propq, k->trad_propq, ctext, clen,
-                              &ss, &sslen))
+                              &ss, &sslen, &k->pq_ctlen))
         return 0;
     if (*slen >= sslen) {
         memcpy(shsec, ss, sslen);
