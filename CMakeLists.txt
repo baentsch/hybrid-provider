@@ -484,6 +484,56 @@ set_tests_properties(hybrid_bench PROPERTIES
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_bench PRIVATE OpenSSL::Crypto)
 
+# ---------------------------------------------------------------------------
+# Decoder fuzz harness (test/hybrid_decode_fuzz.c)
+#
+# Fuzzes the untrusted-key-material decode surface — hybrid_decode() (SPKI) and
+# hybrid_decode_p8() (PKCS#8) plus the component sub-key loading they drive —
+# for out-of-bounds accesses in DER key parsing (e.g. a serialization write that
+# precedes its size check, or an unbounded length taken from the input). Enable
+# with -DHYBRID_FUZZ=ON. Two shapes depending on compiler support for
+# -fsanitize=fuzzer:
+#   - libFuzzer present -> coverage-guided binary (run manually / under OSS-Fuzz)
+#   - otherwise         -> standalone corpus runner, wired into ctest so the
+#                          seed corpus is replayed on every `ctest` run.
+# ASAN is forced on for BOTH the harness and the provider module it loads —
+# without instrumenting the provider itself, an out-of-bounds access inside the
+# decode path would go unreported.
+# ---------------------------------------------------------------------------
+option(HYBRID_FUZZ "Build the decoder fuzz harness (ASAN)" OFF)
+if(HYBRID_FUZZ)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer")
+    check_c_source_compiles(
+        "int LLVMFuzzerTestOneInput(const unsigned char *d, unsigned long n) { (void)d; (void)n; return 0; }"
+        HYBRID_HAVE_LIBFUZZER)
+    unset(CMAKE_REQUIRED_FLAGS)
+
+    # Instrument the provider module too, so bugs in its decode code are caught.
+    target_compile_options(hybrid-provider PRIVATE -fsanitize=address -g)
+    target_link_options(hybrid-provider PRIVATE -fsanitize=address)
+
+    add_executable(hybrid_decode_fuzz test/hybrid_decode_fuzz.c)
+    target_include_directories(hybrid_decode_fuzz
+        PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(hybrid_decode_fuzz PRIVATE OpenSSL::Crypto)
+    target_compile_options(hybrid_decode_fuzz PRIVATE -fsanitize=address -g)
+    target_link_options(hybrid_decode_fuzz PRIVATE -fsanitize=address)
+
+    if(HYBRID_HAVE_LIBFUZZER)
+        target_compile_definitions(hybrid_decode_fuzz PRIVATE HYBRID_FUZZ_LIBFUZZER)
+        target_compile_options(hybrid_decode_fuzz PRIVATE -fsanitize=fuzzer)
+        target_link_options(hybrid_decode_fuzz PRIVATE -fsanitize=fuzzer)
+        message(STATUS "HYBRID_FUZZ: libFuzzer build (coverage-guided)")
+    else()
+        # No libFuzzer: replay the committed seed corpus under ASAN on each run.
+        add_test(NAME hybrid_decode_fuzz
+                 COMMAND hybrid_decode_fuzz ${CMAKE_SOURCE_DIR}/test/corpus/decode)
+        set_tests_properties(hybrid_decode_fuzz PROPERTIES
+            ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}")
+        message(STATUS "HYBRID_FUZZ: no libFuzzer; standalone corpus runner wired into ctest")
+    endif()
+endif()
+
 # The provider cedes whatever the default provider already serves by DEFAULT
 # (see HYBRID_CONF_CEDE_TO_DEFAULT). The interop suite deliberately loads both
 # providers and compares the two implementations of the same identifier, so it

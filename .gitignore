@@ -1,6 +1,7 @@
 build/
 build34/
 build-master/
+build-fuzz/
 .local/
 .local-34/
 .local-master/
