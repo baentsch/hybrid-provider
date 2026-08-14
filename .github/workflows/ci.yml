@@ -11,8 +11,8 @@ name: CI
 #     Never blocks a PR.
 
 on:
-  push:
-  pull_request:
+  push:               # primary trigger — every push is tested, even before a PR exists
+  pull_request:       # deduplicated by the `gate` job (skipped when the push already covered the tree)
   workflow_dispatch:
   schedule:
     - cron: "0 6 * * 1"   # Mondays 06:00 UTC — weekly exhaustive matrix
@@ -23,9 +23,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ------------------------------------------------------------------- gate ---
+  # Deduplicate the push vs pull_request double-trigger. A branch push is the
+  # PRIMARY CI trigger, so every push is tested (even before a PR exists). The
+  # pull_request run only adds value when it tests something the push did not — i.e.
+  # when the branch is behind its base and the merge tree differs from the pushed
+  # tip. When the branch already contains the base tip, the push built this exact
+  # tree, so the PR run is a duplicate and is skipped. Fork PRs are the exception: a
+  # fork push never triggers this repo's push workflow, so their PR run must proceed.
+  gate:
+    name: gate (skip duplicate PR runs)
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "non-PR event ($EVENT) -> run"; exit 0
+          fi
+          if [ "$IS_FORK" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "fork PR -> run (no push run exists)"; exit 0
+          fi
+          # Both commits are present (fetch-depth: 0). If the base tip is already an
+          # ancestor of head, the branch sits on top of base: the merge tree equals
+          # the pushed tip the push run already built -> skip this duplicate.
+          if git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "branch contains base tip -> push already tested this tree; skipping duplicate PR run"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "branch behind base -> merge differs from pushed tip; running"
+          fi
+
   # ---------------------------------------------------------------- regular ---
   regular:
-    if: github.event_name != 'schedule'
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && github.event_name != 'schedule'
     name: OpenSSL ${{ matrix.openssl.name }} (release)
     runs-on: ubuntu-latest
     strategy:
@@ -121,7 +165,7 @@ jobs:
   # moves and surfaces OQS_CEDE_HYBRIDS patch drift early. Never gates a PR.
   weekly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    name: OpenSSL ${{ matrix.openssl.name }} (main deps)
+    name: weekly · OpenSSL ${{ matrix.openssl.name }} (main deps)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
