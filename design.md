@@ -666,6 +666,22 @@ expensive or dependent on upstream drift runs weekly.**
   `OQS_CEDE_HYBRIDS` patch against oqs-provider `main` surfaces early. A weekly
   failure never blocks a PR.
 
+On top of the two behavioural tiers, a push/PR **sanitize** leg guards the
+hand-written EVP glue for memory safety (issue #42): it builds the provider and
+every in-process test with AddressSanitizer + UndefinedBehaviorSanitizer
+(LeakSanitizer via ASan) against the latest OpenSSL and runs the suite under them
+(`-DHYBRID_SANITIZE=ON`). OpenSSL/liboqs/oqsprovider are not instrumented, so
+library-rooted leaks are filtered via `test/lsan.supp`; the CLI scenario tests are
+excluded because the uninstrumented `openssl` binary cannot dlopen an instrumented
+provider.
+
+A 32-bit (ILP32) *test* leg is deliberately **not** run: the only 32-bit-specific
+memory-safety hazard is `sizeof(struct)`-based serialized-size math, and the audit
+found none (all serialized lengths derive from component byte sizes). A meaningful
+run would need a full 32-bit build of the *same* OpenSSL + oqsprovider toolchain —
+disproportionate for a class the code does not exhibit — so it is left as
+follow-up rather than approximated by a system-OpenSSL cross-compile.
+
 ## Performance
 
 The provider is a **near-zero-cost EVP composition layer**: its own glue adds
