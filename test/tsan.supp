@@ -1,0 +1,19 @@
+# ThreadSanitizer suppressions for the hybrid-provider concurrency test (issue
+# #43). We only instrument this provider's own code; OpenSSL's libcrypto,
+# liboqs and oqs-provider are built without TSan, so any race TSan attributes to
+# their frames is either a false positive (uninstrumented, so TSan cannot see
+# their synchronization) or an upstream issue outside this repository's control.
+# Suppress those by library so the report reflects only hybrid-provider races.
+#
+# These are deliberately library-scoped, never function-scoped inside our own
+# code: a race in hybrid_prov.c / hybrid_keymgmt.c must NOT be suppressed here.
+
+called_from_lib:libcrypto.so
+called_from_lib:libssl.so
+called_from_lib:liboqs.so
+called_from_lib:oqsprovider.so
+
+# Races reported entirely within uninstrumented library object code.
+race:libcrypto.so
+race:liboqs.so
+race:oqsprovider.so

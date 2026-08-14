@@ -53,7 +53,8 @@ over TLS 1.3 (`hybrid_cert_tls_test`), config-driven component selection
 (`hybrid_encode_test`, `hybrid_param_test`), CMS SignedData (`hybrid_cms_test`),
 TLS code-point parity (`hybrid_capability_test`), provider coexistence
 (`hybrid_coexist_test`), cede-to-default withdrawal of the default provider's
-hybrids (`hybrid_cede_test`), the full cross-version matrix vs
+hybrids (`hybrid_cede_test`), concurrency / `fork()` / teardown stress
+(`hybrid_threads_test`, below), the full cross-version matrix vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 (`hybrid_matrix_test`), the coverage guard asserting every hybrid
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) advertises is
@@ -63,6 +64,27 @@ PQ-only [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 combiner, provider and draft-19 KAT tests (`composite_sig_test`,
 `composite_test`, `composite_kat_test`). Each self-skips cleanly when its
 prerequisites are absent.
+
+### Concurrency, fork and teardown (`hybrid_threads_test`)
+
+Stresses the provider's shared/cached state (issue #43): the per-instance
+cede-to-default runtime tables, the per-key size cache, and the provider
+load/unload path. Four legs — many threads running keygen/encaps/decaps and
+sign/verify with their own keys on one shared libctx; many threads operating on
+the **same** key object (racing the first-use per-key size-cache fill); many
+threads loading the provider into their own libctx, operating, and unloading; and
+a `fork()`-then-operate leg. It uses `X25519MLKEM768` + `p256_mldsa44`, both
+resolvable from the default provider on OpenSSL ≥ 3.5, so it needs no
+oqsprovider. Run it under sanitizers:
+
+```sh
+# ThreadSanitizer (data races). setarch -R (wired into ctest) disables ASLR.
+cmake -S . -B build-tsan -DOPENSSL_ROOT_DIR=/path/to/openssl -DHYBRID_TSAN=ON
+cmake --build build-tsan --target hybrid-provider hybrid_threads_test
+( cd build-tsan && ctest -R hybrid_threads_test --output-on-failure )
+
+# It also runs in the full ASan/UBSan/LSan suite (-DHYBRID_SANITIZE=ON).
+```
 
 ### Drop-in replacement over a PQ-only oqsprovider (`hybrid_replace_test`)
 

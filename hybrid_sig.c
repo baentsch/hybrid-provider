@@ -156,8 +156,6 @@ hybrid_sig_digest_sign(void *vctx,
     int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
 
-    if (!hybrid_ensure_sizes(key))
-        return 0;
     maxsig = hybrid_sig_max_sig_bytes(key);
 
     if (sig == NULL) {          /* size query */
@@ -211,7 +209,7 @@ hybrid_sig_digest_verify(void *vctx,
     int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
 
-    if (!hybrid_ensure_sizes(key) || !hybrid_have_pubkey(key))
+    if (!hybrid_have_pubkey(key))
         return 0;
     /* Bounds guards: the signature must hold the 4-byte classical-length prefix
      * before we read sig[0..3], and that length must fit within siglen before we

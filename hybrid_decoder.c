@@ -320,7 +320,7 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
          | ((uint32_t)octdata[2] << 8) | (uint32_t)octdata[3];
 
     key = hybrid_keymgmt_new_by_variant(ctx->provctx, is_kem, (unsigned)variant);
-    if (key == NULL || !hybrid_ensure_sizes(key)) {
+    if (key == NULL) {
         ret = 0;
         goto end;
     }

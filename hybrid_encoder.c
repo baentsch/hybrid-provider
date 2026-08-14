@@ -155,7 +155,7 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
     size_t clen = 0, a2v, a2p, total = 0, got;
     int ret = 0;
 
-    if (!hybrid_ensure_sizes(key) || !hybrid_have_prvkey(key))
+    if (!hybrid_have_prvkey(key))
         return 0;
     a2v = key->sizes.a2_prv;
     a2p = key->sizes.a2_pub;
@@ -483,7 +483,7 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     long datalen;
     size_t written = 0;
 
-    if (ctx->bio_write_ex == NULL || !hybrid_ensure_sizes(hkey))
+    if (ctx->bio_write_ex == NULL)
         return 0;
     priv = (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0
            && hybrid_have_prvkey(hkey);

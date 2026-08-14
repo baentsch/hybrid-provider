@@ -157,7 +157,7 @@ jobs:
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
 
   # --------------------------------------------------------------- sanitize ---
   # Memory-safety audit automation (issue #42): build the provider + tests with
@@ -166,9 +166,13 @@ jobs:
   # in-process suite under the sanitizers. The CLI scenario tests (hybrid_scenarios_*)
   # shell out to the uninstrumented openssl binary, which cannot dlopen an
   # instrumented provider, so they are excluded from this leg.
+  #
+  # POST-MERGE ONLY (push to main): the instrumented full-suite run is expensive,
+  # so it is kept off the PR critical path for fast turnaround. Running on every
+  # merge still guards main and ties any failure to a specific merge commit — no
+  # nightly/scheduled run, which would need a separate issue to track a failure.
   sanitize:
-    needs: gate
-    if: needs.gate.outputs.run == 'true' && github.event_name != 'schedule'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     name: ASan/UBSan/LSan (latest OpenSSL)
     runs-on: ubuntu-latest
     env:
@@ -228,6 +232,77 @@ jobs:
           export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/test/lsan.supp"
           export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
           ctest --output-on-failure -E 'hybrid_scenarios_'
+
+  # -------------------------------------------------------------------- tsan ---
+  # Thread-safety audit automation (issue #43): build the provider + tests with
+  # ThreadSanitizer against the latest OpenSSL (>=3.5, so the concurrency test's
+  # X25519MLKEM768 + p256_mldsa44 resolve entirely from the default provider, no
+  # oqsprovider needed) and run hybrid_threads_test — many threads doing
+  # keygen/encaps/decaps/sign/verify on shared algorithms and a shared key,
+  # concurrent provider load/unload, and a fork-then-operate leg. Scoped to that
+  # one test: races inside the uninstrumented libcrypto would otherwise dominate
+  # the report (test/tsan.supp filters any that still surface). setarch -R (wired
+  # into the ctest command) disables ASLR so TSan's shadow mapping does not abort.
+  #
+  # POST-MERGE ONLY (push to main), like the sanitize leg: off the PR critical
+  # path, guards every merge, and ties any failure to a specific merge commit
+  # rather than a scheduled run that would need a tracking issue.
+  tsan:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: ThreadSanitizer (latest OpenSSL)
+    runs-on: ubuntu-latest
+    env:
+      PREFIX: ${{ github.workspace }}/.local
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Resolve OpenSSL release ref
+        id: ossl
+        run: |
+          set -euo pipefail
+          REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl "openssl-*" \
+                | awk -F/ '{print $NF}' | grep -E "^openssl-[0-9]+\\.[0-9]+\\.[0-9]+$" \
+                | sort -V | tail -1)
+          SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL: $REF ($SHA)"
+
+      # Reuse the regular/sanitize leg's toolchain cache (same key) — only the
+      # OpenSSL install under $PREFIX is needed here.
+      - name: Cache toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.PREFIX }}
+            ${{ github.workspace }}/.interop/oqs-provider
+          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-0.16.0-oqsp-00fde3373e466043ee30ed31e32c56f6964ee5f4
+
+      - name: Build OpenSSL
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Configure hybrid provider (ThreadSanitizer)
+        run: cmake -S . -B build -G Ninja -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_TSAN=ON
+
+      - name: Build provider + threads test
+        run: cmake --build build --target hybrid-provider hybrid_threads_test -j"$(nproc)"
+
+      - name: Test — concurrency/fork/teardown under TSan
+        working-directory: build
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PREFIX/lib64"
+          export HYBRID_CEDE_TO_DEFAULT=0
+          ctest --output-on-failure -R hybrid_threads_test
 
   # ----------------------------------------------------------------- weekly ---
   # Exhaustive per-OpenSSL-version floor matrix against bleeding-edge liboqs +
@@ -323,4 +398,4 @@ jobs:
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'

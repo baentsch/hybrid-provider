@@ -83,16 +83,33 @@ typedef struct {
     /* Core BIO up-calls, captured from the core dispatch (en/decoders). */
     OSSL_FUNC_BIO_write_ex_fn *bio_write_ex;
     OSSL_FUNC_BIO_read_ex_fn *bio_read_ex;
+    /*
+     * Per-instance cede-to-default state, computed once at init from this
+     * instance's libctx + cede lever and IMMUTABLE thereafter (see
+     * hybrid_prov.c). Because it is fully built before *provctx is handed back
+     * — and torn down only after the instance is no longer queryable — the read
+     * paths (hybrid_query, hybrid_is_ceded) need no lock. `ceded` holds the
+     * withdrawn algorithm names (borrowed static-lifetime table pointers) and
+     * the *_rt arrays are heap copies of the static query tables with the ceded
+     * rows removed. filter_enabled == 0 means nothing was withdrawn and the
+     * static tables are served directly. All owned here, freed at teardown.
+     */
+    const char **ceded;
+    size_t n_ceded;
+    int filter_enabled;
+    OSSL_ALGORITHM *keymgmts_rt, *kems_rt, *signatures_rt,
+        *encoders_rt, *decoders_rt;
 } HYBRID_PROV_CTX;
 
 /*
- * True if `name` is an algorithm this provider withdrew because the default
+ * True if `name` is an algorithm this instance withdrew because the default
  * provider already serves it (cede-to-default; see hybrid_prov.c). Consulted by
  * the capability advertisers (hybrid_caps.c, composite_caps.c) so their output
- * matches the withdrawn query tables. The ceded set is a small file-scope list
- * in hybrid_prov.c, mirroring oqsprovider's rt_disabled_algs.
+ * matches the withdrawn query tables. The ceded set is per-provctx (immutable
+ * after init), so this is lock-free. `provctx` may be NULL (treated as "nothing
+ * ceded"), matching a provider with no cede state.
  */
-int hybrid_is_ceded(const char *name);
+int hybrid_is_ceded(void *provctx, const char *name);
 
 /* The context to use for component sub-algorithm fetches. */
 #define HYBRID_COMPONENT_LIBCTX(pctx) \
@@ -116,13 +133,13 @@ typedef struct {
     int         tls_codepoint;  /* TLS group code point, 0 if none */
     const char *oid;            /* X.509 OID, or NULL if not key-file encodable
                                  * (mirrors oqsprovider: most hybrid KEMs NULL) */
-    /* Component sizes are discovered at runtime; see HYBRID_SIZES. */
+    /* Component sizes are constants in hybrid_kem_sizes[]; see HYBRID_SIZES. */
 } HYBRID_KEM_INFO;
 
 /*
- * Signature component info. Sizes are discovered at runtime (see
- * hybrid_ensure_sizes); the table carries only identity + the parameters that
- * define oqsprovider's hybrid-sig wire format:
+ * Signature component info. Sizes are constants (hybrid_sig_sizes[]); the table
+ * carries only identity + the parameters that define oqsprovider's hybrid-sig
+ * wire format:
  *   - nist_level: NIST level of the PQ component, which selects the digest the
  *     classical component signs (1 -> SHA-256, 2/3 -> SHA-384, 4/5 -> SHA-512).
  *   - alg1 is always ECDSA ("EC" + group) or "RSA" (3072-bit); no EdDSA.
@@ -139,17 +156,22 @@ typedef struct {
 } HYBRID_SIG_INFO;
 
 /*
- * Per-component sizes for a KEM hybrid, discovered at runtime from the actual
- * component algorithms (see hybrid_kem_ensure_sizes) rather than hardcoded.
- * This keeps the algorithm table free of size constants: adding a hybrid needs
- * only component names + slot. `ct` is the ciphertext contribution (ephemeral
- * public-key length for a key-exchange component, KEM ciphertext otherwise).
+ * Per-component sizes for a hybrid. These are fixed per algorithm (pinned by the
+ * component names, which the hybrid name selects), so they are compile-time
+ * CONSTANTS held in hybrid_kem_sizes[] / hybrid_sig_sizes[] below and copied into
+ * each key at construction — never computed at runtime, so there is no shared
+ * mutable size cache to synchronize. The values are machine-generated (see
+ * test/hybrid_sizes_test.c, which regenerates and, in CI, re-derives them from
+ * live component keygens and fails on any drift). `ct` is the ciphertext
+ * contribution (ephemeral public-key length for a key-exchange component, KEM
+ * ciphertext otherwise); `a1_prv`/`a2_prv` follow the same convention the
+ * discovery used (RSA/EC private reported as the scalar/modulus byte width, not
+ * the variable DER length, which the encoders length-prefix instead).
  */
 typedef struct {
     size_t a1_pub, a1_prv, a1_ss, a1_ct;   /* classical (alg1); KEM: ss/ct */
     size_t a2_pub, a2_prv, a2_ss, a2_ct;   /* PQ (alg2); KEM: ss/ct */
     size_t a1_sig, a2_sig;                 /* SIG only: max signature sizes */
-    int    valid;
 } HYBRID_SIZES;
 
 /* Hybrid key — used for both KEM and SIG hybrids */
@@ -161,7 +183,7 @@ typedef struct hybrid_key_st {
     EVP_PKEY *key1;             /* classical component */
     EVP_PKEY *key2;             /* PQ component */
     unsigned int state;
-    HYBRID_SIZES sizes;         /* KEM only: runtime-discovered component sizes */
+    HYBRID_SIZES sizes;         /* constant component sizes, copied at construction */
     /*
      * Per-component property queries (borrowed pointers into the provider
      * context, which outlives the key; not freed here). NULL when unset, in
@@ -191,9 +213,9 @@ typedef struct hybrid_key_st {
  * which equals oqsprovider's `reverse_share` (reverse_share=1 -> slot 0). It
  * also matches OpenSSL's built-in MLX layout for the standardized names.
  *
- * Component sizes are NOT listed here — they are discovered at runtime from the
- * component algorithms (hybrid_kem_ensure_sizes), so a new hybrid needs only its
- * component names, EC group and slot.
+ * Component sizes are NOT listed in this identity row — they live as constants
+ * in hybrid_kem_sizes[] below (machine-generated, CI-verified), so a new hybrid
+ * needs only its component names, EC group and slot here.
  *
  * X(cfield, name, alg1, alg1_group, alg1_is_kem, alg2, slot,
  *   tls_codepoint, secbits, desc, oid)
@@ -321,6 +343,58 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
     (sizeof(hybrid_kem_table) / sizeof(hybrid_kem_table[0]))
 
 /*
+ * Constant component sizes, one row per hybrid KEM in HYBRID_KEM_LIST order
+ * (index = HYBRID_KEM_IDX_*). MACHINE-GENERATED — do not hand-edit; regenerate
+ * with `hybrid_sizes_test emit` and paste. hybrid_sizes_test re-derives these
+ * from live component keygens in CI and fails on drift. Fields, in order:
+ * a1_pub,a1_prv,a1_ss,a1_ct, a2_pub,a2_prv,a2_ss,a2_ct, a1_sig(0), a2_sig(0).
+ */
+static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
+    { 32,32,32,32, 1184,2400,32,1088, 0,0 },        /* X25519MLKEM768 */
+    { 56,56,56,56, 1568,3168,32,1568, 0,0 },        /* X448MLKEM1024 */
+    { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* SecP256r1MLKEM768 */
+    { 97,48,48,97, 1568,3168,32,1568, 0,0 },        /* SecP384r1MLKEM1024 */
+    { 32,32,32,32, 800,1632,32,768, 0,0 },          /* x25519_mlkem512 */
+    { 65,32,32,65, 800,1632,32,768, 0,0 },          /* p256_mlkem512 */
+    { 65,32,32,65, 800,1632,32,768, 0,0 },          /* bp256_mlkem512 */
+    { 97,48,48,97, 1184,2400,32,1088, 0,0 },        /* p384_mlkem768 */
+    { 56,56,56,56, 1184,2400,32,1088, 0,0 },        /* x448_mlkem768 */
+    { 97,48,48,97, 1184,2400,32,1088, 0,0 },        /* bp384_mlkem768 */
+    { 133,66,66,133, 1568,3168,32,1568, 0,0 },      /* p521_mlkem1024 */
+    { 129,64,64,129, 1568,3168,32,1568, 0,0 },      /* bp512_mlkem1024 */
+    { 65,32,32,65, 9616,19888,16,9752, 0,0 },       /* p256_frodo640aes */
+    { 32,32,32,32, 9616,19888,16,9752, 0,0 },       /* x25519_frodo640aes */
+    { 65,32,32,65, 9616,19888,16,9752, 0,0 },       /* p256_frodo640shake */
+    { 32,32,32,32, 9616,19888,16,9752, 0,0 },       /* x25519_frodo640shake */
+    { 97,48,48,97, 15632,31296,24,15792, 0,0 },     /* p384_frodo976aes */
+    { 56,56,56,56, 15632,31296,24,15792, 0,0 },     /* x448_frodo976aes */
+    { 97,48,48,97, 15632,31296,24,15792, 0,0 },     /* p384_frodo976shake */
+    { 56,56,56,56, 15632,31296,24,15792, 0,0 },     /* x448_frodo976shake */
+    { 133,66,66,133, 21520,43088,32,21696, 0,0 },   /* p521_frodo1344aes */
+    { 133,66,66,133, 21520,43088,32,21696, 0,0 },   /* p521_frodo1344shake */
+    { 65,32,32,65, 9616,19888,16,9720, 0,0 },       /* p256_efrodo640aes */
+    { 32,32,32,32, 9616,19888,16,9720, 0,0 },       /* x25519_efrodo640aes */
+    { 65,32,32,65, 9616,19888,16,9720, 0,0 },       /* p256_efrodo640shake */
+    { 32,32,32,32, 9616,19888,16,9720, 0,0 },       /* x25519_efrodo640shake */
+    { 97,48,48,97, 15632,31296,24,15744, 0,0 },     /* p384_efrodo976aes */
+    { 56,56,56,56, 15632,31296,24,15744, 0,0 },     /* x448_efrodo976aes */
+    { 97,48,48,97, 15632,31296,24,15744, 0,0 },     /* p384_efrodo976shake */
+    { 56,56,56,56, 15632,31296,24,15744, 0,0 },     /* x448_efrodo976shake */
+    { 133,66,66,133, 21520,43088,32,21632, 0,0 },   /* p521_efrodo1344aes */
+    { 133,66,66,133, 21520,43088,32,21632, 0,0 },   /* p521_efrodo1344shake */
+    { 65,32,32,65, 1541,5223,32,1573, 0,0 },        /* p256_bikel1 */
+    { 32,32,32,32, 1541,5223,32,1573, 0,0 },        /* x25519_bikel1 */
+    { 97,48,48,97, 3083,10105,32,3115, 0,0 },       /* p384_bikel3 */
+    { 56,56,56,56, 3083,10105,32,3115, 0,0 },       /* x448_bikel3 */
+    { 133,66,66,133, 5122,16494,32,5154, 0,0 },     /* p521_bikel5 */
+    { 65,32,32,65, 2241,2321,32,4433, 0,0 },        /* p256_hqc1 */
+    { 32,32,32,32, 2241,2321,32,4433, 0,0 },        /* x25519_hqc1 */
+    { 97,48,48,97, 4514,4602,32,8978, 0,0 },        /* p384_hqc3 */
+    { 56,56,56,56, 4514,4602,32,8978, 0,0 },        /* x448_hqc3 */
+    { 133,66,66,133, 7237,7333,32,14421, 0,0 },     /* p521_hqc5 */
+};
+
+/*
  * Master hybrid-SIG list — single source of truth, mirroring HYBRID_KEM_LIST.
  * These are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ), matching
  * its names, OIDs and wire format. Component sizes are discovered at runtime.
@@ -414,6 +488,41 @@ enum { HYBRID_SIG_LIST(HYBRID_SIG_IDX_ROW) HYBRID_SIG_ALG_COUNT_ENUM };
 #define HYBRID_SIG_ALG_COUNT \
     (sizeof(hybrid_sig_table) / sizeof(hybrid_sig_table[0]))
 
+/*
+ * Constant component sizes, one row per hybrid signature in HYBRID_SIG_LIST
+ * order (index = HYBRID_SIG_IDX_*). MACHINE-GENERATED — see hybrid_kem_sizes[].
+ * Fields, in order: a1_pub,a1_prv,a1_ss(0),a1_ct(0),
+ * a2_pub,a2_prv,a2_ss(0),a2_ct(0), a1_sig, a2_sig.
+ */
+static const HYBRID_SIZES hybrid_sig_sizes[HYBRID_SIG_ALG_COUNT] = {
+    { 65,32,0,0, 1312,2560,0,0, 72,2420 },          /* p256_mldsa44 */
+    { 398,384,0,0, 1312,2560,0,0, 384,2420 },       /* rsa3072_mldsa44 */
+    { 97,48,0,0, 1952,4032,0,0, 104,3309 },         /* p384_mldsa65 */
+    { 133,66,0,0, 2592,4896,0,0, 139,4627 },        /* p521_mldsa87 */
+    { 65,32,0,0, 897,1281,0,0, 72,752 },            /* p256_falcon512 */
+    { 398,384,0,0, 897,1281,0,0, 384,752 },         /* rsa3072_falcon512 */
+    { 133,66,0,0, 1793,2305,0,0, 139,1462 },        /* p521_falcon1024 */
+    { 65,32,0,0, 897,1281,0,0, 72,666 },            /* p256_falconpadded512 */
+    { 398,384,0,0, 897,1281,0,0, 384,666 },         /* rsa3072_falconpadded512 */
+    { 133,66,0,0, 1793,2305,0,0, 139,1280 },        /* p521_falconpadded1024 */
+    { 65,32,0,0, 1420,24,0,0, 72,454 },             /* p256_mayo1 */
+    { 65,32,0,0, 4912,24,0,0, 72,186 },             /* p256_mayo2 */
+    { 97,48,0,0, 2986,32,0,0, 104,681 },            /* p384_mayo3 */
+    { 133,66,0,0, 5554,40,0,0, 139,964 },           /* p521_mayo5 */
+    { 65,32,0,0, 66576,348704,0,0, 72,96 },         /* p256_OV_Is_pkc */
+    { 65,32,0,0, 43576,237896,0,0, 72,128 },        /* p256_OV_Ip_pkc */
+    { 65,32,0,0, 66576,32,0,0, 72,96 },             /* p256_OV_Is_pkc_skc */
+    { 65,32,0,0, 43576,32,0,0, 72,128 },            /* p256_OV_Ip_pkc_skc */
+    { 65,32,0,0, 1016,48,0,0, 72,248 },             /* p256_snova2454 */
+    { 65,32,0,0, 1016,36848,0,0, 72,248 },          /* p256_snova2454esk */
+    { 65,32,0,0, 9842,48,0,0, 72,124 },             /* p256_snova37172 */
+    { 97,48,0,0, 1579,48,0,0, 104,379 },            /* p384_snova2455 */
+    { 133,66,0,0, 2716,48,0,0, 139,454 },           /* p521_snova2965 */
+    { 65,32,0,0, 60,88,0,0, 72,3280 },              /* p256_mqom2cat1gf16fastr5 */
+    { 97,48,0,0, 90,132,0,0, 104,7738 },            /* p384_mqom2cat3gf16fastr5 */
+    { 133,66,0,0, 122,180,0,0, 139,13772 },         /* p521_mqom2cat5gf16fastr5 */
+};
+
 /* Accessor macros — work for both KEM and SIG info via HYBRID_KEY */
 #define HYBRID_KEY_ALG1_NAME(k) \
     ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_name \
@@ -425,15 +534,15 @@ enum { HYBRID_SIG_LIST(HYBRID_SIG_IDX_ROW) HYBRID_SIG_ALG_COUNT_ENUM };
     ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_name \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_name)
 /*
- * Size accessors read the runtime-discovered cache (key->sizes) for both KEM
- * and SIG keys. Callers must have populated it via hybrid_ensure_sizes() first.
+ * Size accessors read key->sizes (the constant sizes copied in at construction)
+ * for both KEM and SIG keys.
  */
 #define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) ((k)->sizes.a1_pub)
 #define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) ((k)->sizes.a2_pub)
 #define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) ((k)->sizes.a1_prv)
 #define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) ((k)->sizes.a2_prv)
 
-/* Total ciphertext / shared-secret sizes for a KEM key (from the cache). */
+/* Total ciphertext / shared-secret sizes for a KEM key. */
 static inline size_t hybrid_kem_ctext_bytes(const HYBRID_KEY *key)
 {
     return key->sizes.a1_ct + key->sizes.a2_ct;
@@ -445,7 +554,7 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 }
 
 /*
- * Maximum hybrid signature size (from the cache):
+ * Maximum hybrid signature size:
  * ENCODE_UINT32(classical_len) + max classical sig + PQ sig.
  */
 static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_KEY *key)
@@ -453,7 +562,7 @@ static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_KEY *key)
     return sizeof(uint32_t) + key->sizes.a1_sig + key->sizes.a2_sig;
 }
 
-/* Generic total sizes via HYBRID_KEY (from the cache). */
+/* Generic total sizes via HYBRID_KEY. */
 static inline size_t hybrid_key_pubkey_bytes(const HYBRID_KEY *key)
 {
     return key->sizes.a1_pub + key->sizes.a2_pub;
@@ -507,15 +616,6 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
                                    const unsigned char *cder, size_t cderlen,
                                    const unsigned char *pqv, size_t pqvlen,
                                    const unsigned char *pqpub, size_t pqpublen);
-
-/*
- * Populate key->sizes by querying the component algorithms with throwaway
- * keygens (sizes are deterministic per algorithm). Handles both KEM keys
- * (pub/priv/shared-secret/ciphertext) and SIG keys (pub/priv/max-signature).
- * Safe to call repeatedly; a no-op once the cache is valid. Returns 1 on
- * success. Implemented in hybrid_keymgmt.c.
- */
-int hybrid_ensure_sizes(HYBRID_KEY *key);
 
 /* TLS-GROUP capability advertising (hybrid_caps.c) */
 int hybrid_get_capabilities(void *provctx, const char *capability,
