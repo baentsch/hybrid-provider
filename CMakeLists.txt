@@ -13,6 +13,24 @@ if(NOT MSVC)
     add_compile_options(-Werror=deprecated-declarations)
 endif()
 
+# Memory-safety audit automation (issue #42). When ON, instrument the provider
+# module AND every test target with AddressSanitizer + UndefinedBehaviorSanitizer
+# (LeakSanitizer rides along with ASan on Linux), so a plain `ctest` run exercises
+# the whole in-process suite under the sanitizers. Set before any target is
+# defined so the flags apply globally. OpenSSL/liboqs/oqsprovider are NOT
+# instrumented; library-rooted leaks are filtered in CI via test/lsan.supp. The
+# CLI scenario tests shell out to the (uninstrumented) openssl binary, which
+# cannot dlopen an instrumented provider, so CI excludes them from this leg.
+option(HYBRID_SANITIZE "Build provider + tests with ASan/UBSan/LSan (issue #42)" OFF)
+if(HYBRID_SANITIZE)
+    if(MSVC)
+        message(FATAL_ERROR "HYBRID_SANITIZE is GCC/Clang only")
+    endif()
+    add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all
+                        -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
 # Allow pointing to a local OpenSSL build:
 #   cmake .. -DOPENSSL_ROOT_DIR=../.local
 if(DEFINED OPENSSL_ROOT_DIR)

@@ -159,6 +159,76 @@ jobs:
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
             -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
 
+  # --------------------------------------------------------------- sanitize ---
+  # Memory-safety audit automation (issue #42): build the provider + tests with
+  # ASan/UBSan (LeakSanitizer rides along with ASan) against the latest OpenSSL
+  # (>=3.5, so native PQ + the composite tier are exercised) and run the whole
+  # in-process suite under the sanitizers. The CLI scenario tests (hybrid_scenarios_*)
+  # shell out to the uninstrumented openssl binary, which cannot dlopen an
+  # instrumented provider, so they are excluded from this leg.
+  sanitize:
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && github.event_name != 'schedule'
+    name: ASan/UBSan/LSan (latest OpenSSL)
+    runs-on: ubuntu-latest
+    env:
+      PREFIX: ${{ github.workspace }}/.local
+      LIBOQS_REF: "0.16.0"
+      OQSPROV_REF: "00fde3373e466043ee30ed31e32c56f6964ee5f4"
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Resolve OpenSSL release ref
+        id: ossl
+        run: |
+          set -euo pipefail
+          REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl "openssl-*" \
+                | awk -F/ '{print $NF}' | grep -E "^openssl-[0-9]+\\.[0-9]+\\.[0-9]+$" \
+                | sort -V | tail -1)
+          SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL: $REF ($SHA)"
+
+      - name: Cache toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.PREFIX }}
+            ${{ github.workspace }}/.interop/oqs-provider
+          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+
+      - name: Build OpenSSL
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Configure hybrid provider (sanitizers)
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_SANITIZE=ON
+
+      - name: Build liboqs + oqs-provider (pinned)
+        run: OPENSSL_PREFIX="$PREFIX" BUILD_DIR="$PWD/build" ./test/setup_oqs_interop.sh
+
+      - name: Build hybrid provider
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test — in-process suite under ASan/UBSan/LSan
+        working-directory: build
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PREFIX/lib64"
+          export ASAN_OPTIONS="abort_on_error=1:detect_leaks=1:strict_string_checks=1"
+          export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/test/lsan.supp"
+          export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
+          ctest --output-on-failure -E 'hybrid_scenarios_'
+
   # ----------------------------------------------------------------- weekly ---
   # Exhaustive per-OpenSSL-version floor matrix against bleeding-edge liboqs +
   # oqs-provider main. Re-validates the drop-in replacement contract as upstream

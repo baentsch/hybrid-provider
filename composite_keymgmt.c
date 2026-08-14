@@ -317,6 +317,10 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
     p[0] = OSSL_PARAM_construct_octet_string(key->info->pq_priv_param,
                                              (void *)pqpriv, pqlen);
     p[1] = OSSL_PARAM_construct_end();
+    /* Partial-assignment invariant (audit #42): if the PQ fromdata succeeds but
+     * the trad half fails, key->pq_key is left populated and we return 0 without
+     * freeing it here. Safe because every caller frees the whole COMPOSITE_KEY on
+     * failure and never retries the load on the same object. */
     if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
             && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_KEYPAIR, p) > 0
             && (key->trad_key = load_trad_priv(key->libctx, key->trad_propq,
