@@ -326,7 +326,8 @@ set_tests_properties(hybrid_cms_test PROPERTIES
 #
 # POSIX-only: it uses pthreads and fork(). The provider targets Linux (see
 # CLAUDE.md), and a portable-threads rewrite would add noise for no coverage
-# gain, so the test is simply gated to UNIX rather than ported to Windows.
+# gain, so the test is simply gated to UNIX rather than ported to Windows
+# (Windows support is tracked as a low-priority follow-up in issue #52).
 if(UNIX)
 find_package(Threads REQUIRED)
 add_executable(hybrid_threads_test test/hybrid_threads_test.c)
