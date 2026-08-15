@@ -215,10 +215,10 @@ static int hybrid_kem_encapsulate(void *vctx,
      * For key-exchange alg1, "ciphertext" = ephemeral public key.
      * For native KEM alg2, ciphertext = KEM ciphertext.
      */
-    ct1len = key->sizes.a1_ct;
-    ct2len = key->sizes.a2_ct;
-    ss1len = key->sizes.a1_ss;
-    ss2len = key->sizes.a2_ss;
+    ct1len = key->sizes->a1_ct;
+    ct2len = key->sizes->a2_ct;
+    ss1len = key->sizes->a1_ss;
+    ss2len = key->sizes->a2_ss;
     total_clen = ct1len + ct2len;
     total_slen = ss1len + ss2len;
 
@@ -293,10 +293,10 @@ static int hybrid_kem_decapsulate(void *vctx,
     if (!hybrid_have_prvkey(key))
         return 0;
 
-    ct1len = key->sizes.a1_ct;
-    ct2len = key->sizes.a2_ct;
-    ss1len = key->sizes.a1_ss;
-    ss2len = key->sizes.a2_ss;
+    ct1len = key->sizes->a1_ct;
+    ct2len = key->sizes->a2_ct;
+    ss1len = key->sizes->a1_ss;
+    ss2len = key->sizes->a2_ss;
     total_clen = ct1len + ct2len;
     total_slen = ss1len + ss2len;
 

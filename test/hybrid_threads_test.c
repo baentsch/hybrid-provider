@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -34,8 +35,10 @@
 #include <openssl/provider.h>
 #include <openssl/err.h>
 
-/* Algorithms exercised. Both resolve entirely from the default provider on
- * OpenSSL >= 3.5 (native ML-KEM/ML-DSA), which is where this test runs. */
+/* Algorithms exercised. The PQ halves come from the default provider on
+ * OpenSSL >= 3.5 (native ML-KEM/ML-DSA) and from oqsprovider below that, so
+ * every libctx here also loads oqsprovider best-effort (via load_providers())
+ * and the test runs on the whole version matrix, not just >= 3.5. */
 #define KEM_ALG "X25519MLKEM768"
 #define SIG_ALG "p256_mldsa44"
 
@@ -43,6 +46,23 @@
 #define N_ITERS   24
 
 static const char *module_path;   /* OPENSSL_MODULES, for per-thread libctxs */
+
+/*
+ * Load the providers a worker needs into `libctx`: the hybrid provider under
+ * test, the default provider for the classical halves, and — best-effort —
+ * oqsprovider for the PQ halves on OpenSSL < 3.5 (a NULL return is fine when the
+ * default provider already supplies them). Returns 1 iff default + hybrid load.
+ */
+static int load_providers(OSSL_LIB_CTX *libctx)
+{
+    if (module_path != NULL)
+        OSSL_PROVIDER_set_default_search_path(libctx, module_path);
+    if (OSSL_PROVIDER_load(libctx, "default") == NULL)
+        return 0;
+    (void)OSSL_PROVIDER_load(libctx, "oqsprovider");   /* best-effort */
+    ERR_clear_error();
+    return OSSL_PROVIDER_load(libctx, "hybrid") != NULL;
+}
 
 static int sig_sign_verify(OSSL_LIB_CTX *libctx, EVP_PKEY *key,
                            const unsigned char *msg, size_t msglen);
@@ -180,7 +200,7 @@ err:
 
 struct shared_arg {
     OSSL_LIB_CTX *libctx;
-    int failures;
+    atomic_int failures;
 };
 
 static void *independent_worker(void *v)
@@ -190,7 +210,7 @@ static void *independent_worker(void *v)
 
     for (i = 0; i < N_ITERS; i++) {
         if (!do_kem(a->libctx, KEM_ALG) || !do_sig(a->libctx, SIG_ALG)) {
-            __atomic_fetch_add(&a->failures, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add(&a->failures, 1);
             return NULL;
         }
     }
@@ -219,7 +239,7 @@ struct sharedkey_arg {
     EVP_PKEY *sig_key;
     const unsigned char *msg;
     size_t msglen;
-    int failures;
+    atomic_int failures;
 };
 
 static void *sharedkey_worker(void *v)
@@ -232,7 +252,7 @@ static void *sharedkey_worker(void *v)
     for (i = 0; i < N_ITERS; i++) {
         if (!kem_encap_decap(a->libctx, a->kem_key)
                 || !sig_sign_verify(a->libctx, a->sig_key, a->msg, a->msglen)) {
-            __atomic_fetch_add(&a->failures, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add(&a->failures, 1);
             return NULL;
         }
     }
@@ -282,28 +302,18 @@ err:
 
 static void *loadunload_worker(void *v)
 {
-    int *failures = v;
+    atomic_int *failures = v;
     int i;
 
     for (i = 0; i < 6; i++) {
         OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new();
-        OSSL_PROVIDER *deflt = NULL, *hyb = NULL;
         int ok = 0;
 
-        if (libctx == NULL)
-            goto next;
-        if (module_path != NULL)
-            OSSL_PROVIDER_set_default_search_path(libctx, module_path);
-        deflt = OSSL_PROVIDER_load(libctx, "default");
-        hyb = OSSL_PROVIDER_load(libctx, "hybrid");
-        if (deflt != NULL && hyb != NULL)
+        if (libctx != NULL && load_providers(libctx))
             ok = do_kem(libctx, KEM_ALG);
-next:
-        OSSL_PROVIDER_unload(hyb);
-        OSSL_PROVIDER_unload(deflt);
-        OSSL_LIB_CTX_free(libctx);
+        OSSL_LIB_CTX_free(libctx);   /* unloads the providers loaded above */
         if (!ok)
-            __atomic_fetch_add(failures, 1, __ATOMIC_RELAXED);
+            atomic_fetch_add(failures, 1);
     }
     return NULL;
 }
@@ -311,7 +321,8 @@ next:
 static int test_load_unload(void)
 {
     pthread_t t[N_THREADS];
-    int failures = 0, i, ok = 1;
+    atomic_int failures = 0;
+    int i, ok = 1;
 
     for (i = 0; i < N_THREADS; i++)
         if (pthread_create(&t[i], NULL, loadunload_worker, &failures) != 0)
@@ -339,10 +350,7 @@ static int test_fork(void)
         int ok = 0;
 
         if (libctx != NULL) {
-            if (module_path != NULL)
-                OSSL_PROVIDER_set_default_search_path(libctx, module_path);
-            if (OSSL_PROVIDER_load(libctx, "default") != NULL
-                    && OSSL_PROVIDER_load(libctx, "hybrid") != NULL)
+            if (load_providers(libctx))
                 ok = do_kem(libctx, KEM_ALG) && do_sig(libctx, SIG_ALG);
             OSSL_LIB_CTX_free(libctx);
         }
@@ -373,7 +381,6 @@ static int run(const char *name, int result, int *fails)
 int main(void)
 {
     OSSL_LIB_CTX *libctx = NULL;
-    OSSL_PROVIDER *deflt = NULL, *hyb = NULL;
     int fails = 0;
 
     module_path = getenv("OPENSSL_MODULES");
@@ -382,13 +389,7 @@ int main(void)
     printf("================================================\n");
 
     libctx = OSSL_LIB_CTX_new();
-    if (libctx == NULL)
-        goto done;
-    if (module_path != NULL)
-        OSSL_PROVIDER_set_default_search_path(libctx, module_path);
-    deflt = OSSL_PROVIDER_load(libctx, "default");
-    hyb = OSSL_PROVIDER_load(libctx, "hybrid");
-    if (deflt == NULL || hyb == NULL) {
+    if (libctx == NULL || !load_providers(libctx)) {
         fprintf(stderr, "provider load failed\n");
         ERR_print_errors_fp(stderr);
         fails = 1;
@@ -401,9 +402,7 @@ int main(void)
     run("fork then operate", test_fork(), &fails);
 
 done:
-    OSSL_PROVIDER_unload(hyb);
-    OSSL_PROVIDER_unload(deflt);
-    OSSL_LIB_CTX_free(libctx);
+    OSSL_LIB_CTX_free(libctx);   /* unloads providers loaded above */
 
     printf("================================================\n");
     printf("%s\n", fails == 0 ? "ALL PASS" : "FAILURES");

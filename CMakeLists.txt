@@ -316,12 +316,18 @@ set_tests_properties(hybrid_cms_test PROPERTIES
 )
 
 # Concurrency / fork / teardown stress test (issue #43): many threads doing
-# keygen/encaps/decaps/sign/verify on shared algorithms and shared keys,
-# concurrent provider load/unload, and a fork-then-operate leg. Exercises the
-# provider's shared/cached state (cede runtime tables, per-key size caches, the
-# load/unload refcount). Runs under ASan on the sanitize leg and under TSan on
-# the tsan leg. Uses X25519MLKEM768 + p256_mldsa44, both resolvable from the
-# default provider on OpenSSL >= 3.5, so it needs no oqsprovider.
+# keygen/encaps/decaps/sign/verify on shared algorithms and a shared key,
+# concurrent provider load/unload, and a fork-then-operate leg — the regression
+# guard that the provider keeps no shared mutable runtime state (per-instance
+# immutable cede tables + constant sizes). Runs under ASan on the sanitize leg
+# and under TSan on the tsan leg. Uses X25519MLKEM768 + p256_mldsa44; each libctx
+# loads oqsprovider best-effort, so the PQ halves resolve on OpenSSL < 3.5 too
+# (native default provider on >= 3.5), letting it run on the whole version matrix.
+#
+# POSIX-only: it uses pthreads and fork(). The provider targets Linux (see
+# CLAUDE.md), and a portable-threads rewrite would add noise for no coverage
+# gain, so the test is simply gated to UNIX rather than ported to Windows.
+if(UNIX)
 find_package(Threads REQUIRED)
 add_executable(hybrid_threads_test test/hybrid_threads_test.c)
 target_include_directories(hybrid_threads_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
@@ -346,6 +352,7 @@ else()
     set_tests_properties(hybrid_threads_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
+endif()
 endif()
 
 # Component-size constant-table verifier (issue #43 follow-up): the provider

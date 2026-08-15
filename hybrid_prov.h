@@ -158,11 +158,12 @@ typedef struct {
 /*
  * Per-component sizes for a hybrid. These are fixed per algorithm (pinned by the
  * component names, which the hybrid name selects), so they are compile-time
- * CONSTANTS held in hybrid_kem_sizes[] / hybrid_sig_sizes[] below and copied into
- * each key at construction — never computed at runtime, so there is no shared
- * mutable size cache to synchronize. The values are machine-generated (see
- * test/hybrid_sizes_test.c, which regenerates and, in CI, re-derives them from
- * live component keygens and fails on any drift). `ct` is the ciphertext
+ * CONSTANTS held in hybrid_kem_sizes[] / hybrid_sig_sizes[] below; each key just
+ * points at its variant's row (HYBRID_KEY.sizes) — never computed at runtime, so
+ * there is no shared mutable size cache to synchronize. The values are
+ * machine-generated (see test/hybrid_sizes_test.c, which regenerates and, in CI,
+ * re-derives them from live component keygens and fails on any drift). `ct` is
+ * the ciphertext
  * contribution (ephemeral public-key length for a key-exchange component, KEM
  * ciphertext otherwise); `a1_prv`/`a2_prv` follow the same convention the
  * discovery used (RSA/EC private reported as the scalar/modulus byte width, not
@@ -183,7 +184,9 @@ typedef struct hybrid_key_st {
     EVP_PKEY *key1;             /* classical component */
     EVP_PKEY *key2;             /* PQ component */
     unsigned int state;
-    HYBRID_SIZES sizes;         /* constant component sizes, copied at construction */
+    const HYBRID_SIZES *sizes;  /* -> this variant's row in the constant size
+                                 * table (hybrid_kem_sizes[]/hybrid_sig_sizes[]);
+                                 * borrowed, static-lifetime, not freed here */
     /*
      * Per-component property queries (borrowed pointers into the provider
      * context, which outlives the key; not freed here). NULL when unset, in
@@ -348,6 +351,11 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
  * with `hybrid_sizes_test emit` and paste. hybrid_sizes_test re-derives these
  * from live component keygens in CI and fails on drift. Fields, in order:
  * a1_pub,a1_prv,a1_ss,a1_ct, a2_pub,a2_prv,a2_ss,a2_ct, a1_sig(0), a2_sig(0).
+ *
+ * (The composite family needs no such table: it always has its two component
+ * EVP_PKEYs present when a size is needed and reads EVP_PKEY_get_size() off them
+ * directly. The hybrids need constants because the decoder must know a component
+ * size to split an incoming key blob *before* the component keys exist.)
  */
 static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
     { 32,32,32,32, 1184,2400,32,1088, 0,0 },        /* X25519MLKEM768 */
@@ -537,20 +545,20 @@ static const HYBRID_SIZES hybrid_sig_sizes[HYBRID_SIG_ALG_COUNT] = {
  * Size accessors read key->sizes (the constant sizes copied in at construction)
  * for both KEM and SIG keys.
  */
-#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) ((k)->sizes.a1_pub)
-#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) ((k)->sizes.a2_pub)
-#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) ((k)->sizes.a1_prv)
-#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) ((k)->sizes.a2_prv)
+#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) ((k)->sizes->a1_pub)
+#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) ((k)->sizes->a2_pub)
+#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) ((k)->sizes->a1_prv)
+#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) ((k)->sizes->a2_prv)
 
 /* Total ciphertext / shared-secret sizes for a KEM key. */
 static inline size_t hybrid_kem_ctext_bytes(const HYBRID_KEY *key)
 {
-    return key->sizes.a1_ct + key->sizes.a2_ct;
+    return key->sizes->a1_ct + key->sizes->a2_ct;
 }
 
 static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 {
-    return key->sizes.a1_ss + key->sizes.a2_ss;
+    return key->sizes->a1_ss + key->sizes->a2_ss;
 }
 
 /*
@@ -559,18 +567,18 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
  */
 static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_KEY *key)
 {
-    return sizeof(uint32_t) + key->sizes.a1_sig + key->sizes.a2_sig;
+    return sizeof(uint32_t) + key->sizes->a1_sig + key->sizes->a2_sig;
 }
 
 /* Generic total sizes via HYBRID_KEY. */
 static inline size_t hybrid_key_pubkey_bytes(const HYBRID_KEY *key)
 {
-    return key->sizes.a1_pub + key->sizes.a2_pub;
+    return key->sizes->a1_pub + key->sizes->a2_pub;
 }
 
 static inline size_t hybrid_key_prvkey_bytes(const HYBRID_KEY *key)
 {
-    return key->sizes.a1_prv + key->sizes.a2_prv;
+    return key->sizes->a1_prv + key->sizes->a2_prv;
 }
 
 /* Extern declarations for dispatch tables */

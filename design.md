@@ -698,7 +698,8 @@ memory-safety hazard is `sizeof(struct)`-based serialized-size math, and the aud
 found none (all serialized lengths derive from component byte sizes). A meaningful
 run would need a full 32-bit build of the *same* OpenSSL + oqsprovider toolchain —
 disproportionate for a class the code does not exhibit — so it is left as
-follow-up rather than approximated by a system-OpenSSL cross-compile.
+follow-up (tracked in issue #51) rather than approximated by a system-OpenSSL
+cross-compile.
 
 ### Concurrency, fork and teardown
 

@@ -57,10 +57,9 @@ hybrid_key_new(int is_kem, unsigned int variant,
     key->is_kem = is_kem;
     key->info = is_kem ? (const void *)&hybrid_kem_table[variant]
                        : (const void *)&hybrid_sig_table[variant];
-    /* Component sizes are constants; copy them in now (before the key is ever
-     * shared) so every later read is of immutable per-key state — no runtime
-     * discovery, no cache, no lock. */
-    key->sizes = is_kem ? hybrid_kem_sizes[variant] : hybrid_sig_sizes[variant];
+    /* Point at this variant's row in the constant size table — no per-key copy,
+     * no runtime discovery, no cache, no lock. The table is static-lifetime. */
+    key->sizes = is_kem ? &hybrid_kem_sizes[variant] : &hybrid_sig_sizes[variant];
     key->key1 = NULL;
     key->key2 = NULL;
     key->state = HYBRID_HAVE_NOKEYS;
