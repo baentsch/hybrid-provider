@@ -138,10 +138,12 @@ The provider dispatch table exposes:
 Hybrid algorithm pairings are defined at compile time with a table-driven
 approach. Each entry specifies:
 
-Component **sizes are not stored in the table** — they are discovered at runtime
-from the actual component algorithms (`hybrid_ensure_sizes`), so a new hybrid
-needs only its component identity, not hardcoded lengths. The table rows carry
-only identity plus the parameters that fix the wire format:
+Component **sizes are not stored in the identity table** — they live as
+machine-generated constants (`hybrid_kem_sizes[]` / `hybrid_sig_sizes[]`,
+CI-verified against live component keygens by `hybrid_sizes_test`), so a new
+hybrid needs only its component identity in the master list, not hand-typed
+lengths. The table rows carry only identity plus the parameters that fix the wire
+format:
 
 ```c
 typedef struct {
@@ -314,8 +316,8 @@ typedef struct hybrid_key_st {
 #define HYBRID_HAVE_PRVKEY  2
 ```
 
-Component sizes are discovered at runtime (`HYBRID_SIZES`, see
-`hybrid_ensure_sizes`); `pq_propq`/`classic_propq` are borrowed pointers into the
+Component sizes are compile-time constants (`HYBRID_SIZES`, copied in at
+construction); `pq_propq`/`classic_propq` are borrowed pointers into the
 provider context that steer per-component provider selection (see "Component
 provider selection"), each falling back to `propq` when unset.
 
@@ -666,21 +668,72 @@ expensive or dependent on upstream drift runs weekly.**
   `OQS_CEDE_HYBRIDS` patch against oqs-provider `main` surfaces early. A weekly
   failure never blocks a PR.
 
-On top of the two behavioural tiers, a push/PR **sanitize** leg guards the
-hand-written EVP glue for memory safety (issue #42): it builds the provider and
-every in-process test with AddressSanitizer + UndefinedBehaviorSanitizer
-(LeakSanitizer via ASan) against the latest OpenSSL and runs the suite under them
+On top of the two behavioural tiers, a **sanitize** leg guards the hand-written
+EVP glue for memory safety (issue #42): it builds the provider and every
+in-process test with AddressSanitizer + UndefinedBehaviorSanitizer (LeakSanitizer
+via ASan) against the latest OpenSSL and runs the suite under them
 (`-DHYBRID_SANITIZE=ON`). OpenSSL/liboqs/oqsprovider are not instrumented, so
 library-rooted leaks are filtered via `test/lsan.supp`; the CLI scenario tests are
 excluded because the uninstrumented `openssl` binary cannot dlopen an instrumented
-provider.
+provider. It runs **post-merge only** (on push to `main`), not on PRs: the
+instrumented full-suite run is expensive, so it is kept off the PR critical path
+for fast turnaround while still guarding every merge — and, unlike a scheduled
+run, a failure is tied to a specific merge commit and needs no separate tracking
+issue.
+
+A **tsan** leg guards thread-safety (issue #43): it builds the provider and tests
+with ThreadSanitizer (`-DHYBRID_TSAN=ON`, mutually exclusive with the ASan leg)
+and runs `hybrid_threads_test` — many threads doing
+keygen/encaps/decaps/sign/verify on shared algorithms and a shared key,
+concurrent provider load/unload, and a fork-then-operate leg. It is scoped to
+that one test because races inside the uninstrumented libcrypto would otherwise
+dominate the report (`test/tsan.supp` filters any that still surface from library
+frames); ASLR is disabled via `setarch -R` so TSan's shadow mapping does not
+abort. Like the sanitize leg it runs **post-merge only** (on push to `main`).
+`hybrid_threads_test` also runs under the ASan leg (full-suite), covering its
+allocations for leaks and UB.
 
 A 32-bit (ILP32) *test* leg is deliberately **not** run: the only 32-bit-specific
 memory-safety hazard is `sizeof(struct)`-based serialized-size math, and the audit
 found none (all serialized lengths derive from component byte sizes). A meaningful
 run would need a full 32-bit build of the *same* OpenSSL + oqsprovider toolchain —
 disproportionate for a class the code does not exhibit — so it is left as
-follow-up rather than approximated by a system-OpenSSL cross-compile.
+follow-up (tracked in issue #51) rather than approximated by a system-OpenSSL
+cross-compile.
+
+### Concurrency, fork and teardown
+
+A provider is long-lived shared state used by many threads and across `fork()`,
+and torn down at unload and again at process exit, so it must be race-, fork- and
+teardown-safe (issue #43). The design goal here is stronger than "lock it
+correctly": the provider keeps **no shared mutable runtime state**, so its
+operational paths take **no locks at all**.
+
+- **Cede-to-default runtime tables** — the withdrawn-algorithm-name list and the
+  filtered query tables — are held **per `HYBRID_PROV_CTX`**, computed once during
+  `OSSL_provider_init` (before `*provctx` is returned) and immutable until
+  teardown. Because no reader and writer ever overlap, `hybrid_query()` and
+  `hybrid_is_ceded()` read them lock-free, one instance's load/unload never
+  touches another's tables (no cross-instance use-after-free), and the cede
+  decision is re-evaluated per init — per libctx and per lever. The probing that
+  computes the set (EVP fetches + capability callbacks) runs lock-free into a
+  stack-local, so no lock is held across a call out of the provider.
+- **Component sizes** are fixed per algorithm (pinned by the component names the
+  hybrid name selects), so they are **compile-time constants**
+  (`hybrid_kem_sizes[]` / `hybrid_sig_sizes[]`) copied into each key at
+  construction — there is no lazily-computed, shared size cache to synchronize,
+  and no throwaway keygens on the hot path. The values are machine-generated;
+  `hybrid_sizes_test` re-derives them from live component keygens in CI and fails
+  on any drift (a new parameter set or a changed private-key encoding), so the
+  constants cannot silently diverge from what the components produce.
+
+Teardown is flat: keys free their two component `EVP_PKEY`s and the provctx frees
+its own tables, with no recursive free chains to bound and no shared object freed
+out from under another instance. Operation contexts (`freectx`) hold only borrowed
+key pointers, so cancelling an operation mid-flight and freeing the context is
+safe. After `fork()` the inherited state is immutable per-instance memory, usable
+in the child without re-initialization; `hybrid_threads_test` includes a
+fork-then-operate leg proving this.
 
 ## Performance
 

@@ -320,12 +320,12 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
          | ((uint32_t)octdata[2] << 8) | (uint32_t)octdata[3];
 
     key = hybrid_keymgmt_new_by_variant(ctx->provctx, is_kem, (unsigned)variant);
-    if (key == NULL || !hybrid_ensure_sizes(key)) {
+    if (key == NULL) {
         ret = 0;
         goto end;
     }
-    a2v = key->sizes.a2_prv;
-    a2p = key->sizes.a2_pub;
+    a2v = key->sizes->a2_prv;
+    a2p = key->sizes->a2_pub;
     if (sizeof(uint32_t) + (size_t)clen + a2v > octlen)
         goto end;
     /* Reverse-share KEMs store PQ private first, then classical. */

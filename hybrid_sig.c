@@ -156,8 +156,6 @@ hybrid_sig_digest_sign(void *vctx,
     int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
 
-    if (!hybrid_ensure_sizes(key))
-        return 0;
     maxsig = hybrid_sig_max_sig_bytes(key);
 
     if (sig == NULL) {          /* size query */
@@ -170,7 +168,7 @@ hybrid_sig_digest_sign(void *vctx,
     /* classical signature, written after the 4-byte length prefix */
     if (!classical_op(key, 1, is_rsa, classical_md(info->nist_level),
                       tbs, tbslen, sig + sizeof(uint32_t), &clen,
-                      key->sizes.a1_sig))
+                      key->sizes->a1_sig))
         goto err;
     sig[0] = (unsigned char)(clen >> 24);
     sig[1] = (unsigned char)(clen >> 16);
@@ -183,7 +181,7 @@ hybrid_sig_digest_sign(void *vctx,
         || EVP_DigestSignInit_ex(mctx, NULL, NULL, key->libctx,
                                  HYBRID_KEY_PQ_PROPQ(key), key->key2, NULL) <= 0)
         goto err;
-    plen = key->sizes.a2_sig;
+    plen = key->sizes->a2_sig;
     if (EVP_DigestSign(mctx, sig + sizeof(uint32_t) + clen, &plen,
                        tbs, tbslen) <= 0)
         goto err;
@@ -211,7 +209,7 @@ hybrid_sig_digest_verify(void *vctx,
     int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
 
-    if (!hybrid_ensure_sizes(key) || !hybrid_have_pubkey(key))
+    if (!hybrid_have_pubkey(key))
         return 0;
     /* Bounds guards: the signature must hold the 4-byte classical-length prefix
      * before we read sig[0..3], and that length must fit within siglen before we

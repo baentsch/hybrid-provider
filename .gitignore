@@ -2,6 +2,8 @@ build/
 build34/
 build-master/
 build-fuzz/
+build-asan/
+build-tsan/
 .local/
 .local-34/
 .local-master/

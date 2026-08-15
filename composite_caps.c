@@ -103,7 +103,7 @@ int composite_get_capabilities(void *provctx, const char *capability,
             continue;
         /* Withdrawn because the default provider serves it (cede-to-default,
          * e.g. once OpenSSL ships native composite signatures). */
-        if (hybrid_is_ceded(composite_sig_table[i].name))
+        if (hybrid_is_ceded(provctx, composite_sig_table[i].name))
             continue;
         if (!cb(composite_param_sigalg_list[i], arg))
             return 0;

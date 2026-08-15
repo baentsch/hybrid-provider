@@ -11,8 +11,6 @@
 # include "composite_kem_prov.h"   /* composite (LAMPS) ML-KEM, folded in here */
 #endif
 
-static void hybrid_cede_reset(void);   /* cede state teardown, defined below */
-
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;
 static OSSL_FUNC_provider_gettable_params_fn hybrid_gettable_params;
 static OSSL_FUNC_provider_get_params_fn hybrid_get_params;
@@ -23,16 +21,22 @@ static void hybrid_teardown(void *provctx)
     HYBRID_PROV_CTX *ctx = provctx;
     int i;
 
-    if (ctx != NULL) {
-        for (i = 0; i < ctx->n_comp_provs; i++)
-            OSSL_PROVIDER_unload(ctx->comp_provs[i]);
-        if (ctx->comp_owned)
-            OSSL_LIB_CTX_free(ctx->comp_libctx);
-        OPENSSL_free(ctx->pq_propq);
-        OPENSSL_free(ctx->classic_propq);
-        OPENSSL_free(ctx);
-    }
-    hybrid_cede_reset();
+    if (ctx == NULL)
+        return;
+    for (i = 0; i < ctx->n_comp_provs; i++)
+        OSSL_PROVIDER_unload(ctx->comp_provs[i]);
+    if (ctx->comp_owned)
+        OSSL_LIB_CTX_free(ctx->comp_libctx);
+    OPENSSL_free(ctx->pq_propq);
+    OPENSSL_free(ctx->classic_propq);
+    /* Per-instance cede state (immutable after init) — this instance owns it. */
+    OPENSSL_free(ctx->ceded);
+    OPENSSL_free(ctx->keymgmts_rt);
+    OPENSSL_free(ctx->kems_rt);
+    OPENSSL_free(ctx->signatures_rt);
+    OPENSSL_free(ctx->encoders_rt);
+    OPENSSL_free(ctx->decoders_rt);
+    OPENSSL_free(ctx);
 }
 
 /* Parse a boolean-ish string; return `dflt` for NULL/empty/unrecognized. */
@@ -330,55 +334,85 @@ static const OSSL_ALGORITHM hybrid_decoders[] = {
 #endif
 
 /*
- * Cede-to-default (see HYBRID_CONF_CEDE_TO_DEFAULT). Mirrors oqsprovider's
- * rt_disabled_algs idiom: one small file-scope list of withdrawn algorithm
- * names is the single source of truth. hybrid_query returns filtered copies of
- * the static tables and the capability advertisers consult hybrid_is_ceded();
- * both keep the provider from offering what the default provider already does.
- * File-scope (not per-provctx) because, like oqsprovider, one loaded instance
- * decides this once — hybrid_apply_cede() resets the state on each init.
+ * Concurrency model
+ * -----------------
+ * This provider keeps NO shared mutable runtime state, so its operational paths
+ * take no locks:
+ *
+ *   - The cede-to-default runtime tables (the withdrawn-name list and the
+ *     filtered query tables) are PER-PROVCTX (in HYBRID_PROV_CTX): built once
+ *     during OSSL_provider_init, before *provctx is handed back, and immutable
+ *     until teardown (which the core runs only once the instance is no longer
+ *     queryable). No reader/writer window ever overlaps, so hybrid_query and
+ *     hybrid_is_ceded read them lock-free, and one instance's load/unload never
+ *     touches another's tables. The cede decision is re-evaluated per init (per
+ *     libctx + lever). The probe that computes it calls out of the provider (EVP
+ *     fetches, capability callbacks) into a stack-local set, holding no lock and
+ *     writing only to per-provctx memory no other thread can yet see.
+ *
+ *   - Component sizes are compile-time constants (hybrid_kem_sizes[] /
+ *     hybrid_sig_sizes[]) copied into each key at construction, so there is no
+ *     lazily-computed, shared size cache to synchronize.
+ *
+ * Everything else per key/context is either immutable after construction or
+ * owned by a single operation. See test/hybrid_threads_test.c.
  */
-static const char *hybrid_ceded[HYBRID_KEM_ALG_COUNT + HYBRID_SIG_ALG_COUNT
-#ifdef HYBRID_COMPOSITE
-        + COMPOSITE_SIG_ALG_COUNT + COMPOSITE_KEM_ALG_COUNT
-#endif
-    ];
-static size_t hybrid_n_ceded;
-static int hybrid_filter_enabled;
-static OSSL_ALGORITHM *hybrid_keymgmts_rt, *hybrid_kems_rt,
-    *hybrid_signatures_rt, *hybrid_encoders_rt, *hybrid_decoders_rt;
 
-int hybrid_is_ceded(const char *name)
+/*
+ * Cede-to-default (see HYBRID_CONF_CEDE_TO_DEFAULT). Mirrors oqsprovider's
+ * rt_disabled_algs idiom: a small list of withdrawn algorithm names drives
+ * everything. hybrid_query returns filtered copies of the static tables and the
+ * capability advertisers consult hybrid_is_ceded(); both keep the provider from
+ * offering what the default provider already does.
+ *
+ * The list and the filtered tables live in HYBRID_PROV_CTX — per instance, not
+ * global — computed at init and immutable thereafter (see the locking-discipline
+ * comment above). A withdrawal set (HYBRID_CEDE_SET) is first built on the stack
+ * by the probing phase, which calls out into EVP and capability callbacks and so
+ * must touch no shared state; the result is then copied into the provctx.
+ */
+#ifdef HYBRID_COMPOSITE
+# define HYBRID_COMPOSITE_CEDE_EXTRA + COMPOSITE_SIG_ALG_COUNT + COMPOSITE_KEM_ALG_COUNT
+#else
+# define HYBRID_COMPOSITE_CEDE_EXTRA
+#endif
+#define HYBRID_CEDE_MAX (HYBRID_KEM_ALG_COUNT + HYBRID_SIG_ALG_COUNT             \
+        HYBRID_COMPOSITE_CEDE_EXTRA)
+
+typedef struct {
+    const char *names[HYBRID_CEDE_MAX];
+    size_t n;
+} HYBRID_CEDE_SET;
+
+static int cede_set_has(const HYBRID_CEDE_SET *set, const char *name)
 {
     size_t i;
 
     if (name != NULL)
-        for (i = 0; i < hybrid_n_ceded; i++)
-            if (strcmp(hybrid_ceded[i], name) == 0)
+        for (i = 0; i < set->n; i++)
+            if (strcmp(set->names[i], name) == 0)
                 return 1;
     return 0;
 }
 
 /* Record `name` (a static-lifetime master-table pointer) as ceded, if new.
- * hybrid_ceded is sized to hold every algorithm, so this never overflows. */
-static void hybrid_mark_ceded(const char *name)
+ * `names` is sized to hold every algorithm, so this never overflows. */
+static void cede_set_add(HYBRID_CEDE_SET *set, const char *name)
 {
-    if (name != NULL && !hybrid_is_ceded(name))
-        hybrid_ceded[hybrid_n_ceded++] = name;
+    if (name != NULL && !cede_set_has(set, name))
+        set->names[set->n++] = name;
 }
 
-/* Free the filtered tables and clear the ceded state (teardown / re-init). */
-static void hybrid_cede_reset(void)
+int hybrid_is_ceded(void *provctx, const char *name)
 {
-    OPENSSL_free(hybrid_keymgmts_rt);
-    OPENSSL_free(hybrid_kems_rt);
-    OPENSSL_free(hybrid_signatures_rt);
-    OPENSSL_free(hybrid_encoders_rt);
-    OPENSSL_free(hybrid_decoders_rt);
-    hybrid_keymgmts_rt = hybrid_kems_rt = hybrid_signatures_rt =
-        hybrid_encoders_rt = hybrid_decoders_rt = NULL;
-    hybrid_n_ceded = 0;
-    hybrid_filter_enabled = 0;
+    HYBRID_PROV_CTX *ctx = provctx;
+    size_t i;
+
+    if (ctx != NULL && name != NULL)
+        for (i = 0; i < ctx->n_ceded; i++)
+            if (strcmp(ctx->ceded[i], name) == 0)
+                return 1;
+    return 0;
 }
 
 /* OSSL_PROVIDER_do_all callback: capture the loaded "default" provider, if any.
@@ -395,9 +429,10 @@ static int hybrid_find_default_cb(OSSL_PROVIDER *prov, void *arg)
 }
 
 /* Cede any KEM the default provider advertises as a TLS group under the same
- * name or code point (OSSL_PROVIDER_get_capabilities callback). */
+ * name or code point (OSSL_PROVIDER_get_capabilities callback; arg is the set). */
 static int hybrid_cede_group_cb(const OSSL_PARAM params[], void *arg)
 {
+    HYBRID_CEDE_SET *set = arg;
     const OSSL_PARAM *p;
     unsigned int id = 0;
     const char *nm = NULL;
@@ -413,15 +448,15 @@ static int hybrid_cede_group_cb(const OSSL_PARAM params[], void *arg)
         if ((id != 0 && (unsigned int)hybrid_kem_table[i].tls_codepoint == id)
                 || (nm != NULL
                     && strcmp(nm, hybrid_kem_table[i].hybrid_name) == 0))
-            hybrid_mark_ceded(hybrid_kem_table[i].hybrid_name);
-    (void)arg;
+            cede_set_add(set, hybrid_kem_table[i].hybrid_name);
     return 1;
 }
 
 /* Cede any hybrid/composite signature the default provider advertises as a TLS
- * sigalg under the same name, code point or OID. */
+ * sigalg under the same name, code point or OID (arg is the set). */
 static int hybrid_cede_sigalg_cb(const OSSL_PARAM params[], void *arg)
 {
+    HYBRID_CEDE_SET *set = arg;
     const OSSL_PARAM *p;
     unsigned int cp = 0;
     const char *nm = NULL, *oid = NULL;
@@ -445,7 +480,7 @@ static int hybrid_cede_sigalg_cb(const OSSL_PARAM params[], void *arg)
         if ((cp != 0 && (unsigned int)r->tls_codepoint == cp)
                 || (nm != NULL && strcmp(nm, r->hybrid_name) == 0)
                 || (oid != NULL && r->oid != NULL && strcmp(oid, r->oid) == 0))
-            hybrid_mark_ceded(r->hybrid_name);
+            cede_set_add(set, r->hybrid_name);
     }
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {
@@ -454,17 +489,16 @@ static int hybrid_cede_sigalg_cb(const OSSL_PARAM params[], void *arg)
         if ((cp != 0 && (unsigned int)r->tls_codepoint == cp)
                 || (nm != NULL && strcmp(nm, r->name) == 0)
                 || (oid != NULL && r->oid != NULL && strcmp(oid, r->oid) == 0))
-            hybrid_mark_ceded(r->name);
+            cede_set_add(set, r->name);
     }
 #endif
-    (void)arg;
     return 1;
 }
 
 /* Cede every algorithm the default provider resolves by a direct fetch (KEM by
  * name; signature by name, else by OID) — catching those it serves without a
  * TLS capability (e.g. a KEM with no group, or a certificate-only signature). */
-static void hybrid_cede_by_fetch(OSSL_LIB_CTX *libctx)
+static void hybrid_cede_by_fetch(OSSL_LIB_CTX *libctx, HYBRID_CEDE_SET *set)
 {
     size_t i;
 
@@ -473,7 +507,7 @@ static void hybrid_cede_by_fetch(OSSL_LIB_CTX *libctx)
                                    "provider=default");
 
         if (k != NULL)
-            hybrid_mark_ceded(hybrid_kem_table[i].hybrid_name);
+            cede_set_add(set, hybrid_kem_table[i].hybrid_name);
         EVP_KEM_free(k);
     }
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
@@ -484,7 +518,7 @@ static void hybrid_cede_by_fetch(OSSL_LIB_CTX *libctx)
         if (s == NULL && r->oid != NULL)
             s = EVP_SIGNATURE_fetch(libctx, r->oid, "provider=default");
         if (s != NULL)
-            hybrid_mark_ceded(r->hybrid_name);
+            cede_set_add(set, r->hybrid_name);
         EVP_SIGNATURE_free(s);
     }
 #ifdef HYBRID_COMPOSITE
@@ -496,7 +530,7 @@ static void hybrid_cede_by_fetch(OSSL_LIB_CTX *libctx)
         if (s == NULL && r->oid != NULL)
             s = EVP_SIGNATURE_fetch(libctx, r->oid, "provider=default");
         if (s != NULL)
-            hybrid_mark_ceded(r->name);
+            cede_set_add(set, r->name);
         EVP_SIGNATURE_free(s);
     }
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++) {
@@ -506,15 +540,16 @@ static void hybrid_cede_by_fetch(OSSL_LIB_CTX *libctx)
         if (k == NULL && r->oid != NULL)
             k = EVP_KEM_fetch(libctx, r->oid, "provider=default");
         if (k != NULL)
-            hybrid_mark_ceded(r->name);
+            cede_set_add(set, r->name);
         EVP_KEM_free(k);
     }
 #endif
 }
 
-/* Heap copy of `src` minus every entry whose name is ceded (names are single,
+/* Heap copy of `src` minus every entry in the withdrawal set (names are single,
  * non-aliased tokens in our tables, so strcmp is exact). NULL on OOM. */
-static OSSL_ALGORITHM *hybrid_filter_algs(const OSSL_ALGORITHM *src)
+static OSSL_ALGORITHM *hybrid_filter_algs(const HYBRID_CEDE_SET *set,
+                                          const OSSL_ALGORITHM *src)
 {
     size_t count = 0, i, j = 0;
     OSSL_ALGORITHM *out;
@@ -524,7 +559,7 @@ static OSSL_ALGORITHM *hybrid_filter_algs(const OSSL_ALGORITHM *src)
     if ((out = OPENSSL_malloc((count + 1) * sizeof(*out))) == NULL)
         return NULL;
     for (i = 0; i < count; i++)
-        if (!hybrid_is_ceded(src[i].algorithm_names))
+        if (!cede_set_has(set, src[i].algorithm_names))
             out[j++] = src[i];
     out[j] = src[count];   /* the {NULL,...} terminator */
     return out;
@@ -542,38 +577,43 @@ static OSSL_ALGORITHM *hybrid_filter_algs(const OSSL_ALGORITHM *src)
  * are withdrawn because we cannot honor them, not because the default provider
  * serves them.
  */
-static void hybrid_withdraw_seedless_composites(void)
+static void hybrid_withdraw_seedless_composites(HYBRID_CEDE_SET *set)
 {
 #if !COMPOSITE_SEED_AVAILABLE
     size_t i;
 
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
         if (composite_sig_table[i].tier == COMPOSITE_TIER_STANDARD)
-            hybrid_mark_ceded(composite_sig_table[i].name);
+            cede_set_add(set, composite_sig_table[i].name);
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
         if (composite_kem_table[i].tier == COMPOSITE_KEM_TIER_STANDARD)
-            hybrid_mark_ceded(composite_kem_table[i].name);
+            cede_set_add(set, composite_kem_table[i].name);
+#else
+    (void)set;
 #endif
 }
 #endif /* HYBRID_COMPOSITE */
 
 /*
- * Apply all algorithm withdrawals at init. Two independent sources:
+ * Compute the withdrawal set for this init into `set`, on the stack. Two
+ * independent sources:
  *   1. seed-less composites — always withdrawn below 3.5 (we cannot honor them);
  *   2. cede-to-default — when `cede`, withdraw everything the default provider
  *      already serves in `libctx`, matched by any shared identifier (name, TLS
  *      code point or OID), tracking whatever it offers now (the hybrid KEM
  *      groups) or later (e.g. native composite signatures).
- * Runs at init: this provider is not yet active in the store, so the probing
- * fetches/capability queries cannot recurse into hybrid_query. Returns 0 only on
- * allocation failure.
+ * Touches NO shared state and holds NO lock: the fetches and capability queries
+ * here are calls out of the provider (and could re-enter it), so they must run
+ * lock-free. Runs at init, before this provider is active in the store, so they
+ * cannot recurse into hybrid_query.
  */
-static int hybrid_apply_cede(OSSL_LIB_CTX *libctx, int cede)
+static void hybrid_probe_cede(OSSL_LIB_CTX *libctx, int cede,
+                              HYBRID_CEDE_SET *set)
 {
-    hybrid_cede_reset();
+    set->n = 0;
 
 #ifdef HYBRID_COMPOSITE
-    hybrid_withdraw_seedless_composites();
+    hybrid_withdraw_seedless_composites(set);
 #endif
 
     if (cede) {
@@ -584,48 +624,71 @@ static int hybrid_apply_cede(OSSL_LIB_CTX *libctx, int cede)
             /* Probing pushes "unable to fetch" errors for absent identifiers; a
              * miss is the expected case, so keep them off the error stack. */
             ERR_set_mark();
-            hybrid_cede_by_fetch(libctx);
+            hybrid_cede_by_fetch(libctx, set);
             (void)OSSL_PROVIDER_get_capabilities(def, "TLS-GROUP",
-                                                 hybrid_cede_group_cb, NULL);
+                                                 hybrid_cede_group_cb, set);
             (void)OSSL_PROVIDER_get_capabilities(def, "TLS-SIGALG",
-                                                 hybrid_cede_sigalg_cb, NULL);
+                                                 hybrid_cede_sigalg_cb, set);
             ERR_pop_to_mark();
         }
     }
+}
 
-    if (hybrid_n_ceded == 0)
-        return 1;
+/*
+ * Compute this instance's withdrawal set and, if non-empty, build its
+ * per-provctx cede tables. Probing runs lock-free (it calls out of the provider)
+ * into a stack-local set; the results are then written into `ctx`, which no
+ * other thread can observe until init returns. Runs once per init, so the cede
+ * decision is re-evaluated per libctx + lever. Returns 0 only on allocation
+ * failure; the caller's error path (hybrid_teardown) frees any partial state.
+ */
+static int hybrid_apply_cede(HYBRID_PROV_CTX *ctx, int cede)
+{
+    HYBRID_CEDE_SET set;
+    size_t i;
 
-    hybrid_keymgmts_rt = hybrid_filter_algs(hybrid_keymgmts);
-    hybrid_kems_rt = hybrid_filter_algs(hybrid_kems);
-    hybrid_signatures_rt = hybrid_filter_algs(hybrid_signatures);
-    hybrid_encoders_rt = hybrid_filter_algs(hybrid_encoders);
-    hybrid_decoders_rt = hybrid_filter_algs(hybrid_decoders);
-    if (hybrid_keymgmts_rt == NULL || hybrid_kems_rt == NULL
-            || hybrid_signatures_rt == NULL || hybrid_encoders_rt == NULL
-            || hybrid_decoders_rt == NULL) {
-        hybrid_cede_reset();
+    hybrid_probe_cede(ctx->libctx, cede, &set);
+    if (set.n == 0)
+        return 1;               /* nothing withdrawn: serve the static tables */
+
+    ctx->ceded = OPENSSL_malloc(set.n * sizeof(*ctx->ceded));
+    if (ctx->ceded == NULL)
         return 0;
-    }
-    hybrid_filter_enabled = 1;
+    for (i = 0; i < set.n; i++)
+        ctx->ceded[i] = set.names[i];
+    ctx->n_ceded = set.n;
+
+    ctx->keymgmts_rt = hybrid_filter_algs(&set, hybrid_keymgmts);
+    ctx->kems_rt = hybrid_filter_algs(&set, hybrid_kems);
+    ctx->signatures_rt = hybrid_filter_algs(&set, hybrid_signatures);
+    ctx->encoders_rt = hybrid_filter_algs(&set, hybrid_encoders);
+    ctx->decoders_rt = hybrid_filter_algs(&set, hybrid_decoders);
+    if (ctx->keymgmts_rt == NULL || ctx->kems_rt == NULL
+            || ctx->signatures_rt == NULL || ctx->encoders_rt == NULL
+            || ctx->decoders_rt == NULL)
+        return 0;
+    ctx->filter_enabled = 1;
     return 1;
 }
 
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)
 {
+    HYBRID_PROV_CTX *ctx = provctx;
+    int filtered = (ctx != NULL && ctx->filter_enabled);
+
     *no_cache = 0;
     switch (operation_id) {
     case OSSL_OP_KEYMGMT:
-        return hybrid_filter_enabled ? hybrid_keymgmts_rt : hybrid_keymgmts;
+        return filtered ? ctx->keymgmts_rt : hybrid_keymgmts;
     case OSSL_OP_KEM:
-        return hybrid_filter_enabled ? hybrid_kems_rt : hybrid_kems;
+        return filtered ? ctx->kems_rt : hybrid_kems;
     case OSSL_OP_SIGNATURE:
-        return hybrid_filter_enabled ? hybrid_signatures_rt : hybrid_signatures;
+        return filtered ? ctx->signatures_rt : hybrid_signatures;
     case OSSL_OP_ENCODER:
-        return hybrid_filter_enabled ? hybrid_encoders_rt : hybrid_encoders;
+        return filtered ? ctx->encoders_rt : hybrid_encoders;
     case OSSL_OP_DECODER:
-        return hybrid_filter_enabled ? hybrid_decoders_rt : hybrid_decoders;
+        return filtered ? ctx->decoders_rt : hybrid_decoders;
     default:
         return NULL;
     }
@@ -742,7 +805,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
      * enabled — everything the default provider already serves in this context. */
     cede_to_default = hybrid_parse_bool(getenv(HYBRID_ENV_CEDE_TO_DEFAULT),
                                         cede_to_default);
-    if (!hybrid_apply_cede(ctx->libctx, cede_to_default))
+    /* Compute this instance's cede tables before returning *provctx. */
+    if (!hybrid_apply_cede(ctx, cede_to_default))
         goto err;
 
     /*

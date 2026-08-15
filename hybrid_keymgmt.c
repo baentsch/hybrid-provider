@@ -57,6 +57,9 @@ hybrid_key_new(int is_kem, unsigned int variant,
     key->is_kem = is_kem;
     key->info = is_kem ? (const void *)&hybrid_kem_table[variant]
                        : (const void *)&hybrid_sig_table[variant];
+    /* Point at this variant's row in the constant size table — no per-key copy,
+     * no runtime discovery, no cache, no lock. The table is static-lifetime. */
+    key->sizes = is_kem ? &hybrid_kem_sizes[variant] : &hybrid_sig_sizes[variant];
     key->key1 = NULL;
     key->key2 = NULL;
     key->state = HYBRID_HAVE_NOKEYS;
@@ -109,6 +112,7 @@ static void *hybrid_kem_dup(const void *vkey, int selection)
     ret->libctx = key->libctx;
     ret->is_kem = key->is_kem;
     ret->info = key->info;
+    ret->sizes = key->sizes;
     ret->state = HYBRID_HAVE_NOKEYS;
     ret->propq = NULL;
     ret->pq_propq = key->pq_propq;
@@ -299,166 +303,12 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
     return 1;
 }
 
-/* --- Runtime component-size discovery --- */
+/* --- Component keygen forward declaration --- */
 
 /* Forward declaration; defined in the Key Generation section below. */
 static EVP_PKEY *
 hybrid_component_keygen(OSSL_LIB_CTX *libctx, const char *propq,
                         const char *alg_name, const char *group_name);
-
-/*
- * Query the pub/priv/shared-secret/ciphertext sizes of one component algorithm
- * by generating a throwaway keypair (sizes are deterministic per algorithm and
- * EC group, so a fresh key yields the same sizes as the real component). For a
- * key-exchange component (is_kem==0) the "ciphertext" is the ephemeral public
- * key, so a1_ct == a1_pub, and the shared-secret length comes from a throwaway
- * ECDH derive.
- */
-static int
-discover_component_sizes(OSSL_LIB_CTX *libctx, const char *propq,
-                         const char *alg_name, const char *group_name,
-                         int is_kem, size_t *pub, size_t *prv,
-                         size_t *ss, size_t *ct)
-{
-    EVP_PKEY *tmp = NULL, *eph = NULL;
-    EVP_PKEY_CTX *c = NULL;
-    int ret = 0;
-
-    tmp = hybrid_component_keygen(libctx, propq, alg_name, group_name);
-    if (tmp == NULL)
-        return 0;
-
-    if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PUB_KEY,
-                                        NULL, 0, pub) <= 0)
-        goto end;
-    /*
-     * The private-key size: KEM components and raw curves (X25519/X448) expose
-     * PRIV_KEY as an octet string. EC curves expose it as a BIGNUM, for which
-     * the octet-string query fails; fall back to the field byte length so the
-     * size reflects the fixed scalar width (not a particular key's stripped BN).
-     */
-    if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PRIV_KEY,
-                                        NULL, 0, prv) <= 0) {
-        int bits = EVP_PKEY_get_bits(tmp);
-
-        ERR_clear_error();
-        if (bits <= 0)
-            goto end;
-        *prv = (size_t)(bits + 7) / 8;
-    }
-
-    if (is_kem) {
-        c = EVP_PKEY_CTX_new_from_pkey(libctx, tmp, propq);
-        if (c == NULL || EVP_PKEY_encapsulate_init(c, NULL) <= 0
-            || EVP_PKEY_encapsulate(c, NULL, ct, NULL, ss) <= 0)
-            goto end;
-    } else {
-        *ct = *pub;   /* ephemeral public key */
-        c = EVP_PKEY_CTX_new_from_pkey(libctx, tmp, propq);
-        if (c == NULL || EVP_PKEY_keygen_init(c) <= 0
-            || EVP_PKEY_keygen(c, &eph) <= 0)
-            goto end;
-        EVP_PKEY_CTX_free(c);
-        c = EVP_PKEY_CTX_new_from_pkey(libctx, eph, propq);
-        if (c == NULL || EVP_PKEY_derive_init(c) <= 0
-            || EVP_PKEY_derive_set_peer(c, tmp) <= 0
-            || EVP_PKEY_derive(c, NULL, ss) <= 0)
-            goto end;
-    }
-    ret = 1;
-end:
-    EVP_PKEY_CTX_free(c);
-    EVP_PKEY_free(eph);
-    EVP_PKEY_free(tmp);
-    return ret;
-}
-
-/*
- * Query the pub/priv/signature sizes of one signature component. pub/priv are
- * best-effort (used only by key export, deferred): RSA exposes neither as an
- * octet string, so they may be left 0. The signature size (EVP_PKEY_get_size)
- * is what sign/verify and the max-size query need.
- */
-static int
-discover_sig_component_sizes(OSSL_LIB_CTX *libctx, const char *propq,
-                             const char *alg_name, const char *group_name,
-                             size_t *pub, size_t *prv, size_t *sig)
-{
-    EVP_PKEY *tmp = hybrid_component_keygen(libctx, propq, alg_name, group_name);
-    int n;
-
-    if (tmp == NULL)
-        return 0;
-    n = EVP_PKEY_get_size(tmp);
-    *sig = n > 0 ? (size_t)n : 0;
-
-    *pub = 0;
-    if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PUB_KEY,
-                                        NULL, 0, pub) <= 0) {
-        /*
-         * RSA exposes no raw PUB_KEY octet; its public key is i2d_PublicKey
-         * (RSAPublicKey) DER, which is constant-length for a fixed modulus size
-         * and exponent (unlike the private key, whose DER length varies — that
-         * is why only the DER encoder, with an explicit length prefix, handles
-         * RSA private material). Use that length so the raw-param public path
-         * (extract_pubkey / load_keys) round-trips, mirroring the decoder's
-         * d2i_PublicKey import in hybrid_key_load_pub_components().
-         */
-        int dlen = i2d_PublicKey(tmp, NULL);
-
-        *pub = dlen > 0 ? (size_t)dlen : 0;
-        ERR_clear_error();
-    }
-    *prv = 0;
-    if (EVP_PKEY_get_octet_string_param(tmp, OSSL_PKEY_PARAM_PRIV_KEY,
-                                        NULL, 0, prv) <= 0) {
-        int bits = EVP_PKEY_get_bits(tmp);
-
-        *prv = bits > 0 ? (size_t)(bits + 7) / 8 : 0;
-        ERR_clear_error();
-    }
-    EVP_PKEY_free(tmp);
-    return *sig != 0;
-}
-
-int hybrid_ensure_sizes(HYBRID_KEY *key)
-{
-    if (key->sizes.valid)
-        return 1;
-
-    if (key->is_kem) {
-        const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)key->info;
-
-        if (!discover_component_sizes(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
-                                      info->alg1_name, info->alg1_group,
-                                      info->alg1_is_kem,
-                                      &key->sizes.a1_pub, &key->sizes.a1_prv,
-                                      &key->sizes.a1_ss, &key->sizes.a1_ct))
-            return 0;
-        if (!discover_component_sizes(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
-                                      info->alg2_name, info->alg2_group,
-                                      info->alg2_is_kem,
-                                      &key->sizes.a2_pub, &key->sizes.a2_prv,
-                                      &key->sizes.a2_ss, &key->sizes.a2_ct))
-            return 0;
-    } else {
-        const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
-
-        if (!discover_sig_component_sizes(key->libctx,
-                                          HYBRID_KEY_CLASSIC_PROPQ(key),
-                                          info->alg1_name, info->alg1_group,
-                                          &key->sizes.a1_pub, &key->sizes.a1_prv,
-                                          &key->sizes.a1_sig))
-            return 0;
-        if (!discover_sig_component_sizes(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
-                                          info->alg2_name, NULL,
-                                          &key->sizes.a2_pub, &key->sizes.a2_prv,
-                                          &key->sizes.a2_sig))
-            return 0;
-    }
-    key->sizes.valid = 1;
-    return 1;
-}
 
 /*
  * Determine slot offsets for concatenated key material.
@@ -561,8 +411,6 @@ static int hybrid_import(void *vkey, int selection,
     int include_private;
 
     if (key == NULL || (selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
-        return 0;
-    if (!hybrid_ensure_sizes(key))
         return 0;
 
     include_private = (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) ? 1 : 0;
@@ -669,8 +517,6 @@ static int hybrid_export(void *vkey, int selection,
     if (key == NULL || !hybrid_have_pubkey(key))
         return 0;
     if ((selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
-        return 0;
-    if (!hybrid_ensure_sizes(key))
         return 0;
 
     publen = hybrid_key_pubkey_bytes(key);
@@ -792,8 +638,6 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
 
     if (key == NULL)
         return 0;
-    if (!hybrid_ensure_sizes(key))
-        return 0;
 
     /* Report the PQ component's key size; a hybrid's "bits" is otherwise
      * ill-defined and the PQ half dominates. */
@@ -897,8 +741,6 @@ static int hybrid_set_params_fn(void *vkey, const OSSL_PARAM params[])
         return 0; /* no mutation */
 
     if (!OSSL_PARAM_get_octet_string_ptr(p, &pubenc, &publen))
-        return 0;
-    if (!hybrid_ensure_sizes(key))
         return 0;
     if (publen != hybrid_key_pubkey_bytes(key))
         return 0;

@@ -31,6 +31,24 @@ if(HYBRID_SANITIZE)
     add_link_options(-fsanitize=address,undefined)
 endif()
 
+# Thread-safety audit automation (issue #43): build the provider + tests with
+# ThreadSanitizer to catch data races on the provider's shared/cached state.
+# Mutually exclusive with HYBRID_SANITIZE (ASan and TSan cannot be combined).
+# The tsan CI leg runs only hybrid_threads_test under this build, since races
+# internal to (uninstrumented) libcrypto/liboqs would otherwise dominate the
+# report; test/tsan.supp suppresses any that still surface from library frames.
+option(HYBRID_TSAN "Build provider + tests with ThreadSanitizer (issue #43)" OFF)
+if(HYBRID_TSAN)
+    if(MSVC)
+        message(FATAL_ERROR "HYBRID_TSAN is GCC/Clang only")
+    endif()
+    if(HYBRID_SANITIZE)
+        message(FATAL_ERROR "HYBRID_TSAN and HYBRID_SANITIZE are mutually exclusive")
+    endif()
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=thread)
+endif()
+
 # Allow pointing to a local OpenSSL build:
 #   cmake .. -DOPENSSL_ROOT_DIR=../.local
 if(DEFINED OPENSSL_ROOT_DIR)
@@ -294,6 +312,59 @@ target_include_directories(hybrid_cms_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAK
 target_link_libraries(hybrid_cms_test PRIVATE OpenSSL::Crypto)
 add_test(NAME hybrid_cms_test COMMAND hybrid_cms_test)
 set_tests_properties(hybrid_cms_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# Concurrency / fork / teardown stress test (issue #43): many threads doing
+# keygen/encaps/decaps/sign/verify on shared algorithms and a shared key,
+# concurrent provider load/unload, and a fork-then-operate leg — the regression
+# guard that the provider keeps no shared mutable runtime state (per-instance
+# immutable cede tables + constant sizes). Runs under ASan on the sanitize leg
+# and under TSan on the tsan leg. Uses X25519MLKEM768 + p256_mldsa44; each libctx
+# loads oqsprovider best-effort, so the PQ halves resolve on OpenSSL < 3.5 too
+# (native default provider on >= 3.5), letting it run on the whole version matrix.
+#
+# POSIX-only: it uses pthreads and fork(). The provider targets Linux (see
+# CLAUDE.md), and a portable-threads rewrite would add noise for no coverage
+# gain, so the test is simply gated to UNIX rather than ported to Windows.
+if(UNIX)
+find_package(Threads REQUIRED)
+add_executable(hybrid_threads_test test/hybrid_threads_test.c)
+target_include_directories(hybrid_threads_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_threads_test PRIVATE OpenSSL::Crypto Threads::Threads)
+# Under ThreadSanitizer, disable ASLR (setarch -R) and point TSan at the
+# library-frame suppressions: modern kernels randomize mmap enough that TSan's
+# fixed shadow mapping aborts with "unexpected memory mapping" otherwise. The
+# wrapper is a no-op for non-TSan builds.
+if(HYBRID_TSAN)
+    find_program(SETARCH_EXE setarch)
+    if(SETARCH_EXE)
+        add_test(NAME hybrid_threads_test
+                 COMMAND ${SETARCH_EXE} -R $<TARGET_FILE:hybrid_threads_test>)
+    else()
+        add_test(NAME hybrid_threads_test COMMAND hybrid_threads_test)
+    endif()
+    set_tests_properties(hybrid_threads_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/test/tsan.supp:halt_on_error=1"
+    )
+else()
+    add_test(NAME hybrid_threads_test COMMAND hybrid_threads_test)
+    set_tests_properties(hybrid_threads_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+endif()
+endif()
+
+# Component-size constant-table verifier (issue #43 follow-up): the provider
+# carries per-component sizes as compile-time constants (no runtime discovery,
+# no cache, no lock); this re-derives them from live component keygens and fails
+# on drift. Skips rows whose components are unavailable, so it runs on every
+# OpenSSL version (oqsprovider supplies the non-native families when loaded).
+add_executable(hybrid_sizes_test test/hybrid_sizes_test.c)
+target_include_directories(hybrid_sizes_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_sizes_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_sizes_test COMMAND hybrid_sizes_test)
+set_tests_properties(hybrid_sizes_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 

@@ -93,6 +93,7 @@ hybrid-provider/
     ├── hybrid_config_test.c       ← cnf-driven component selection
     ├── hybrid_compctx_test.c      ← private component context (Frodo/BIKE/HQC)
     ├── hybrid_coexist_test.c      ← provider coexistence
+    ├── hybrid_threads_test.c      ← concurrency/fork/teardown stress (ASan/TSan)
     ├── hybrid_matrix_test.c       ← full cross-version matrix vs oqsprovider
     ├── hybrid_replace_test.c      ← drop-in replacement over PQ-only oqsprovider (OQS_CEDE_HYBRIDS)
     ├── patches/                   ← in-repo oqsprovider patches (cede-hybrids lever)

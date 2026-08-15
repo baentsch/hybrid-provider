@@ -155,10 +155,10 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
     size_t clen = 0, a2v, a2p, total = 0, got;
     int ret = 0;
 
-    if (!hybrid_ensure_sizes(key) || !hybrid_have_prvkey(key))
+    if (!hybrid_have_prvkey(key))
         return 0;
-    a2v = key->sizes.a2_prv;
-    a2p = key->sizes.a2_pub;
+    a2v = key->sizes->a2_prv;
+    a2p = key->sizes->a2_pub;
 
     if (!get_component_priv(key->key1, &cbuf, &clen))
         return 0;
@@ -483,7 +483,7 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     long datalen;
     size_t written = 0;
 
-    if (ctx->bio_write_ex == NULL || !hybrid_ensure_sizes(hkey))
+    if (ctx->bio_write_ex == NULL)
         return 0;
     priv = (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0
            && hybrid_have_prvkey(hkey);
@@ -492,7 +492,7 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
      * classical part is its on-wire form (EC/RSA DER, or raw X25519); the PQ
      * part is the raw octet. */
     if (priv) {
-        pqlen = hkey->sizes.a2_prv;
+        pqlen = hkey->sizes->a2_prv;
         if (!get_component_priv(hkey->key1, &cbuf, &clen)
             || (pqbuf = OPENSSL_malloc(pqlen)) == NULL
             || EVP_PKEY_get_octet_string_param(hkey->key2,
@@ -502,7 +502,7 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     } else {
         if (!hybrid_have_pubkey(hkey))
             goto end;
-        pqlen = hkey->sizes.a2_pub;
+        pqlen = hkey->sizes->a2_pub;
         if (!get_component_pub(hkey->key1, &cbuf, &clen)
             || (pqbuf = OPENSSL_malloc(pqlen)) == NULL
             || EVP_PKEY_get_octet_string_param(hkey->key2,
