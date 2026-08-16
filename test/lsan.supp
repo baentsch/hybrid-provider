@@ -1,12 +1,82 @@
 # LeakSanitizer suppressions for the HYBRID_SANITIZE CI leg (issue #42).
 #
+# What this file can and cannot prove
+# -----------------------------------
 # The sanitizer build instruments the hybrid provider and its tests, but NOT
-# OpenSSL, liboqs, or the PQ-only oqsprovider. Any leak whose allocation is rooted
-# in one of those libraries (one-time provider/init state we neither own nor free)
-# is out of scope for the provider memory-safety audit, so it is suppressed here
-# by originating module. Leaks rooted in the provider's own code are NOT matched by
-# these rules and will still fail the run — which is the point of the leg.
+# OpenSSL, liboqs, or the PQ-only oqsprovider. The CI leg runs LSan with the
+# default (fast, frame-pointer) unwinder, so every leak's allocation stack is
+# captured only two frames deep: `[malloc, CRYPTO_malloc]`. Because ALL OpenSSL
+# heap goes through CRYPTO_malloc (in libcrypto), `leak:libcrypto` then matches
+# essentially every leak, whoever really owns it. So this file does NOT, on its
+# own, distinguish a leak in the provider's code from one in a dependency — and a
+# NEW provider leak reached from a test that does not unload its providers would
+# be masked here. Do not treat a green LSan leg as proof of provider
+# leak-freedom; that is established by the guardrails below, not by this file.
+#
+# Audit of what actually leaks (deep unwind: fast_unwind_on_malloc=0)
+# ------------------------------------------------------------------
+# Re-running the suite with the slow unwinder gives full stacks and lets each
+# leaked block be attributed to its DIRECT allocator (the first frame below
+# CRYPTO_(m|z|re)alloc). Doing so across the encode/param/cms/composite tests
+# shows exactly two classes:
+#   1. Blocks whose direct allocator is a dependency (e.g. an EVP_SIGNATURE/
+#      EVP_KEM method built by evp_*_from_algorithm and cached in the libctx
+#      method store). These are libcrypto/liboqs-owned; a provider frame appears
+#      only higher up as the call that first triggered the fetch (e.g. the cede
+#      probe's EVP_SIGNATURE_fetch). Not ours to free.
+#   2. Blocks whose direct allocator IS provider code — and these are ONLY the
+#      three per-instance provctx allocations: the cede runtime tables
+#      (hybrid_filter_algs), the ceded-name array (hybrid_apply_cede), and the
+#      provctx struct itself (OSSL_provider_init). All three are freed by
+#      hybrid_teardown(). NO key, operation, encode/decode, or sign/verify path
+#      allocation appears in this class.
+# Both classes surface for the SAME reason: those tests call OSSL_LIB_CTX_free
+# without first OSSL_PROVIDER_unload-ing, and a provider's teardown does not run
+# while the caller still holds its load reference — so teardown (and the libctx
+# method-store cleanup) is deferred to OPENSSL_cleanup at process exit, which
+# runs AFTER LSan's check.
+#
+# The real guardrails against a provider leak
+# -------------------------------------------
+#   1. hybrid_teardown() frees every provctx-owned allocation, and per-key /
+#      per-operation state is freed in the corresponding *_free / *_freectx (the
+#      subject of the issue #42 memory-safety audit + code review).
+#   2. hybrid_leakcheck_test is the automated guard for FUTURE allocations: it
+#      exercises and frees every provider allocation path (keygen/free, import/
+#      export, match, sign/verify, encaps/decaps, encode/decode) across the whole
+#      inventory, unloads every provider before freeing the libctx (so teardown
+#      runs), and — crucially — is pinned to test/lsan_leakcheck.supp, which OMITS
+#      `leak:libcrypto`. So a leak newly added to any exercised provider path is
+#      NOT masked there and fails that test, even though it would be masked by the
+#      `leak:libcrypto` rule below. (Demonstrated by injecting a deliberate leak:
+#      hybrid_leakcheck_test catches it; this file's leg does not.)
+#   3. Tests that unload their providers before freeing the libctx report ZERO
+#      provider-owned leaks under LSan even with THIS FILE EMPTY. hybrid_adverse_
+#      test and hybrid_leakcheck_test (issue #47) are the worked examples and the
+#      pattern to follow; extending that unload discipline to the rest of the
+#      suite would let these module suppressions be narrowed to the genuine
+#      dependency-init leaks.
+#
+# In short: this file keeps the broad `leak:libcrypto` rule so the general leg
+# stays green on the pre-existing un-unloaded tests, while hybrid_leakcheck_test
+# (with lsan_leakcheck.supp) is where a new provider leak is actually caught.
+#
+# The four rules below silence the one-time init state of each un-instrumented
+# dependency — state it allocates on first use and releases only at process exit.
+
+# OpenSSL core: provider store, default library context, DRBG, error/OBJ/config
+# tables, and cached EVP_* methods in a libctx method store — released at
+# OPENSSL_cleanup, after LSan's end-of-run check.
 leak:libcrypto
+
+# libssl: global TLS init state (method/ciphersuite tables, SSL_CTX internals)
+# reached via the SSL_CTX_new / TLS-init phases; same process-exit lifetime.
 leak:libssl
+
+# liboqs: global algorithm/OID tables initialized on first PQ operation; freed at
+# process exit, not per-libctx.
 leak:liboqs
+
+# oqsprovider: the PQ-only provider we load for interop is a separate,
+# un-instrumented module; its own provctx/init state is not ours to free.
 leak:oqsprovider

@@ -1,0 +1,19 @@
+# LeakSanitizer suppressions for hybrid_leakcheck_test ONLY.
+#
+# Unlike the suite-wide test/lsan.supp, this file deliberately does NOT suppress
+# `leak:libcrypto`. hybrid_leakcheck_test is unload-clean (it frees every object
+# and unloads every provider before freeing the libctx), so nothing the provider
+# allocates should survive to LSan's check. Because all provider heap routes
+# through CRYPTO_malloc, keeping `leak:libcrypto` here would re-mask exactly the
+# provider leaks this test exists to catch — so it is omitted on purpose. A leak
+# newly introduced in any exercised provider path therefore fails this test.
+#
+# Only the PQ dependencies' one-time init state is suppressed: liboqs and the
+# PQ-only oqsprovider are not instrumented and may retain global init state that
+# is released later than LSan's end-of-run check. (On the latest OpenSSL this test
+# is fully clean even with these absent; they are kept as a cross-environment
+# safety margin for older liboqs/oqsprovider builds. If a genuine libcrypto-rooted
+# init leak ever appears here, add a narrowly scoped function suppression for that
+# specific call site — never a blanket `leak:libcrypto`.)
+leak:liboqs
+leak:oqsprovider

@@ -18,9 +18,14 @@ endif()
 # (LeakSanitizer rides along with ASan on Linux), so a plain `ctest` run exercises
 # the whole in-process suite under the sanitizers. Set before any target is
 # defined so the flags apply globally. OpenSSL/liboqs/oqsprovider are NOT
-# instrumented; library-rooted leaks are filtered in CI via test/lsan.supp. The
-# CLI scenario tests shell out to the (uninstrumented) openssl binary, which
-# cannot dlopen an instrumented provider, so CI excludes them from this leg.
+# instrumented; their library-init leaks are filtered in CI via test/lsan.supp.
+# Note test/lsan.supp's leak:libcrypto rule is a broad catch-all (all provider
+# heap routes through CRYPTO_malloc), so the general leg proves absence of UB /
+# use-after-free / overflow but does NOT by itself catch a provider LEAK — that is
+# the job of hybrid_leakcheck_test (below), which runs without leak:libcrypto. See
+# the header of test/lsan.supp for the full rationale. The CLI scenario tests
+# shell out to the (uninstrumented) openssl binary, which cannot dlopen an
+# instrumented provider, so CI excludes them from this leg.
 option(HYBRID_SANITIZE "Build provider + tests with ASan/UBSan/LSan (issue #42)" OFF)
 if(HYBRID_SANITIZE)
     if(MSVC)
@@ -573,6 +578,46 @@ set_tests_properties(hybrid_cede_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Provider robustness under adverse load, coexistence, and query/init ordering
+# (issue #47): merely activating the provider must not break SSL_CTX_new; init
+# tolerates being loaded before default, activated twice, and a pre-registered
+# colliding OID; the first fetch after load resolves (query never cached-empty);
+# retained algorithms never overlap the default provider (name/OID/code point)
+# and ceding withdraws only what the default actually serves; foreign key I/O is
+# not shadowed; and repeated load failure returns rather than hanging. Drives the
+# HYBRID_CEDE_TO_DEFAULT lever itself per phase (like hybrid_cede_test), so it is
+# excluded from the suite-wide "ceding off" override below. A TIMEOUT turns any
+# hang (the load-loop / init-deadlock failure modes) into a test failure.
+add_executable(hybrid_adverse_test test/hybrid_adverse_test.c)
+target_include_directories(hybrid_adverse_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_adverse_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+add_test(NAME hybrid_adverse_test COMMAND hybrid_adverse_test)
+set_tests_properties(hybrid_adverse_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    TIMEOUT 120
+)
+
+# Leak-detection test with teeth (issue #47 follow-up to the #42 sanitizer leg).
+# Exercises and frees every provider allocation path (keygen/free, import/export,
+# match, sign/verify, encaps/decaps, encode/decode) across the whole inventory,
+# then unloads every provider before freeing the libctx (unload-clean) so teardown
+# runs before LSan's check. Because it is unload-clean it is run WITHOUT the broad
+# leak:libcrypto catch-all: its LSAN_OPTIONS is pinned to lsan_leakcheck.supp,
+# which suppresses only the un-instrumented PQ dependencies' one-time init state.
+# This overrides the suite-wide LSAN_OPTIONS the CI sanitize leg exports, so a
+# leak newly introduced in provider code surfaces here unmasked and fails.
+add_executable(hybrid_leakcheck_test test/hybrid_leakcheck_test.c)
+target_include_directories(hybrid_leakcheck_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_leakcheck_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_leakcheck_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_leakcheck_test COMMAND hybrid_leakcheck_test)
+set_tests_properties(hybrid_leakcheck_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/test/lsan_leakcheck.supp"
+    TIMEOUT 300
+)
+
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
 # with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired
 # into ctest as a low-iteration smoke test that it runs and completes.
@@ -641,7 +686,7 @@ endif()
 # one exception — it drives the lever itself via setenv() to exercise both states.
 get_property(_hp_tests DIRECTORY PROPERTY TESTS)
 foreach(_t ${_hp_tests})
-    if(NOT _t STREQUAL "hybrid_cede_test")
+    if(NOT _t STREQUAL "hybrid_cede_test" AND NOT _t STREQUAL "hybrid_adverse_test")
         set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "HYBRID_CEDE_TO_DEFAULT=0")
     endif()
 endforeach()

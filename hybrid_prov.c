@@ -671,6 +671,17 @@ static int hybrid_apply_cede(HYBRID_PROV_CTX *ctx, int cede)
     return 1;
 }
 
+/*
+ * Return the algorithm table for an operation. The tables are fully populated
+ * before this can ever run: the static tables are compile-time constants and the
+ * per-provctx filtered tables are built by hybrid_apply_cede() during
+ * OSSL_provider_init, BEFORE *provctx is handed back — so the core cannot consult
+ * this callback until the answer is complete. We therefore never return an
+ * empty/partial result that OpenSSL would cache and thereby disable us for the
+ * process (issue #47), and it is safe to leave *no_cache = 0 (let the core cache
+ * the fetch — the narrow, legitimate opposite of the blanket no_cache tax
+ * discussed in the performance write-up).
+ */
 static const OSSL_ALGORITHM *
 hybrid_query(void *provctx, int operation_id, int *no_cache)
 {
