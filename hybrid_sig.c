@@ -28,6 +28,16 @@
 typedef struct {
     HYBRID_KEY *key;
     int op;     /* EVP_PKEY_OP_SIGN or EVP_PKEY_OP_VERIFY */
+    /*
+     * Optional per-operation signature context string (issue #46). Applied ONLY
+     * to the PQ component, which is the half that supports it (ML-DSA and the
+     * other PQ signatures take a context string). The classical component
+     * (ECDSA/RSA over a digest) has no such concept, so it is always driven
+     * without it — forwarding a context string there would force a spurious
+     * failure. Owned here; freed in freectx, deep-copied in dupctx.
+     */
+    unsigned char *ctxstr;
+    size_t ctxstrlen;
 } HYBRID_SIG_CTX;
 
 static void *hybrid_sig_newctx(void *provctx, const char *propq)
@@ -37,7 +47,11 @@ static void *hybrid_sig_newctx(void *provctx, const char *propq)
 
 static void hybrid_sig_freectx(void *vctx)
 {
-    OPENSSL_free(vctx);
+    HYBRID_SIG_CTX *ctx = vctx;
+
+    if (ctx != NULL)
+        OPENSSL_free(ctx->ctxstr);
+    OPENSSL_free(ctx);
 }
 
 static void *hybrid_sig_dupctx(void *vctx)
@@ -48,7 +62,43 @@ static void *hybrid_sig_dupctx(void *vctx)
     if ((ret = OPENSSL_zalloc(sizeof(*ret))) == NULL)
         return NULL;
     *ret = *ctx;
+    /* Deep-copy the owned context string so each ctx frees its own buffer. */
+    if (ctx->ctxstr != NULL) {
+        if ((ret->ctxstr = OPENSSL_memdup(ctx->ctxstr, ctx->ctxstrlen)) == NULL) {
+            OPENSSL_free(ret);
+            return NULL;
+        }
+    }
     return ret;
+}
+
+/*
+ * Apply the settable ctx-params (issue #46). Currently just the signature
+ * context string, which init and set_ctx_params both route through here so a
+ * caller may supply it either in the *_init params or via a later
+ * EVP_PKEY_CTX_set_params. An empty/absent value clears any stored string.
+ */
+static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
+                                    const OSSL_PARAM params[])
+{
+    const OSSL_PARAM *p;
+
+    if (params == NULL)
+        return 1;
+    p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
+    if (p != NULL) {
+        void *buf = NULL;
+        size_t len = 0;
+
+        if (p->data_type != OSSL_PARAM_OCTET_STRING)
+            return 0;
+        if (!OSSL_PARAM_get_octet_string(p, &buf, 0, &len))
+            return 0;
+        OPENSSL_free(ctx->ctxstr);
+        ctx->ctxstr = buf;
+        ctx->ctxstrlen = len;
+    }
+    return 1;
 }
 
 static int
@@ -62,7 +112,7 @@ hybrid_sig_digest_sign_init(void *vctx, const char *mdname,
         return 0;
     ctx->key = key;
     ctx->op = EVP_PKEY_OP_SIGN;
-    return 1;
+    return hybrid_sig_apply_params(ctx, params);
 }
 
 static int
@@ -76,7 +126,7 @@ hybrid_sig_digest_verify_init(void *vctx, const char *mdname,
         return 0;
     ctx->key = key;
     ctx->op = EVP_PKEY_OP_VERIFY;
-    return 1;
+    return hybrid_sig_apply_params(ctx, params);
 }
 
 /*
@@ -139,6 +189,24 @@ end:
 }
 
 /*
+ * Build the OSSL_PARAM array handed to the PQ component's DigestSign/Verify init
+ * (issue #46). Returns the array (into the caller-provided storage) when a
+ * context string is set, or NULL when none is — so the PQ component runs with
+ * its default (empty) context, preserving the oqsprovider-compatible wire format.
+ * The classical component never receives these params.
+ */
+static OSSL_PARAM *pq_ctx_params(HYBRID_SIG_CTX *ctx, OSSL_PARAM store[2])
+{
+    if (ctx->ctxstr == NULL)
+        return NULL;
+    store[0] = OSSL_PARAM_construct_octet_string(
+                   OSSL_SIGNATURE_PARAM_CONTEXT_STRING,
+                   ctx->ctxstr, ctx->ctxstrlen);
+    store[1] = OSSL_PARAM_construct_end();
+    return store;
+}
+
+/*
  * One-shot sign:
  *   sig = ENCODE_UINT32(classical_len) || classical_sig || pq_sig
  */
@@ -152,6 +220,7 @@ hybrid_sig_digest_sign(void *vctx,
     HYBRID_KEY *key = ctx->key;
     const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
     EVP_MD_CTX *mctx = NULL;
+    OSSL_PARAM pqp_store[2], *pqp;
     size_t clen = 0, plen = 0, maxsig;
     int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
@@ -175,11 +244,13 @@ hybrid_sig_digest_sign(void *vctx,
     sig[2] = (unsigned char)(clen >> 8);
     sig[3] = (unsigned char)(clen);
 
-    /* PQ signature over the raw message, appended after the classical sig */
+    /* PQ signature over the raw message, appended after the classical sig.
+     * The context string (if any) is applied here, to the PQ half only. */
+    pqp = pq_ctx_params(ctx, pqp_store);
     mctx = EVP_MD_CTX_new();
     if (mctx == NULL
         || EVP_DigestSignInit_ex(mctx, NULL, NULL, key->libctx,
-                                 HYBRID_KEY_PQ_PROPQ(key), key->key2, NULL) <= 0)
+                                 HYBRID_KEY_PQ_PROPQ(key), key->key2, pqp) <= 0)
         goto err;
     plen = key->sizes->a2_sig;
     if (EVP_DigestSign(mctx, sig + sizeof(uint32_t) + clen, &plen,
@@ -205,6 +276,7 @@ hybrid_sig_digest_verify(void *vctx,
     HYBRID_KEY *key = ctx->key;
     const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
     EVP_MD_CTX *mctx = NULL;
+    OSSL_PARAM pqp_store[2], *pqp;
     size_t clen, plen;
     int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
@@ -229,12 +301,14 @@ hybrid_sig_digest_verify(void *vctx,
                       &clen, 0))
         goto err;
 
-    /* verify PQ over the raw message */
+    /* verify PQ over the raw message; context string (if any) applied to the
+     * PQ half only, matching the sign side. */
+    pqp = pq_ctx_params(ctx, pqp_store);
     mctx = EVP_MD_CTX_new();
     if (mctx == NULL
         || EVP_DigestVerifyInit_ex(mctx, NULL, NULL, key->libctx,
                                    HYBRID_KEY_PQ_PROPQ(key), key->key2,
-                                   NULL) <= 0)
+                                   pqp) <= 0)
         goto err;
     if (EVP_DigestVerify(mctx, sig + sizeof(uint32_t) + clen, plen,
                          tbs, tbslen) <= 0)
@@ -249,13 +323,16 @@ err:
 static const OSSL_PARAM *hybrid_sig_settable_ctx_params(void *vctx,
                                                           void *provctx)
 {
-    static const OSSL_PARAM params[] = { OSSL_PARAM_END };
+    static const OSSL_PARAM params[] = {
+        OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING, NULL, 0),
+        OSSL_PARAM_END
+    };
     return params;
 }
 
 static int hybrid_sig_set_ctx_params(void *vctx, const OSSL_PARAM params[])
 {
-    return 1;
+    return hybrid_sig_apply_params(vctx, params);
 }
 
 static const OSSL_PARAM *hybrid_sig_gettable_ctx_params(void *vctx,

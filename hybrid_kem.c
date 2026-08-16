@@ -311,8 +311,20 @@ static int hybrid_kem_decapsulate(void *vctx,
         return 0;
     if (*slen < total_slen)
         return 0;
-    if (clen != total_clen)
+    /*
+     * Length/count sanity check BEFORE splitting the concatenated ciphertext at
+     * its fixed component offsets (issue #46). The two component ciphertext
+     * lengths are compile-time constants for the variant, so the only valid
+     * total is their sum; a truncated, oversized or otherwise wrong-length input
+     * would make the slot pointers below run past the caller's buffer. Reject it
+     * with a defined error rather than reading out of bounds or splitting garbage.
+     */
+    if (clen != total_clen) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid KEM decapsulate: ciphertext length %zu != "
+                       "expected %zu", clen, total_clen);
         return 0;
+    }
     *slen = total_slen;
 
     /* Slot ordering */
