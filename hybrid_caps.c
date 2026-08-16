@@ -5,21 +5,91 @@
 
 #include "hybrid_prov.h"
 #include <openssl/core_names.h>
-#include <openssl/opensslv.h>   /* OPENSSL_VERSION_NUMBER */
 #include <openssl/prov_ssl.h>   /* TLS1_3_VERSION */
+#include <stdarg.h>
+#include <stdio.h>
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"
 #endif
 
 /*
  * The TLS-SIGALG provider capability params (OSSL_CAPABILITY_TLS_SIGALG_*) were
- * added in OpenSSL 3.2. On 3.0/3.1 the provider builds KEM-only: the hybrid KEMs
- * and their TLS groups still work; hybrid signatures are simply not advertised as
+ * added in OpenSSL 3.2. OpenSSL ships no dedicated "have TLS-SIGALG" macro, so
+ * feature-test on the capability param name we actually use — its presence in
+ * core_names.h is the real signal, and unlike an OPENSSL_VERSION_NUMBER check it
+ * cannot be wrong. On 3.0/3.1 the provider builds KEM-only: the hybrid KEMs and
+ * their TLS groups still work; hybrid signatures are simply not advertised as
  * TLS SignatureSchemes (and hybrid signatures need a 3.2+ component provider
  * anyway). TLS-GROUP has existed since 3.0.
  */
-#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+#ifdef OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT
 # define HYBRID_HAVE_TLS_SIGALG 1
+#endif
+
+/* See hybrid_prov.h: silent unless HYBRID_LOG is set in the environment. */
+void hybrid_log(const char *fmt, ...)
+{
+    va_list ap;
+
+    if (getenv("HYBRID_LOG") == NULL)
+        return;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
+/*
+ * Operability probe (issue #45): only advertise a hybrid whose BOTH component
+ * sub-algorithms can actually be instantiated in the component libctx.
+ * Otherwise libssl would offer a group/sigalg that then fails mid-handshake
+ * ("no suitable key share" / "no suitable signature algorithm") — e.g. a
+ * Frodo/BIKE/HQC group when oqsprovider is not loaded to supply its PQ base.
+ *
+ * Each component is resolved exactly as key generation resolves it
+ * (EVP_PKEY_CTX_new_from_name + keygen_init — the provider-agnostic path, with
+ * no EVP_PKEY_Q_keygen name allowlist), using the per-component property
+ * queries from the provider context. keygen_init stops short of generating a
+ * key, so this is cheap; the EC group / RSA size are only needed at keygen
+ * time, so a bare "EC"/"RSA" resolve is a sufficient availability check. The
+ * probe pushes "unable to fetch" errors for absent components (the expected
+ * negative case), so the callers bracket it with ERR_set_mark/ERR_pop_to_mark.
+ */
+static int component_operable(OSSL_LIB_CTX *libctx, const char *name,
+                              const char *propq)
+{
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, name, propq);
+    int ok = (ctx != NULL && EVP_PKEY_keygen_init(ctx) > 0);
+
+    EVP_PKEY_CTX_free(ctx);
+    return ok;
+}
+
+static int hybrid_group_operable(HYBRID_PROV_CTX *ctx,
+                                 const HYBRID_KEM_INFO *info)
+{
+    OSSL_LIB_CTX *libctx = HYBRID_COMPONENT_LIBCTX(ctx);
+    int ok;
+
+    ERR_set_mark();
+    ok = component_operable(libctx, info->alg1_name, ctx->classic_propq)
+        && component_operable(libctx, info->alg2_name, ctx->pq_propq);
+    ERR_pop_to_mark();
+    return ok;
+}
+
+#ifdef HYBRID_HAVE_TLS_SIGALG
+static int hybrid_sigalg_operable(HYBRID_PROV_CTX *ctx,
+                                  const HYBRID_SIG_INFO *info)
+{
+    OSSL_LIB_CTX *libctx = HYBRID_COMPONENT_LIBCTX(ctx);
+    int ok;
+
+    ERR_set_mark();
+    ok = component_operable(libctx, info->alg1_name, ctx->classic_propq)
+        && component_operable(libctx, info->alg2_name, ctx->pq_propq);
+    ERR_pop_to_mark();
+    return ok;
+}
 #endif
 
 /*
@@ -173,22 +243,41 @@ static const OSSL_PARAM hybrid_param_sigalg_list[][8] = {
 int hybrid_get_capabilities(void *provctx, const char *capability,
                             OSSL_CALLBACK *cb, void *arg)
 {
+    HYBRID_PROV_CTX *ctx = provctx;
     size_t i;
+    size_t advertised = 0;
 
     if (capability == NULL)
         return 0;
 
     if (OPENSSL_strcasecmp(capability, "TLS-GROUP") == 0) {
         for (i = 0; i < HYBRID_TLS_GROUP_COUNT; i++) {
+            const char *name = hybrid_kem_table[i].hybrid_name;
+
             if (hybrid_group_list[i].group_id == 0)
                 continue;   /* no registered TLS code point */
             /* Withdrawn because the default provider serves it (cede-to-default);
              * the group index is the master-list order, shared with the KEM
              * table, so match by that KEM's name. */
-            if (hybrid_is_ceded(provctx, hybrid_kem_table[i].hybrid_name))
+            if (hybrid_is_ceded(provctx, name))
                 continue;
+            /* Never advertise a group whose components are not both fetchable
+             * here — libssl would otherwise negotiate it and fail mid-handshake. */
+            if (ctx != NULL && !hybrid_group_operable(ctx, &hybrid_kem_table[i])) {
+                hybrid_log("hybrid: not advertising TLS group %s (0x%04x): "
+                           "a component is not fetchable in this libctx\n",
+                           name, hybrid_group_list[i].group_id);
+                continue;
+            }
+            if (advertised >= HYBRID_MAX_TLS_GROUPS) {
+                hybrid_log("hybrid: TLS-GROUP advertisement cap (%d) reached; "
+                           "dropping %s (0x%04x)\n", (int)HYBRID_MAX_TLS_GROUPS,
+                           name, hybrid_group_list[i].group_id);
+                continue;
+            }
             if (!cb(hybrid_param_group_list[i], arg))
                 return 0;
+            advertised++;
         }
         return 1;
     }
@@ -196,15 +285,30 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
 #ifdef HYBRID_HAVE_TLS_SIGALG
     if (OPENSSL_strcasecmp(capability, "TLS-SIGALG") == 0) {
         for (i = 0; i < HYBRID_TLS_SIGALG_COUNT; i++) {
+            const char *name = hybrid_sig_table[i].hybrid_name;
+
             if (hybrid_sigalg_list[i].code_point == 0)
                 continue;
             /* Withdrawn because the default provider serves it (cede-to-default);
              * the sigalg index is the master-list order, shared with the SIG
              * table, so match by that signature's name. */
-            if (hybrid_is_ceded(provctx, hybrid_sig_table[i].hybrid_name))
+            if (hybrid_is_ceded(provctx, name))
                 continue;
+            if (ctx != NULL && !hybrid_sigalg_operable(ctx, &hybrid_sig_table[i])) {
+                hybrid_log("hybrid: not advertising TLS sigalg %s (0x%04x): "
+                           "a component is not fetchable in this libctx\n",
+                           name, hybrid_sigalg_list[i].code_point);
+                continue;
+            }
+            if (advertised >= HYBRID_MAX_TLS_SIGALGS) {
+                hybrid_log("hybrid: TLS-SIGALG advertisement cap (%d) reached; "
+                           "dropping %s (0x%04x)\n", (int)HYBRID_MAX_TLS_SIGALGS,
+                           name, hybrid_sigalg_list[i].code_point);
+                continue;
+            }
             if (!cb(hybrid_param_sigalg_list[i], arg))
                 return 0;
+            advertised++;
         }
 # ifdef HYBRID_COMPOSITE
         if (!composite_get_capabilities(provctx, capability, cb, arg))

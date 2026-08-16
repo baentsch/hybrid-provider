@@ -261,6 +261,17 @@ set_tests_properties(hybrid_capability_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# hybrid_log() diagnostics: HYBRID_LOG=1 reports the drop of an inoperable
+# hybrid (a group/sigalg whose components are not both fetchable); silent when
+# unset. Runs in a default-only context so the Frodo groups are dropped.
+add_executable(hybrid_log_test test/hybrid_log_test.c)
+target_include_directories(hybrid_log_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_log_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_log_test COMMAND hybrid_log_test)
+set_tests_properties(hybrid_log_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # End-to-end hybrid-signature certificate over TLS 1.3 (in-process). Self-skips
 # per-algorithm when the components are unavailable (e.g. no ML-DSA on 3.4).
 add_executable(hybrid_cert_tls_test test/hybrid_cert_tls_test.c)

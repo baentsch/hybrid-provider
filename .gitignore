@@ -1,3 +1,8 @@
+# Out-of-tree build and local OpenSSL/liboqs scratch dirs. Globs so ad-hoc
+# variants (build-401, build-asan-local, .local-401, .local-master-fresh, …)
+# are covered too, not just the canonical names below.
+build*/
+.local*/
 build/
 build34/
 build-master/
