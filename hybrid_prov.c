@@ -5,11 +5,34 @@
 
 #include "hybrid_prov.h"
 #include <openssl/provider.h>
+#include <openssl/x509.h>
 #include <stdlib.h>
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"       /* composite (LAMPS) signatures, folded in here */
 # include "composite_kem_prov.h"   /* composite (LAMPS) ML-KEM, folded in here */
 #endif
+
+/*
+ * Component extraction (work-items item 13). Emit component |comp|'s
+ * SubjectPublicKeyInfo as DER into the OSSL_PARAM, so a caller can d2i_PUBKEY it
+ * into a standalone, usable EVP_PKEY. Shared by the hybrid and composite keymgmt
+ * get_params. i2d_PUBKEY drives the component's own provider encoder, so this
+ * stays EVP-only and provider-agnostic.
+ */
+int hybrid_component_spki_param(OSSL_PARAM *p, EVP_PKEY *comp)
+{
+    unsigned char *der = NULL;
+    int dlen;
+    int ret = 0;
+
+    if (p == NULL || comp == NULL)
+        return 0;
+    if ((dlen = i2d_PUBKEY(comp, &der)) <= 0)
+        return 0;
+    ret = OSSL_PARAM_set_octet_string(p, der, (size_t)dlen);
+    OPENSSL_free(der);
+    return ret;
+}
 
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;
 static OSSL_FUNC_provider_gettable_params_fn hybrid_gettable_params;

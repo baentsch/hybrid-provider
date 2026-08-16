@@ -356,6 +356,43 @@ EVP_PKEY_fromdata(ctx, &pkey, selection, params);
 Extracts raw bytes from each component via `EVP_PKEY_export()`, concatenates
 in slot order, and delivers via the export callback.
 
+### Component extraction and composition
+
+`keymgmt_export` and the SPKI/PKCS8 encoders emit the *combined* key. For callers
+that need an individual component as a first-class, usable `EVP_PKEY` — not an
+opaque slice of the concatenated blob — the key also exposes two gettable,
+provider-specific params (shared by the hybrid and composite families):
+
+- `HYBRID_PKEY_PARAM_CLASSIC_PUB` (`"hybrid-classic-pub-spki"`)
+- `HYBRID_PKEY_PARAM_PQ_PUB` (`"hybrid-pq-pub-spki"`)
+
+Each returns the component's public half as a `SubjectPublicKeyInfo` DER blob,
+produced by `i2d_PUBKEY()` on the underlying component `EVP_PKEY` (so the
+component's own provider encoder is used — EVP-only, provider-agnostic). A caller
+`d2i_PUBKEY`s it back into a standalone key it can use directly:
+
+```c
+size_t n = 0;
+EVP_PKEY_get_octet_string_param(hybrid, "hybrid-pq-pub-spki", NULL, 0, &n);
+unsigned char *der = OPENSSL_malloc(n);
+EVP_PKEY_get_octet_string_param(hybrid, "hybrid-pq-pub-spki", der, n, &n);
+const unsigned char *p = der;
+EVP_PKEY *pq = d2i_PUBKEY_ex(NULL, &p, n, libctx, NULL);   /* standalone ML-DSA/ML-KEM */
+```
+
+**Inner == standalone.** The bytes a component contributes to the container equal
+that component's standalone encoding. For the hybrid family the concatenated
+`OSSL_PKEY_PARAM_PUB_KEY` is exactly `raw(comp_a) || raw(comp_b)`; for the
+composite family the SPKI `BIT STRING` is exactly `pqPub || tradPub` (draft-19).
+This is asserted directly by `hybrid_extract_test`, which also **recomposes** a
+container: it concatenates the two extracted components' raw public keys and
+re-imports them through `EVP_PKEY_fromdata()`, then checks the result compares
+equal (`EVP_PKEY_eq`) to the original — the inverse of extraction.
+
+Private-component extraction is intentionally not exposed as a param (keys stay
+inside the provider that generated them); the combined PKCS8 encoders remain the
+supported way to serialize private material.
+
 ### Other keymgmt functions
 
 - `has`: checks `key->state`
