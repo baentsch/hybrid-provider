@@ -41,11 +41,25 @@
 #   1. hybrid_teardown() frees every provctx-owned allocation, and per-key /
 #      per-operation state is freed in the corresponding *_free / *_freectx (the
 #      subject of the issue #42 memory-safety audit + code review).
-#   2. Tests that unload their providers before freeing the libctx report ZERO
+#   2. hybrid_leakcheck_test is the automated guard for FUTURE allocations: it
+#      exercises and frees every provider allocation path (keygen/free, import/
+#      export, match, sign/verify, encaps/decaps, encode/decode) across the whole
+#      inventory, unloads every provider before freeing the libctx (so teardown
+#      runs), and — crucially — is pinned to test/lsan_leakcheck.supp, which OMITS
+#      `leak:libcrypto`. So a leak newly added to any exercised provider path is
+#      NOT masked there and fails that test, even though it would be masked by the
+#      `leak:libcrypto` rule below. (Demonstrated by injecting a deliberate leak:
+#      hybrid_leakcheck_test catches it; this file's leg does not.)
+#   3. Tests that unload their providers before freeing the libctx report ZERO
 #      provider-owned leaks under LSan even with THIS FILE EMPTY. hybrid_adverse_
-#      test (issue #47) is the worked example and the pattern to follow; extending
-#      that unload discipline to the rest of the suite would let these module
-#      suppressions be narrowed to the genuine dependency-init leaks.
+#      test and hybrid_leakcheck_test (issue #47) are the worked examples and the
+#      pattern to follow; extending that unload discipline to the rest of the
+#      suite would let these module suppressions be narrowed to the genuine
+#      dependency-init leaks.
+#
+# In short: this file keeps the broad `leak:libcrypto` rule so the general leg
+# stays green on the pre-existing un-unloaded tests, while hybrid_leakcheck_test
+# (with lsan_leakcheck.supp) is where a new provider leak is actually caught.
 #
 # The four rules below silence the one-time init state of each un-instrumented
 # dependency — state it allocates on first use and releases only at process exit.

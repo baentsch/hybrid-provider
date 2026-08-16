@@ -18,9 +18,14 @@ endif()
 # (LeakSanitizer rides along with ASan on Linux), so a plain `ctest` run exercises
 # the whole in-process suite under the sanitizers. Set before any target is
 # defined so the flags apply globally. OpenSSL/liboqs/oqsprovider are NOT
-# instrumented; library-rooted leaks are filtered in CI via test/lsan.supp. The
-# CLI scenario tests shell out to the (uninstrumented) openssl binary, which
-# cannot dlopen an instrumented provider, so CI excludes them from this leg.
+# instrumented; their library-init leaks are filtered in CI via test/lsan.supp.
+# Note test/lsan.supp's leak:libcrypto rule is a broad catch-all (all provider
+# heap routes through CRYPTO_malloc), so the general leg proves absence of UB /
+# use-after-free / overflow but does NOT by itself catch a provider LEAK — that is
+# the job of hybrid_leakcheck_test (below), which runs without leak:libcrypto. See
+# the header of test/lsan.supp for the full rationale. The CLI scenario tests
+# shell out to the (uninstrumented) openssl binary, which cannot dlopen an
+# instrumented provider, so CI excludes them from this leg.
 option(HYBRID_SANITIZE "Build provider + tests with ASan/UBSan/LSan (issue #42)" OFF)
 if(HYBRID_SANITIZE)
     if(MSVC)
