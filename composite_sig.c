@@ -31,6 +31,8 @@
 #include <openssl/core_names.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
+#include <openssl/err.h>
+#include <openssl/proverr.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -183,12 +185,23 @@ int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
     size_t mplen = 0, pqlen = 0, tradlen = 0;
     int ret = 0;
 
-    if (!build_mprime(info, libctx, msg, msglen, &mp, &mplen)
-            || !pq_op(1, info, pq, libctx, pq_propq, mp, mplen,
-                      &pqsig, &pqlen, NULL, 0)
-            || !trad_op(1, info, trad, libctx, trad_propq, mp, mplen,
-                        &tradsig, &tradlen, NULL, 0))
+    if (!build_mprime(info, libctx, msg, msglen, &mp, &mplen)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
+                       "composite sign: message prehash (M') failed");
         goto end;
+    }
+    if (!pq_op(1, info, pq, libctx, pq_propq, mp, mplen,
+               &pqsig, &pqlen, NULL, 0)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
+                       "composite sign: PQ component signing failed");
+        goto end;
+    }
+    if (!trad_op(1, info, trad, libctx, trad_propq, mp, mplen,
+                 &tradsig, &tradlen, NULL, 0)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
+                       "composite sign: classical component signing failed");
+        goto end;
+    }
 
     *siglen = pqlen + tradlen;
     if ((*sig = OPENSSL_malloc(*siglen)) == NULL)
@@ -226,14 +239,24 @@ int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *tra
                        "the %d-byte PQ component", siglen, pqfixed);
         return 0;                          /* need room for both components */
     }
-    if (!build_mprime(info, libctx, msg, msglen, &mp, &mplen))
+    if (!build_mprime(info, libctx, msg, msglen, &mp, &mplen)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
+                       "composite verify: message prehash (M') failed");
         goto end;
+    }
     if (!pq_op(0, info, pq, libctx, pq_propq, mp, mplen,
-               NULL, NULL, sig, (size_t)pqfixed))
+               NULL, NULL, sig, (size_t)pqfixed)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
+                       "composite verify: PQ component verification failed");
         goto end;
+    }
     if (!trad_op(0, info, trad, libctx, trad_propq, mp, mplen,
-                 NULL, NULL, sig + pqfixed, siglen - (size_t)pqfixed))
+                 NULL, NULL, sig + pqfixed, siglen - (size_t)pqfixed)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
+                       "composite verify: classical component verification "
+                       "failed");
         goto end;
+    }
     ret = 1;
 end:
     OPENSSL_free(mp);
@@ -271,8 +294,11 @@ static int composite_sig_sign_init(void *vctx, const char *mdname, void *vkey,
     COMPOSITE_SIGCTX *c = vctx;
     COMPOSITE_KEY *k = vkey;
 
-    if (k == NULL || k->state < COMPOSITE_HAVE_PRVKEY)
+    if (k == NULL || k->state < COMPOSITE_HAVE_PRVKEY) {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PRIVATE_KEY,
+                       "composite signing requires a private key");
         return 0;
+    }
     c->key = k;
     return 1;
 }
@@ -283,8 +309,11 @@ static int composite_sig_verify_init(void *vctx, const char *mdname, void *vkey,
     COMPOSITE_SIGCTX *c = vctx;
     COMPOSITE_KEY *k = vkey;
 
-    if (k == NULL || k->state < COMPOSITE_HAVE_PUBKEY)
+    if (k == NULL || k->state < COMPOSITE_HAVE_PUBKEY) {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PUBLIC_KEY,
+                       "composite verification requires a public key");
         return 0;
+    }
     c->key = k;
     return 1;
 }
@@ -306,11 +335,15 @@ static int composite_sig_digest_sign(void *vctx, unsigned char *sig,
     }
     if (!composite_sign(k->info, k->pq_key, k->trad_key, k->libctx,
                         k->pq_propq, k->trad_propq, tbs, tbslen, &tmp, &tlen))
-        return 0;
+        return 0;                            /* composite_sign already raised */
     if (tlen <= sigsize) {
         memcpy(sig, tmp, tlen);
         *siglen = tlen;
         ret = 1;
+    } else {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_OUTPUT_BUFFER_TOO_SMALL,
+                       "composite signature buffer %zu < required %zu",
+                       sigsize, tlen);
     }
     OPENSSL_free(tmp);
     return ret;
