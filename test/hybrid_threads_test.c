@@ -40,37 +40,22 @@
 #define KEM_ALG "X25519MLKEM768"
 #define SIG_ALG "p256_mldsa44"
 
-/* PQ half of KEM_ALG; its presence in the default provider is the runtime
- * signal for "native PQ available" (landed in the default provider in 3.5). */
-#define PQ_PROBE_ALG "ML-KEM-768"
-
 #define N_THREADS 8
 #define N_ITERS   24
 
 static const char *module_path;   /* OPENSSL_MODULES, for per-thread libctxs */
 
-/* Whether the default provider in `libctx` supplies the native PQ components. */
-static int default_supplies_pq(OSSL_LIB_CTX *libctx)
-{
-    EVP_KEM *k = EVP_KEM_fetch(libctx, PQ_PROBE_ALG, "provider=default");
-    int have = (k != NULL);
-
-    EVP_KEM_free(k);
-    ERR_clear_error();
-    return have;
-}
-
 /*
  * Load the providers a worker needs into `libctx`: the hybrid provider under
- * test, the default provider for the classical halves, and — only where the
- * default provider lacks native ML-KEM/ML-DSA (OpenSSL < 3.5) — oqsprovider for
- * the PQ halves. Returns 1 iff default + hybrid load.
+ * test, the default provider for the classical halves, and — on OpenSSL < 3.5,
+ * where the default provider has no native ML-KEM/ML-DSA — oqsprovider for the
+ * PQ halves. Returns 1 iff default + hybrid load.
  *
- * oqsprovider is loaded ONLY when needed, by design: this is a regression guard
- * for THIS provider's thread/fork/teardown safety. On >= 3.5 the default
- * provider supplies the PQ halves natively, so oqsprovider is not required here
- * and is not loaded — the guard then exercises just the default and hybrid
- * providers, keeping it focused on the code under test.
+ * oqsprovider is loaded only where needed, by design: this is a regression guard
+ * for THIS provider's thread/fork/teardown safety. Native ML-KEM/ML-DSA landed in
+ * the default provider in 3.5, so on >= 3.5 the PQ halves come from it and
+ * oqsprovider is not loaded — the guard then exercises just the default and
+ * hybrid providers, keeping it focused on the code under test.
  */
 static int load_providers(OSSL_LIB_CTX *libctx)
 {
@@ -78,8 +63,9 @@ static int load_providers(OSSL_LIB_CTX *libctx)
         OSSL_PROVIDER_set_default_search_path(libctx, module_path);
     if (OSSL_PROVIDER_load(libctx, "default") == NULL)
         return 0;
-    if (!default_supplies_pq(libctx))
-        (void)OSSL_PROVIDER_load(libctx, "oqsprovider");   /* PQ half on < 3.5 */
+#if OPENSSL_VERSION_NUMBER < 0x30500000L
+    (void)OSSL_PROVIDER_load(libctx, "oqsprovider");   /* PQ half; native >= 3.5 */
+#endif
     ERR_clear_error();
     return OSSL_PROVIDER_load(libctx, "hybrid") != NULL;
 }
