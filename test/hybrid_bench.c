@@ -26,10 +26,72 @@
 
 #define ITERATIONS 1000
 
+/*
+ * Composition-overhead regression guard (work-items item 20).
+ *
+ * The hybrid provider's job is to COMPOSE two component algorithms; the glue it
+ * adds (buffer split/concat, the length prefix, an EVP_MD_CTX) is negligible next
+ * to the component crypto. This guard makes that machine-checked so a regression
+ * (e.g. an accidental extra keygen or an O(n) copy) fails CI instead of only
+ * showing up in the printed numbers.
+ *
+ * It compares the hybrid against the NATIVE peer that runs the SAME components,
+ * per operation, on FAIR rows only (same PQ implementation both sides). The bound
+ * is a generous ceiling, not a tight equality, for two reasons:
+ *   - CI runners are shared and noisy;
+ *   - when the components come from oqsprovider, that provider's blanket
+ *     no_cache=1 on OpenSSL >= 3.5 forces a per-operation method reconstruction on
+ *     every component fetch (an oqsprovider artifact, NOT this provider's
+ *     composition — see docs/ and design.md Performance). The hybrid pays it once
+ *     per component per op, inflating the ratio for fast primitives. So rows whose
+ *     components come from oqsprovider get a looser ceiling than the default-only
+ *     MLX rows. A genuine composition regression is far larger than either bound.
+ */
+#define OVERHEAD_CEIL_DEFAULT 2.5   /* default-provider components: glue only */
+#define OVERHEAD_CEIL_OQS     5.0   /* oqsprovider components: absorbs the no_cache
+                                     * per-op fetch tax on fast verify + CI noise */
+#define OVERHEAD_MIN_MS       0.010 /* below this per-op, timing noise dominates */
+
+typedef struct {
+    double op[3];   /* KEM: keygen, encaps, decaps.  SIG: keygen, sign, verify. */
+    int valid;      /* 1 once measured; 0 on skip/error (no assertion made) */
+} BENCH_TIMES;
+
+static const char *const KEM_OPS[3] = { "keygen", "encaps", "decaps" };
+static const char *const SIG_OPS[3] = { "keygen", "sign",   "verify" };
+
+static int overhead_failures;   /* nonzero -> main() returns failure */
+
 static double time_diff_ms(struct timespec *start, struct timespec *end)
 {
     return (end->tv_sec - start->tv_sec) * 1000.0
          + (end->tv_nsec - start->tv_nsec) / 1e6;
+}
+
+/*
+ * Assert the hybrid stays within `ceil` x the native peer per operation (only
+ * where both were measured and native is above the noise floor). Prints one line
+ * per violation and bumps the global failure counter.
+ */
+static void check_overhead(const char *alg, const BENCH_TIMES *native,
+                           const BENCH_TIMES *hybrid, const char *const ops[3],
+                           double ceil)
+{
+    int i;
+
+    if (!native->valid || !hybrid->valid)
+        return;
+    for (i = 0; i < 3; i++) {
+        if (native->op[i] < OVERHEAD_MIN_MS)
+            continue;   /* too small to time reliably */
+        if (hybrid->op[i] > native->op[i] * ceil) {
+            printf("  !! %s %s: composition overhead %.2fx native "
+                   "(%.4f vs %.4f ms) exceeds %.2fx ceiling\n",
+                   alg, ops[i], hybrid->op[i] / native->op[i],
+                   hybrid->op[i], native->op[i], ceil);
+            overhead_failures++;
+        }
+    }
 }
 
 /*
@@ -43,7 +105,7 @@ static double time_diff_ms(struct timespec *start, struct timespec *end)
  */
 static int bench_kem(OSSL_LIB_CTX *libctx, const char *algname,
                      const char *select_propq, const char *comp_propq,
-                     const char *label, int iterations)
+                     const char *label, int iterations, BENCH_TIMES *out)
 {
     EVP_PKEY_CTX *gctx = NULL, *ectx = NULL, *dctx = NULL;
     EVP_PKEY *key = NULL;
@@ -168,6 +230,12 @@ static int bench_kem(OSSL_LIB_CTX *libctx, const char *algname,
     printf("  %-46s  keygen: %7.3f ms  encaps: %7.3f ms  decaps: %7.3f ms\n",
            label, keygen_ms, encaps_ms, decaps_ms);
 
+    if (out != NULL) {
+        out->op[0] = keygen_ms;
+        out->op[1] = encaps_ms;
+        out->op[2] = decaps_ms;
+        out->valid = 1;
+    }
     ret = 1;
 
 err:
@@ -219,7 +287,7 @@ static int provider_has_mldsa(OSSL_LIB_CTX *libctx, const char *provname)
  */
 static int bench_sig(OSSL_LIB_CTX *libctx, const char *algname,
                      const char *select_propq, const char *comp_propq,
-                     const char *label, int iterations)
+                     const char *label, int iterations, BENCH_TIMES *out)
 {
     EVP_PKEY_CTX *gctx = NULL;
     EVP_PKEY *key = NULL;
@@ -341,6 +409,12 @@ static int bench_sig(OSSL_LIB_CTX *libctx, const char *algname,
 
     printf("  %-40s  keygen: %7.3f ms  sign: %7.3f ms  verify: %7.3f ms\n",
            label, keygen_ms, sign_ms, verify_ms);
+    if (out != NULL) {
+        out->op[0] = keygen_ms;
+        out->op[1] = sign_ms;
+        out->op[2] = verify_ms;
+        out->valid = 1;
+    }
     ret = 1;
 
 err:
@@ -399,17 +473,25 @@ static void compare_kem(OSSL_LIB_CTX *libctx, const char *alg,
                         const char *native, const char *pq, int it)
 {
     char lbl[80];
-    int fair = (native[0] == 'd') ? 1 : pq_from_oqs_kem(libctx, pq);
+    int from_default = (native[0] == 'd');
+    int fair = from_default ? 1 : pq_from_oqs_kem(libctx, pq);
+    BENCH_TIMES nt = { {0}, 0 }, ht = { {0}, 0 };
 
     printf("%s:  %s\n", alg, FAIR_TAG(fair));
     snprintf(lbl, sizeof(lbl), "  %s (native)", native);
-    bench_kem(libctx, alg, native[0] == 'd' ? "provider=default"
-                                            : "provider=oqsprovider",
-              NULL, lbl, it);
+    bench_kem(libctx, alg, from_default ? "provider=default"
+                                        : "provider=oqsprovider",
+              NULL, lbl, it, &nt);
     snprintf(lbl, sizeof(lbl), "  hybrid (PQ from %s)", native);
     bench_kem(libctx, alg, "provider=hybrid",
-              native[0] == 'd' ? "provider=default" : "?provider=oqsprovider",
-              lbl, it);
+              from_default ? "provider=default" : "?provider=oqsprovider",
+              lbl, it, &ht);
+    /* Only FAIR rows compare like-for-like; the ceiling is tighter when the
+     * components come from the default provider (no oqsprovider no_cache tax). */
+    if (fair)
+        check_overhead(alg, &nt, &ht, KEM_OPS,
+                       from_default ? OVERHEAD_CEIL_DEFAULT
+                                    : OVERHEAD_CEIL_OQS);
 }
 
 /* Same, for a signature hybrid (native peer is always oqsprovider). */
@@ -418,12 +500,18 @@ static void compare_sig(OSSL_LIB_CTX *libctx, const char *alg,
 {
     char lbl[80];
     int fair = pq_from_oqs_sig(libctx, pq);
+    BENCH_TIMES nt = { {0}, 0 }, ht = { {0}, 0 };
 
     printf("%s:  %s\n", alg, FAIR_TAG(fair));
     snprintf(lbl, sizeof(lbl), "  oqsprovider (native)");
-    bench_sig(libctx, alg, "provider=oqsprovider", NULL, lbl, it);
+    bench_sig(libctx, alg, "provider=oqsprovider", NULL, lbl, it, &nt);
     snprintf(lbl, sizeof(lbl), "  hybrid");
-    bench_sig(libctx, alg, "provider=hybrid", "?provider=oqsprovider", lbl, it);
+    bench_sig(libctx, alg, "provider=hybrid", "?provider=oqsprovider", lbl, it,
+              &ht);
+    /* Native peer is oqsprovider, so the hybrid's component fetches pay the same
+     * no_cache tax the native side avoids internally -> the looser ceiling. */
+    if (fair)
+        check_overhead(alg, &nt, &ht, SIG_OPS, OVERHEAD_CEIL_OQS);
 }
 
 int main(int argc, char **argv)
@@ -458,6 +546,12 @@ int main(int argc, char **argv)
     if (argc > 1 && atoi(argv[1]) > 0)
         it = atoi(argv[1]);
     modulepath = getenv("OPENSSL_MODULES");
+
+    /* Measure the HYBRID provider's own MLX implementation, not the default's:
+     * without this the cede-to-default lever withdraws the MLX groups from the
+     * hybrid provider and its rows would be skipped (and the tight default-
+     * component ceiling never exercised). */
+    setenv("HYBRID_CEDE_TO_DEFAULT", "0", 1);
 
     libctx = OSSL_LIB_CTX_new();
     if (libctx == NULL || (dflt_prov = OSSL_PROVIDER_load(libctx, "default"))
@@ -513,10 +607,17 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
+    if (overhead_failures == 0)
+        printf("Composition-overhead guard: PASS (all FAIR rows within "
+               "ceiling)\n");
+    else
+        printf("Composition-overhead guard: FAIL (%d operation(s) over "
+               "ceiling)\n", overhead_failures);
+
     OSSL_PROVIDER_unload(hybrid_prov);
     if (oqs_prov != NULL)
         OSSL_PROVIDER_unload(oqs_prov);
     OSSL_PROVIDER_unload(dflt_prov);
     OSSL_LIB_CTX_free(libctx);
-    return 0;
+    return overhead_failures == 0 ? 0 : 1;
 }

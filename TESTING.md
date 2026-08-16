@@ -270,6 +270,26 @@ default-provider vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) ML-KEM/ML-DSA)
 in the same process. Run `hybrid_bench` in your own environment for numbers.
 
+**Machine-checked composition-overhead guard.** `hybrid_bench` is also a
+regression test (run as the `hybrid_bench` ctest): on every **FAIR** row — where
+the hybrid and its native peer exercise the *same* PQ implementation — it asserts,
+per operation, that the hybrid stays within a bounded multiple of the native peer,
+and exits non-zero otherwise. The bound is a generous ceiling, not a tight
+equality, because CI runners are noisy and because when the components come from
+oqsprovider that provider's blanket `no_cache=1` on OpenSSL ≥ 3.5 forces a
+per-operation method reconstruction on each component fetch — an *oqsprovider*
+artifact, not this provider's composition (see below) — which inflates the ratio
+for fast verifies. Default-provider component rows (the MLX groups) therefore get
+a tighter ceiling than oqsprovider-component rows. A genuine composition
+regression (an accidental extra keygen, an O(n) copy) is far larger than either
+bound. The guard runs with cede-to-default switched off so it measures the
+hybrid provider's own MLX implementation rather than skipping those rows.
+
+The `no_cache` effect is analysed in `design.md` (Performance) and the local
+`docs/` notes: the composition glue itself is negligible; the observable
+fast-signature tax is the sub-provider fetch flag, reproducible by toggling it in
+a stub, and is out of this provider's scope.
+
 ### Composite signature benchmark
 
 `composite_sig_bench` (built only with `-DHYBRID_COMPOSITE`) reports, for **every**
