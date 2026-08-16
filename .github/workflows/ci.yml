@@ -14,6 +14,11 @@ on:
   push:               # primary trigger — every push is tested, even before a PR exists
   pull_request:       # deduplicated by the `gate` job (skipped when the push already covered the tree)
   workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "libFuzzer session length for the fuzz leg (seconds)"
+        required: false
+        default: "1800"
   schedule:
     - cron: "0 6 * * 1"   # Mondays 06:00 UTC — weekly exhaustive matrix
                           # (the nightly deprecation tripwire is its own workflow)
@@ -490,6 +495,11 @@ jobs:
   # session (non-zero exit fails the job) and the crashing input is uploaded as an
   # artifact for reproduction.
   #
+  # Session length defaults to 30 min (1800s): the per-run fixed cost (checkout +
+  # apt + a possibly-cold OpenSSL build + the clang provider build) is minutes, so
+  # a short fuzz would spend most of the job on setup. A manual run can override it
+  # via the fuzz_seconds workflow_dispatch input for a deeper session.
+  #
   # WEEKLY ONLY (schedule / manual): a real fuzzing session is expensive and its
   # signal is never a PR gate. OSS-Fuzz is the longer-term durable option (see
   # docs/FUZZING.md); this leg gives regular coverage in the meantime.
@@ -555,8 +565,12 @@ jobs:
           restore-keys: |
             fuzz-corpus-decode-
 
-      - name: Fuzz — bounded libFuzzer decode session (5 min)
+      - name: Fuzz — bounded libFuzzer decode session
         working-directory: build
+        env:
+          # Manual override via workflow_dispatch input; 1800s (30 min) otherwise
+          # (schedule runs carry no inputs, so the fallback applies there).
+          FUZZ_SECONDS: ${{ github.event.inputs.fuzz_seconds || '1800' }}
         run: |
           set -euo pipefail
           export LD_LIBRARY_PATH="$PREFIX/lib64"
@@ -568,10 +582,11 @@ jobs:
           # seeds); -n keeps any coverage-increasing inputs added by prior runs.
           cp -n "$GITHUB_WORKSPACE"/test/corpus/decode/* \
                 "$GITHUB_WORKSPACE/.fuzz-corpus/decode/" 2>/dev/null || true
+          echo "fuzzing for ${FUZZ_SECONDS}s"
           # libFuzzer writes crash-*/leak-*/oom-* to -artifact_prefix and exits
           # non-zero on the first finding, which fails the step.
           ./hybrid_decode_fuzz \
-            -max_total_time=300 -max_len=65536 -print_final_stats=1 \
+            -max_total_time="$FUZZ_SECONDS" -max_len=65536 -print_final_stats=1 \
             -artifact_prefix="$GITHUB_WORKSPACE/fuzz-artifacts/" \
             "$GITHUB_WORKSPACE/.fuzz-corpus/decode"
 
