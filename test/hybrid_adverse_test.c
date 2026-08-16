@@ -10,6 +10,14 @@
  * init) — so this test is excluded from the suite-wide "ceding off" override in
  * CMakeLists.txt and sets the lever itself.
  *
+ * Teardown discipline: every phase UNLOADS the providers it loaded before
+ * freeing its libctx (via drop() below). OSSL_LIB_CTX_free alone does NOT run a
+ * provider's teardown while the caller still holds the OSSL_PROVIDER_load
+ * reference, so unloading is what lets hybrid_teardown free the provctx and its
+ * per-instance cede tables. Doing this keeps the test leak-clean under LSan on
+ * its own merit — it does not lean on the broad libcrypto module suppression in
+ * test/lsan.supp to hide the provider's own allocations.
+ *
  * Phases (mapping the issue's acceptance bullets):
  *   A. Merely activating the provider must not break SSL_CTX_new / TLS init,
  *      with no provider key material in use — both lever states, both roles.
@@ -65,6 +73,18 @@ static OSSL_LIB_CTX *fresh_ctx(int cede)
     return ctx;
 }
 
+/* Unload the providers this phase explicitly loaded (so their teardown runs),
+ * then free the libctx. NULL handles are skipped. See the teardown-discipline
+ * note in the file header. */
+static void drop(OSSL_LIB_CTX *ctx, OSSL_PROVIDER **provs, int n)
+{
+    int i;
+
+    for (i = 0; i < n; i++)
+        OSSL_PROVIDER_unload(provs[i]);     /* NULL-safe */
+    OSSL_LIB_CTX_free(ctx);
+}
+
 static int kem_resolves(OSSL_LIB_CTX *ctx, const char *name, const char *prov)
 {
     EVP_KEM *k = EVP_KEM_fetch(ctx, name, prov);
@@ -91,14 +111,15 @@ static int sig_resolves(OSSL_LIB_CTX *ctx, const char *name, const char *prov)
 static void phase_ssl_ctx_new(int cede)
 {
     OSSL_LIB_CTX *ctx = fresh_ctx(cede);
+    OSSL_PROVIDER *provs[2] = { NULL, NULL };
     SSL_CTX *sctx = NULL, *cctx = NULL;
     const char *tag = cede ? "cede on" : "cede off";
 
     if (ctx == NULL
-            || OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+            || (provs[0] = OSSL_PROVIDER_load(ctx, "default")) == NULL
+            || (provs[1] = OSSL_PROVIDER_load(ctx, "hybrid")) == NULL) {
         OK(0, "phase A (%s): load default+hybrid", tag);
-        OSSL_LIB_CTX_free(ctx);
+        drop(ctx, provs, 2);
         return;
     }
 
@@ -117,7 +138,7 @@ static void phase_ssl_ctx_new(int cede)
 
     SSL_CTX_free(sctx);
     SSL_CTX_free(cctx);
-    OSSL_LIB_CTX_free(ctx);
+    drop(ctx, provs, 2);
 }
 
 /* ------------------------------------------------------------------ */
@@ -126,7 +147,7 @@ static void phase_ssl_ctx_new(int cede)
 static void phase_load_before_default(void)
 {
     OSSL_LIB_CTX *ctx = fresh_ctx(1);   /* ceding ON — the real-world default */
-    OSSL_PROVIDER *hyb, *dflt;
+    OSSL_PROVIDER *provs[2] = { NULL, NULL };
     size_t i, retained = 0;
 
     if (ctx == NULL) {
@@ -136,11 +157,11 @@ static void phase_load_before_default(void)
     /* Load hybrid FIRST. Its init probes for a "default" provider to cede to;
      * none is present yet, so the probe must find nothing (no NULL deref) and
      * withdraw nothing. */
-    hyb = OSSL_PROVIDER_load(ctx, "hybrid");
-    OK(hyb != NULL, "phase B: hybrid loads before default (no crash/hang)");
+    provs[0] = OSSL_PROVIDER_load(ctx, "hybrid");
+    OK(provs[0] != NULL, "phase B: hybrid loads before default (no crash/hang)");
 
     /* With no default present at init, nothing standardized was ceded, so the
-     * whole inventory is served — check a representative group resolves. */
+     * whole inventory is served — check every group resolves. */
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         if (kem_resolves(ctx, hybrid_kem_table[i].hybrid_name, "provider=hybrid"))
             retained++;
@@ -149,12 +170,12 @@ static void phase_load_before_default(void)
        "(%zu/%zu)", retained, (size_t)HYBRID_KEM_ALG_COUNT);
 
     /* Now load default afterwards; the two coexist without disturbing hybrid. */
-    dflt = OSSL_PROVIDER_load(ctx, "default");
-    OK(dflt != NULL, "phase B: default loads after hybrid");
+    provs[1] = OSSL_PROVIDER_load(ctx, "default");
+    OK(provs[1] != NULL, "phase B: default loads after hybrid");
     OK(kem_resolves(ctx, hybrid_kem_table[0].hybrid_name, "provider=hybrid"),
        "phase B: hybrid still resolves after default is loaded");
 
-    OSSL_LIB_CTX_free(ctx);
+    drop(ctx, provs, 2);
 }
 
 /* ------------------------------------------------------------------ */
@@ -163,11 +184,12 @@ static void phase_load_before_default(void)
 static void phase_double_activation(void)
 {
     OSSL_LIB_CTX *ctx = fresh_ctx(0);
+    OSSL_PROVIDER *provs[2] = { NULL, NULL };
     OSSL_PROVIDER *h1, *h2;
 
-    if (ctx == NULL || OSSL_PROVIDER_load(ctx, "default") == NULL) {
+    if (ctx == NULL || (provs[0] = OSSL_PROVIDER_load(ctx, "default")) == NULL) {
         OK(0, "phase C: libctx/default");
-        OSSL_LIB_CTX_free(ctx);
+        drop(ctx, provs, 1);
         return;
     }
     /* Activate the provider twice (mimics an explicit load layered on top of a
@@ -183,7 +205,8 @@ static void phase_double_activation(void)
     OK(kem_resolves(ctx, hybrid_kem_table[0].hybrid_name, "provider=hybrid"),
        "phase C: still functional after one unload");
 
-    OSSL_LIB_CTX_free(ctx);
+    provs[1] = h1;                          /* remaining hybrid ref */
+    drop(ctx, provs, 2);
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,10 +215,11 @@ static void phase_double_activation(void)
 static void phase_query_not_empty(void)
 {
     OSSL_LIB_CTX *ctx = fresh_ctx(0);
+    OSSL_PROVIDER *provs[1] = { NULL };
 
-    if (ctx == NULL || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (ctx == NULL || (provs[0] = OSSL_PROVIDER_load(ctx, "hybrid")) == NULL) {
         OK(0, "phase D: load hybrid");
-        OSSL_LIB_CTX_free(ctx);
+        drop(ctx, provs, 1);
         return;
     }
     /* The very first thing we do is fetch. If query_operation had returned an
@@ -204,7 +228,7 @@ static void phase_query_not_empty(void)
      * would fail. It must succeed. */
     OK(kem_resolves(ctx, hybrid_kem_table[0].hybrid_name, "provider=hybrid"),
        "phase D: first fetch after load resolves (query not cached-empty)");
-    OSSL_LIB_CTX_free(ctx);
+    drop(ctx, provs, 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -213,6 +237,7 @@ static void phase_query_not_empty(void)
 static void phase_colliding_oid(void)
 {
     OSSL_LIB_CTX *ctx;
+    OSSL_PROVIDER *provs[1] = { NULL };
     const HYBRID_SIG_INFO *first = &hybrid_sig_table[0];
     size_t i, served = 0;
 
@@ -226,9 +251,9 @@ static void phase_colliding_oid(void)
     ERR_clear_error();
 
     ctx = fresh_ctx(0);
-    if (ctx == NULL || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (ctx == NULL || (provs[0] = OSSL_PROVIDER_load(ctx, "hybrid")) == NULL) {
         OK(0, "phase E: hybrid loads despite a pre-registered colliding OID");
-        OSSL_LIB_CTX_free(ctx);
+        drop(ctx, provs, 1);
         return;
     }
     OK(1, "phase E: hybrid loads despite a pre-registered colliding OID");
@@ -242,7 +267,7 @@ static void phase_colliding_oid(void)
        "phase E: provider serves its whole signature inventory after collision "
        "(%zu/%zu)", served, (size_t)HYBRID_SIG_ALG_COUNT);
 
-    OSSL_LIB_CTX_free(ctx);
+    drop(ctx, provs, 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -289,35 +314,36 @@ static int default_has_cp(unsigned int cp)
 static void phase_no_overlap_and_cede_soundness(void)
 {
     OSSL_LIB_CTX *on = fresh_ctx(1);    /* ceding ON  (real-world default) */
-    OSSL_LIB_CTX *off;
-    OSSL_PROVIDER *dflt;
+    OSSL_PROVIDER *on_provs[2] = { NULL, NULL };
+    OSSL_LIB_CTX *off = NULL;
+    OSSL_PROVIDER *off_provs[2] = { NULL, NULL };
     size_t i;
     int overlap = 0, cede_unsound = 0;
 
     if (on == NULL
-            || (dflt = OSSL_PROVIDER_load(on, "default")) == NULL
-            || OSSL_PROVIDER_load(on, "hybrid") == NULL) {
+            || (on_provs[0] = OSSL_PROVIDER_load(on, "default")) == NULL
+            || (on_provs[1] = OSSL_PROVIDER_load(on, "hybrid")) == NULL) {
         OK(0, "phase F/G: load default+hybrid (cede on)");
-        OSSL_LIB_CTX_free(on);
+        drop(on, on_provs, 2);
         return;
     }
 
     /* Snapshot the default provider's advertised code points. */
     g_def_cp_n = 0;
-    OSSL_PROVIDER_get_capabilities(dflt, "TLS-GROUP", collect_cp, NULL);
+    OSSL_PROVIDER_get_capabilities(on_provs[0], "TLS-GROUP", collect_cp, NULL);
 #ifdef OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT
-    OSSL_PROVIDER_get_capabilities(dflt, "TLS-SIGALG", collect_cp, NULL);
+    OSSL_PROVIDER_get_capabilities(on_provs[0], "TLS-SIGALG", collect_cp, NULL);
 #endif
 
     /* A second context with ceding OFF gives the oracle "does the default even
      * serve this name?" independently of ceding: with ceding off, hybrid always
      * serves the name, and provider=default tells us whether default does. */
     off = fresh_ctx(0);
-    if (off == NULL || OSSL_PROVIDER_load(off, "default") == NULL
-            || OSSL_PROVIDER_load(off, "hybrid") == NULL) {
+    if (off == NULL || (off_provs[0] = OSSL_PROVIDER_load(off, "default")) == NULL
+            || (off_provs[1] = OSSL_PROVIDER_load(off, "hybrid")) == NULL) {
         OK(0, "phase F/G: load default+hybrid (cede off)");
-        OSSL_LIB_CTX_free(on);
-        OSSL_LIB_CTX_free(off);
+        drop(on, on_provs, 2);
+        drop(off, off_provs, 2);
         return;
     }
 
@@ -380,8 +406,8 @@ static void phase_no_overlap_and_cede_soundness(void)
     OK(cede_unsound == 0,
        "phase G: an algorithm is ceded only when the default actually serves it");
 
-    OSSL_LIB_CTX_free(on);
-    OSSL_LIB_CTX_free(off);
+    drop(on, on_provs, 2);
+    drop(off, off_provs, 2);
 }
 
 /* ------------------------------------------------------------------ */
@@ -413,17 +439,17 @@ done:
 static void phase_foreign_key_io(void)
 {
     OSSL_LIB_CTX *ctx = fresh_ctx(1);   /* ceding on: hybrid withdraws MLX etc. */
+    OSSL_PROVIDER *provs[3] = { NULL, NULL, NULL };
     EVP_PKEY *ec = NULL;
-    int have_oqs;
 
-    if (ctx == NULL || OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (ctx == NULL || (provs[0] = OSSL_PROVIDER_load(ctx, "default")) == NULL
+            || (provs[1] = OSSL_PROVIDER_load(ctx, "hybrid")) == NULL) {
         OK(0, "phase H: load default+hybrid");
-        OSSL_LIB_CTX_free(ctx);
+        drop(ctx, provs, 3);
         return;
     }
     /* oqsprovider is the genuine "third provider" when present. */
-    have_oqs = OSSL_PROVIDER_load(ctx, "oqsprovider") != NULL;
+    provs[2] = OSSL_PROVIDER_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     /* Foreign (default-owned) key type: X25519. The hybrid provider registers
@@ -440,7 +466,7 @@ static void phase_foreign_key_io(void)
      * (a pure-PQ oqsprovider-only signature), proving we shadow no foreign
      * encoder. Try a few candidate names for build/version tolerance and use the
      * first that keygens; skip cleanly if none is available here. */
-    if (have_oqs) {
+    if (provs[2] != NULL) {
         static const char *cand[] = { "falcon512", "mldsa44", "mayo1", NULL };
         EVP_PKEY *oq = NULL;
         const char *used = NULL;
@@ -463,7 +489,7 @@ static void phase_foreign_key_io(void)
         }
     }
 
-    OSSL_LIB_CTX_free(ctx);
+    drop(ctx, provs, 3);
 }
 
 /* ------------------------------------------------------------------ */

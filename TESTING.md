@@ -96,6 +96,28 @@ cmake --build build-tsan --target hybrid-provider hybrid_threads_test
 # It also runs in the full ASan/UBSan/LSan suite (-DHYBRID_SANITIZE=ON).
 ```
 
+### Leak detection with teeth (`hybrid_leakcheck_test`)
+
+The general `-DHYBRID_SANITIZE` leg runs LeakSanitizer with the fast unwinder, so
+every leak stack is captured only as `[malloc, CRYPTO_malloc]`; the suite-wide
+`test/lsan.supp` then matches that `libcrypto` frame and masks essentially any
+leak — including a **future** unfreed allocation in the provider's own code
+(all provider heap goes through `OPENSSL_malloc`). That leg therefore cannot, by
+itself, catch a newly introduced provider leak (it still catches use-after-free /
+overflow / double-free, which suppressions do not affect).
+
+`hybrid_leakcheck_test` closes that gap. It exercises **and frees** every
+provider allocation path — keygen/free, raw import/export, `match`, sign/verify,
+encaps/decaps, encode/decode — across the whole inventory (hybrid + composite,
+each algorithm self-skipping when inoperable), then **unloads every provider
+before freeing the libctx** so teardown runs before LSan's check. Because it is
+unload-clean it is pinned (via CMake `ENVIRONMENT`) to run against
+`test/lsan_leakcheck.supp`, which suppresses only the un-instrumented PQ
+dependencies and deliberately **omits** `leak:libcrypto`. A leak newly introduced
+in any exercised provider path therefore surfaces unmasked and fails this test —
+verified by injecting a deliberate leak, which this test catches while the
+suite-wide leg masks it.
+
 ### Drop-in replacement over a PQ-only oqsprovider (`hybrid_replace_test`)
 
 This ascertains that hybrid-provider can **fully replace**

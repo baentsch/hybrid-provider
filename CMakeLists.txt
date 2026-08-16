@@ -592,6 +592,27 @@ set_tests_properties(hybrid_adverse_test PROPERTIES
     TIMEOUT 120
 )
 
+# Leak-detection test with teeth (issue #47 follow-up to the #42 sanitizer leg).
+# Exercises and frees every provider allocation path (keygen/free, import/export,
+# match, sign/verify, encaps/decaps, encode/decode) across the whole inventory,
+# then unloads every provider before freeing the libctx (unload-clean) so teardown
+# runs before LSan's check. Because it is unload-clean it is run WITHOUT the broad
+# leak:libcrypto catch-all: its LSAN_OPTIONS is pinned to lsan_leakcheck.supp,
+# which suppresses only the un-instrumented PQ dependencies' one-time init state.
+# This overrides the suite-wide LSAN_OPTIONS the CI sanitize leg exports, so a
+# leak newly introduced in provider code surfaces here unmasked and fails.
+add_executable(hybrid_leakcheck_test test/hybrid_leakcheck_test.c)
+target_include_directories(hybrid_leakcheck_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_leakcheck_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_leakcheck_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_leakcheck_test COMMAND hybrid_leakcheck_test)
+set_tests_properties(hybrid_leakcheck_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/test/lsan_leakcheck.supp"
+    TIMEOUT 300
+)
+
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
 # with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired
 # into ctest as a low-iteration smoke test that it runs and completes.
