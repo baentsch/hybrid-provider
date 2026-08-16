@@ -67,8 +67,11 @@ harness: it builds with `CC=clang -DHYBRID_FUZZ=ON` against the latest ≥3.5
 OpenSSL (PQ from the default provider, no oqsprovider), then fuzzes for 30 minutes
 (the `fuzz_seconds` `workflow_dispatch` input overrides this for a deeper manual
 run) seeded from `test/corpus/decode`. The corpus is persisted across runs via
-`actions/cache` so coverage accumulates week over week; any crash fails the job
-and the crashing input is uploaded as an artifact for reproduction. The fast
+`actions/cache` so coverage accumulates week over week; any crash fails the job,
+uploads the crashing input as the `fuzz-crashes` artifact, and opens (or bumps) a
+`fuzz`-labelled tracking issue in this repo — so a weekly failure is actionable
+rather than left unseen in the Actions history (the same convention as the
+`OQS hybrid drift` and `Deprecation tripwire` workflows). The fast
 push/PR tier already ASan-replays the committed seed corpus on every `ctest` run
 (the standalone shape above), so this leg adds the coverage-guided exploration
 that a real fuzzing session provides.

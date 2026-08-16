@@ -705,7 +705,10 @@ this leg runs the *coverage-guided* clang shape, which needs a real fuzzing
 session. It builds against the latest (≥3.5) OpenSSL so the PQ halves come from
 the default provider (no oqsprovider), persists the corpus across runs via
 `actions/cache` so coverage accumulates, and uploads any crashing input as an
-artifact. The session runs 30 min by default (overridable via a
+artifact. On a crash it also opens (or bumps) a `fuzz`-labelled tracking issue in
+this repo — the same convention as the drift/tripwire workflows — so a weekly
+failure is actionable rather than lost in the Actions history. The session runs
+30 min by default (overridable via a
 `workflow_dispatch` input); that is sized against the per-run fixed cost — a cold
 OpenSSL build plus the clang provider build is itself minutes, so a shorter fuzz
 would be mostly setup. It runs **weekly only** (schedule / manual): a fuzzing session is

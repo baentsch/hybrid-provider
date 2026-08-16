@@ -507,8 +507,16 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: libFuzzer decode (latest OpenSSL, clang)
     runs-on: ubuntu-latest
+    # issues: write lets a crash open/refresh a tracking issue (see the final
+    # step) — the same convention as oqs-hybrid-drift.yml / deprecation-tripwire.yml,
+    # so a weekly failure produces an actionable issue rather than a red run that
+    # sits unseen in the Actions history.
+    permissions:
+      contents: read
+      issues: write
     env:
       PREFIX: ${{ github.workspace }}/.local
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build clang
@@ -566,6 +574,7 @@ jobs:
             fuzz-corpus-decode-
 
       - name: Fuzz — bounded libFuzzer decode session
+        id: fuzz
         working-directory: build
         env:
           # Manual override via workflow_dispatch input; 1800s (30 min) otherwise
@@ -591,9 +600,55 @@ jobs:
             "$GITHUB_WORKSPACE/.fuzz-corpus/decode"
 
       - name: Upload crash artifacts
-        if: failure()
+        if: always() && steps.fuzz.conclusion == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crashes
           path: ${{ github.workspace }}/fuzz-artifacts
           if-no-files-found: ignore
+
+      # A weekly leg is not watched like a PR, so a crash must produce an
+      # actionable artifact AND a tracking issue (same pattern as
+      # deprecation-tripwire.yml / oqs-hybrid-drift.yml): dedupe by title so a
+      # standing crash bumps the open issue rather than filing a new one each week.
+      # The run stays red regardless (the fuzz step already failed the job).
+      - name: Open/refresh a tracking issue on crash
+        if: always() && steps.fuzz.conclusion == 'failure'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Fuzzer: decoder crash in hybrid_decode_fuzz"
+          cat > /tmp/fuzz-body.md <<EOF
+          The weekly libFuzzer decode leg crashed: a mutated input drove
+          hybrid_decode()/hybrid_decode_p8() (or the component sub-key loading they
+          drive) into an ASan-detected fault. This is the untrusted-key-material
+          decode surface, so treat it as a memory-safety bug until triaged.
+
+          - Run: ${RUN_URL}
+          - Commit: ${GITHUB_SHA}
+          - Crashing input: the \`fuzz-crashes\` artifact on the run above
+            (crash-*/leak-*/oom-*).
+
+          **Reproduce** (from a \`-DHYBRID_FUZZ=ON\` build, standalone shape is
+          enough — it replays a single file under ASan):
+
+          \`\`\`sh
+          OPENSSL_MODULES=\$PWD HYBRID_CEDE_TO_DEFAULT=0 \\
+            ./hybrid_decode_fuzz path/to/crash-XXXX
+          \`\`\`
+
+          _Filed by the weekly fuzz leg (.github/workflows/ci.yml). It dedupes by
+          title, so it bumps this issue rather than filing a new one while it stays
+          open; close it once the crash is fixed._
+          EOF
+          gh label create fuzz --color d93f0b \
+            --description "Fuzzer-found defect" 2>/dev/null || true
+          NUM=$(gh issue list --state open --label fuzz --search "in:title $TITLE" \
+                  --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "Still crashing — ${RUN_URL} (commit ${GITHUB_SHA})."
+          else
+            gh issue create --title "$TITLE" --label fuzz --body-file /tmp/fuzz-body.md
+          fi
