@@ -145,6 +145,29 @@ end:
     return supported;
 }
 
+/*
+ * Decode CMS DER into a ContentInfo bound to `libctx`. This matters for the
+ * -noattr (content-signed) path: md-less CMS verification resolves the signature
+ * algorithm BY NAME from the ContentInfo's own library context, so a
+ * libctx-less d2i (global default context) cannot find the hybrid provider and
+ * fails "algorithm unsupported". The signed-attributes path happens to dodge
+ * this because it verifies through the signer certificate's public key.
+ */
+static CMS_ContentInfo *cms_from_der(OSSL_LIB_CTX *libctx,
+                                     const unsigned char *der, long derlen)
+{
+    CMS_ContentInfo *cms = CMS_ContentInfo_new_ex(libctx, NULL);
+    const unsigned char *p = der;
+
+    if (cms == NULL)
+        return NULL;
+    if (d2i_CMS_ContentInfo(&cms, &p, derlen) == NULL) {
+        CMS_ContentInfo_free(cms);
+        return NULL;
+    }
+    return cms;
+}
+
 /* DER-encode a CMS structure into a fresh buffer. */
 static int cms_to_der(CMS_ContentInfo *cms, unsigned char **der, long *derlen)
 {
@@ -176,7 +199,6 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
     X509_STORE *store = NULL;
     STACK_OF(X509) *certs = NULL;
     unsigned char *der = NULL;
-    const unsigned char *p;
     long derlen = 0;
     const unsigned char content[] = "hybrid CMS SignedData payload";
     /* Detached: the signature covers the message digest but the content is not
@@ -238,18 +260,16 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
 
     /* Verify against the correct detached content -> must succeed. */
     CMS_ContentInfo_free(cms);
-    p = der;
-    cms = d2i_CMS_ContentInfo(NULL, &p, derlen);
+    cms = cms_from_der(libctx, der, derlen);
     good = BIO_new_mem_buf(content, sizeof(content) - 1);
     if (cms == NULL || good == NULL
             || CMS_verify(cms, certs, store, good, NULL, CMS_BINARY) <= 0)
         goto fail;
 
     /* Tamper: verify the same signature against different content -> must fail
-     * (messageDigest mismatch). */
+     * (messageDigest mismatch, or content-signature mismatch under -noattr). */
     CMS_ContentInfo_free(cms);
-    p = der;
-    cms = d2i_CMS_ContentInfo(NULL, &p, derlen);
+    cms = cms_from_der(libctx, der, derlen);
     bad = BIO_new_mem_buf("different payload!!!", 19);
     if (cms == NULL || bad == NULL)
         goto fail;
