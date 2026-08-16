@@ -66,6 +66,9 @@ int composite_kem_combine(OSSL_LIB_CTX *libctx,
                           const unsigned char *label, size_t labellen,
                           unsigned char *ss_out)
 {
+    /* Provider-neutral combiner digest: from the provider's libctx with default
+     * properties. No component propquery — those steer the PQ/classical
+     * providers, which need not supply SHA3. */
     EVP_MD *sha3 = EVP_MD_fetch(libctx, "SHA3-256", NULL);
     EVP_MD_CTX *mc = EVP_MD_CTX_new();
     unsigned int outlen = 0;
