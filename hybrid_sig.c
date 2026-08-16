@@ -18,21 +18,21 @@
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 
+/*
+ * The operation context carries no libctx of its own: the component sign/verify
+ * below source their library context and property queries from the key
+ * (key->libctx / HYBRID_KEY_*_PROPQ), captured from the provider's component
+ * context at key construction (see hybrid_keymgmt.c, HYBRID_COMPONENT_LIBCTX).
+ * One unambiguous source for the component context; never the global default.
+ */
 typedef struct {
-    OSSL_LIB_CTX *libctx;
     HYBRID_KEY *key;
     int op;     /* EVP_PKEY_OP_SIGN or EVP_PKEY_OP_VERIFY */
 } HYBRID_SIG_CTX;
 
 static void *hybrid_sig_newctx(void *provctx, const char *propq)
 {
-    HYBRID_SIG_CTX *ctx;
-    HYBRID_PROV_CTX *pctx = provctx;
-
-    if ((ctx = OPENSSL_zalloc(sizeof(*ctx))) == NULL)
-        return NULL;
-    ctx->libctx = pctx ? pctx->libctx : NULL;
-    return ctx;
+    return OPENSSL_zalloc(sizeof(HYBRID_SIG_CTX));
 }
 
 static void hybrid_sig_freectx(void *vctx)

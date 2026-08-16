@@ -44,6 +44,10 @@ static int build_mprime(const COMPOSITE_SIG_INFO *info, OSSL_LIB_CTX *libctx,
                         unsigned char **out, size_t *outlen)
 {
     static const char prefix[] = COMPOSITE_SIG_PREFIX; /* no trailing NUL used */
+    /* Provider-neutral message prehash: fetched from the provider's libctx with
+     * default properties. It deliberately does NOT take a component propquery —
+     * those steer the PQ/classical signature providers (e.g. oqsprovider), which
+     * need not supply this digest. */
     EVP_MD *md = EVP_MD_fetch(libctx, info->prehash, NULL);
     EVP_MD_CTX *mc = EVP_MD_CTX_new();
     unsigned char ph[EVP_MAX_MD_SIZE];

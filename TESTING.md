@@ -50,7 +50,10 @@ Beyond `hybrid_test`, `ctest` runs the rest of the suite: signature certificates
 over TLS 1.3 (`hybrid_cert_tls_test`), config-driven component selection
 (`hybrid_config_test`), private component contexts for Frodo/BIKE/HQC
 (`hybrid_compctx_test`), SPKI/PKCS8 and raw-param round-trips
-(`hybrid_encode_test`, `hybrid_param_test`), CMS SignedData (`hybrid_cms_test`),
+(`hybrid_encode_test`, `hybrid_param_test` — which also asserts that keygen,
+encapsulate and sign draw randomness from the provider's own library-context
+DRBG, by installing a deterministic test RAND in a private libctx), CMS
+SignedData (`hybrid_cms_test`),
 TLS code-point parity (`hybrid_capability_test`), provider coexistence
 (`hybrid_coexist_test`), cede-to-default withdrawal of the default provider's
 hybrids (`hybrid_cede_test`), concurrency / `fork()` / teardown stress

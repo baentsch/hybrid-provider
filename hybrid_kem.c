@@ -5,21 +5,23 @@
 
 #include "hybrid_prov.h"
 
+/*
+ * The operation context carries no libctx of its own: every component
+ * encapsulate/decapsulate below sources its library context and property
+ * queries from the key (key->libctx / HYBRID_KEY_*_PROPQ), which were captured
+ * from the provider's component context at key construction (see
+ * hybrid_keymgmt.c, HYBRID_COMPONENT_LIBCTX). This keeps a single, unambiguous
+ * source for the component context and avoids ever fetching from the global
+ * default libctx.
+ */
 typedef struct {
-    OSSL_LIB_CTX *libctx;
     HYBRID_KEY *key;
     int op;
 } HYBRID_KEM_CTX;
 
 static void *hybrid_kem_newctx(void *provctx)
 {
-    HYBRID_KEM_CTX *ctx;
-    HYBRID_PROV_CTX *pctx = provctx;
-
-    if ((ctx = OPENSSL_zalloc(sizeof(*ctx))) == NULL)
-        return NULL;
-    ctx->libctx = pctx ? pctx->libctx : NULL;
-    return ctx;
+    return OPENSSL_zalloc(sizeof(HYBRID_KEM_CTX));
 }
 
 static void hybrid_kem_freectx(void *vctx)
