@@ -906,8 +906,14 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
     {                                                                        \
         HYBRID_PROV_CTX *pctx = provctx;                                     \
         HYBRID_GEN_CTX *gctx;                                               \
-        if (pctx == NULL || (selection & (OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS \
-                | OSSL_KEYMGMT_SELECT_PRIVATE_KEY)) == 0)                    \
+        /* Accept any selection asking for key material — in particular the   \
+         * OSSL_KEYMGMT_SELECT_KEYPAIR libssl passes when generating a TLS     \
+         * key-share (issue #45). KEYPAIR covers PUBLIC_KEY|PRIVATE_KEY;       \
+         * DOMAIN_PARAMETERS is also accepted (paramgen-style init). gen()     \
+         * always produces a full keypair regardless. */                      \
+        if (pctx == NULL                                                     \
+                || (selection & (OSSL_KEYMGMT_SELECT_KEYPAIR                  \
+                        | OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS)) == 0)      \
             return NULL;                                                     \
         gctx = OPENSSL_zalloc(sizeof(*gctx));                                \
         if (gctx == NULL) return NULL;                                       \

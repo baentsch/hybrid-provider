@@ -28,6 +28,8 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/bio.h>
+#include <openssl/core_names.h>
+#include <openssl/params.h>
 
 static int test_count = 0;
 static int pass_count = 0;
@@ -57,6 +59,47 @@ static const struct {
     { "SecP384r1MLKEM1024", 0x11ED },
 };
 #define N_GROUPS (sizeof(GROUPS) / sizeof(GROUPS[0]))
+
+/*
+ * Records the TLS-GROUP code points the hybrid provider advertises, so the
+ * test can assert advertised == wire: the value the provider hands to libssl
+ * (below) must equal the value that comes back from SSL_get_negotiated_group()
+ * after a real handshake (in run_handshake). Closing that loop is acceptance
+ * item 1 of issue #45.
+ */
+static struct { char name[64]; unsigned int id; } g_adv[64];
+static int g_nadv;
+
+static int collect_group(const OSSL_PARAM params[], void *arg)
+{
+    const OSSL_PARAM *pn =
+        OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_NAME);
+    const OSSL_PARAM *pi =
+        OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_ID);
+    const char *name = NULL;
+    unsigned int id = 0;
+
+    (void)arg;
+    if (pn != NULL && pi != NULL && g_nadv < (int)(sizeof(g_adv) / sizeof(g_adv[0]))
+        && OSSL_PARAM_get_utf8_string_ptr(pn, &name)
+        && OSSL_PARAM_get_uint(pi, &id)) {
+        OPENSSL_strlcpy(g_adv[g_nadv].name, name, sizeof(g_adv[0].name));
+        g_adv[g_nadv].id = id;
+        g_nadv++;
+    }
+    return 1;
+}
+
+/* Code point the hybrid provider advertises for `name`, or -1 if not advertised. */
+static long advertised_codepoint(const char *name)
+{
+    int i;
+
+    for (i = 0; i < g_nadv; i++)
+        if (strcmp(g_adv[i].name, name) == 0)
+            return (long)g_adv[i].id;
+    return -1;
+}
 
 /*
  * Confirm that fetching the group's KEM with the given property query resolves
@@ -297,6 +340,56 @@ int main(void)
             TEST_PASS();
         else
             TEST_FAIL("group did not resolve to default provider");
+    }
+
+    /*
+     * Advertised == wire (issue #45, item 1). Collect the code points the
+     * hybrid provider advertises via OSSL_PROVIDER_get_capabilities and assert
+     * each MLX group is advertised at the expected code point. The handshakes
+     * below then assert the negotiated (on-the-wire) group carries that same
+     * code point, closing advertised -> wire end to end.
+     */
+    OSSL_PROVIDER_get_capabilities(hyb, "TLS-GROUP", collect_group, NULL);
+    for (g = 0; g < N_GROUPS; g++) {
+        char t[128];
+        long adv;
+
+        snprintf(t, sizeof(t), "%s: advertised code point == 0x%04x",
+                 GROUPS[g].name, GROUPS[g].codepoint);
+        TEST_START(t);
+        adv = advertised_codepoint(GROUPS[g].name);
+        if (adv == GROUPS[g].codepoint)
+            TEST_PASS();
+        else if (adv < 0)
+            TEST_FAIL("group not advertised by hybrid provider");
+        else
+            TEST_FAIL("advertised code point differs from expected");
+    }
+
+    /*
+     * gen_init accepts the selection libssl uses for a TLS key-share (issue #45,
+     * item 4). libssl generates a key-share with EVP_PKEY keygen, which drives
+     * keymgmt gen_init with OSSL_KEYMGMT_SELECT_KEYPAIR; a successful hybrid
+     * keygen here proves gen_init accepted it. (The handshakes below rely on the
+     * same path; this isolates it as an explicit unit check.)
+     */
+    for (g = 0; g < N_GROUPS; g++) {
+        char t[128];
+        EVP_PKEY_CTX *kg;
+        EVP_PKEY *pk = NULL;
+
+        snprintf(t, sizeof(t), "%s: keymgmt gen_init accepts key-share selection",
+                 GROUPS[g].name);
+        TEST_START(t);
+        kg = EVP_PKEY_CTX_new_from_name(hyb_ctx, GROUPS[g].name,
+                                        "?provider=hybrid");
+        if (kg != NULL && EVP_PKEY_keygen_init(kg) > 0
+                && EVP_PKEY_keygen(kg, &pk) > 0 && pk != NULL)
+            TEST_PASS();
+        else
+            TEST_FAIL("hybrid key-share keygen failed");
+        EVP_PKEY_free(pk);
+        EVP_PKEY_CTX_free(kg);
     }
 
     /* "?provider=hybrid": prefer hybrid for the (colliding) group name, but

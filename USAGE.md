@@ -185,3 +185,24 @@ Accepted booleans: `1`/`0`, `yes`/`no`, `on`/`off`, `true`/`false`. `hybrid_cede
 verifies both states across the whole inventory; detection only ever affects
 identifiers the default provider actually serves, so anything unique to this
 provider is never withdrawn.
+
+## Only operable algorithms are advertised
+
+A hybrid combines a classical and a PQ component, each fetched from whatever
+provider supplies it (default, oqsprovider, …). The hybrid provider advertises a
+TLS group or signature scheme **only when both components are actually fetchable
+in the library context it is loaded into** — otherwise libssl could negotiate an
+algorithm that then fails mid-handshake ("no suitable key share" / "no suitable
+signature algorithm"). So, for example, the Frodo/BIKE/HQC groups and the
+Falcon/MAYO/SNOVA/OV/MQOM signatures appear in the advertised lists only when
+oqsprovider is present to supply their PQ base; the ML-KEM/ML-DSA-based hybrids
+are advertised whenever the default provider (3.5+) or oqsprovider can supply
+that component. Each algorithm is advertised under its own fixed code point, so a
+dropped one never shifts another's value.
+
+Set `HYBRID_LOG=1` to have the provider print, to stderr, each advertisement it
+drops and why (component not fetchable, or the per-enumeration cap reached):
+
+```sh
+HYBRID_LOG=1 ./your-app
+```
