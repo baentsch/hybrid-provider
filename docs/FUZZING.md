@@ -59,6 +59,19 @@ signature algorithms, exercising the success path) plus malformed/truncated
 inputs. Regenerate the valid seeds with `test/corpus/gen_decode_corpus.sh`
 against a built provider.
 
+## CI
+
+The weekly exhaustive job (`.github/workflows/ci.yml`, `schedule` tier — never
+blocks a PR) runs a **bounded, coverage-guided** libFuzzer session on this
+harness: it builds with `CC=clang -DHYBRID_FUZZ=ON` against the latest ≥3.5
+OpenSSL (PQ from the default provider, no oqsprovider), then fuzzes for five
+minutes seeded from `test/corpus/decode`. The corpus is persisted across runs via
+`actions/cache` so coverage accumulates week over week; any crash fails the job
+and the crashing input is uploaded as an artifact for reproduction. The fast
+push/PR tier already ASan-replays the committed seed corpus on every `ctest` run
+(the standalone shape above), so this leg adds the coverage-guided exploration
+that a real fuzzing session provides.
+
 ## OSS-Fuzz
 
 The libFuzzer entry point (`LLVMFuzzerTestOneInput`) is OSS-Fuzz-ready: a project

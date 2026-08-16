@@ -473,3 +473,112 @@ jobs:
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
             -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
+
+  # -------------------------------------------------------------------- fuzz ---
+  # Coverage-guided decoder fuzzing (issue #41): a bounded libFuzzer session over
+  # the untrusted-key-material decode surface — hybrid_decode() (SPKI) /
+  # hybrid_decode_p8() (PKCS#8) plus the component sub-key loading they drive
+  # (test/hybrid_decode_fuzz.c, -DHYBRID_FUZZ=ON). PR #40 added the harness and
+  # wired its STANDALONE seed-replay into ctest for the fast tier; this leg runs
+  # the coverage-GUIDED clang/libFuzzer shape, which needs a real fuzzing session
+  # and so does not belong on the fast push/PR path.
+  #
+  # Built with CC=clang against the latest (>=3.5) OpenSSL so the PQ components
+  # come from the default provider — no liboqs/oqsprovider needed. The corpus is
+  # persisted across runs via actions/cache (restore-keys prefix) so coverage
+  # accumulates week over week rather than restarting cold. A crash aborts the
+  # session (non-zero exit fails the job) and the crashing input is uploaded as an
+  # artifact for reproduction.
+  #
+  # WEEKLY ONLY (schedule / manual): a real fuzzing session is expensive and its
+  # signal is never a PR gate. OSS-Fuzz is the longer-term durable option (see
+  # docs/FUZZING.md); this leg gives regular coverage in the meantime.
+  fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: libFuzzer decode (latest OpenSSL, clang)
+    runs-on: ubuntu-latest
+    env:
+      PREFIX: ${{ github.workspace }}/.local
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+
+      - name: Resolve OpenSSL release ref
+        id: ossl
+        run: |
+          set -euo pipefail
+          REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl "openssl-*" \
+                | awk -F/ '{print $NF}' | grep -E "^openssl-[0-9]+\\.[0-9]+\\.[0-9]+$" \
+                | sort -V | tail -1)
+          SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL: $REF ($SHA)"
+
+      # Reuse the regular/sanitize/tsan toolchain cache (same key): only the
+      # OpenSSL install under $PREFIX is needed here — this >=3.5 leg sources its
+      # PQ from the default provider, so no liboqs/oqsprovider is built.
+      - name: Cache toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.PREFIX }}
+            ${{ github.workspace }}/.interop/oqs-provider
+          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-0.16.0-oqsp-00fde3373e466043ee30ed31e32c56f6964ee5f4
+
+      - name: Build OpenSSL
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Configure hybrid provider (clang, libFuzzer)
+        run: CC=clang cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_FUZZ=ON
+
+      - name: Build provider + fuzz harness
+        run: cmake --build build --target hybrid-provider hybrid_decode_fuzz -j"$(nproc)"
+
+      # Persist the corpus across weekly runs so coverage accumulates. The unique
+      # run-id key never restore-hits; the restore-keys prefix pulls the most
+      # recent prior corpus, and the fresh key saves the grown corpus in the
+      # cache post-step (which runs even if the fuzz step fails).
+      - name: Restore/seed fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.fuzz-corpus/decode
+          key: fuzz-corpus-decode-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-decode-
+
+      - name: Fuzz — bounded libFuzzer decode session (5 min)
+        working-directory: build
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PREFIX/lib64"
+          export OPENSSL_MODULES="$PWD"          # directory holding hybrid.so
+          export HYBRID_CEDE_TO_DEFAULT=0        # keep the hybrid decoders offered
+          mkdir -p "$GITHUB_WORKSPACE/.fuzz-corpus/decode" \
+                   "$GITHUB_WORKSPACE/fuzz-artifacts"
+          # Seed the persisted corpus with the committed seeds (first run / new
+          # seeds); -n keeps any coverage-increasing inputs added by prior runs.
+          cp -n "$GITHUB_WORKSPACE"/test/corpus/decode/* \
+                "$GITHUB_WORKSPACE/.fuzz-corpus/decode/" 2>/dev/null || true
+          # libFuzzer writes crash-*/leak-*/oom-* to -artifact_prefix and exits
+          # non-zero on the first finding, which fails the step.
+          ./hybrid_decode_fuzz \
+            -max_total_time=300 -max_len=65536 -print_final_stats=1 \
+            -artifact_prefix="$GITHUB_WORKSPACE/fuzz-artifacts/" \
+            "$GITHUB_WORKSPACE/.fuzz-corpus/decode"
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: ${{ github.workspace }}/fuzz-artifacts
+          if-no-files-found: ignore
