@@ -693,6 +693,28 @@ abort. Like the sanitize leg it runs **post-merge only** (on push to `main`).
 `hybrid_threads_test` also runs under the ASan leg (full-suite), covering its
 allocations for leaks and UB.
 
+A **fuzz** leg exercises the decoder attack surface (issue #41): a bounded,
+coverage-guided libFuzzer session (`CC=clang`, `-DHYBRID_FUZZ=ON`) drives raw
+bytes through the untrusted-key-material decode paths — `hybrid_decode()` (SPKI),
+`hybrid_decode_p8()` (PKCS#8) and the component sub-key loading they drive — with
+the provider itself built under AddressSanitizer so an out-of-bounds access
+anywhere in that path is caught. PR #40 added the harness
+(`test/hybrid_decode_fuzz.c`) and wired its *standalone* seed-corpus replay into
+`ctest`, so the fast tier already ASan-replays the committed corpus every run;
+this leg runs the *coverage-guided* clang shape, which needs a real fuzzing
+session. It builds against the latest (≥3.5) OpenSSL so the PQ halves come from
+the default provider (no oqsprovider), persists the corpus across runs via
+`actions/cache` so coverage accumulates, and uploads any crashing input as an
+artifact. On a crash it also opens (or bumps) a `fuzz`-labelled tracking issue in
+this repo — the same convention as the drift/tripwire workflows — so a weekly
+failure is actionable rather than lost in the Actions history. The session runs
+30 min by default (overridable via a
+`workflow_dispatch` input); that is sized against the per-run fixed cost — a cold
+OpenSSL build plus the clang provider build is itself minutes, so a shorter fuzz
+would be mostly setup. It runs **weekly only** (schedule / manual): a fuzzing session is
+expensive and its signal is never a PR gate. OSS-Fuzz is the longer-term durable
+option (continuous fuzzing + corpus management; see `docs/FUZZING.md`).
+
 A 32-bit (ILP32) *test* leg is deliberately **not** run: the only 32-bit-specific
 memory-safety hazard is `sizeof(struct)`-based serialized-size math, and the audit
 found none (all serialized lengths derive from component byte sizes). A meaningful
