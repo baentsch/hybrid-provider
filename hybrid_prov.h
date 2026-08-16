@@ -641,20 +641,29 @@ void hybrid_log(const char *fmt, ...);
 /*
  * Component extraction (work-items item 13). A hybrid/composite key composes a
  * classical component and a PQ component, each a real EVP_PKEY. These gettable,
- * provider-specific params expose each component's public half as a
- * SubjectPublicKeyInfo DER blob that is directly d2i_PUBKEY-able into a
- * standalone, usable EVP_PKEY — rather than only the opaque concatenated blob of
- * OSSL_PKEY_PARAM_PUB_KEY. Names are role-based and shared by both families.
+ * provider-specific params expose each component as a standalone, self-describing
+ * DER blob — the public half as a SubjectPublicKeyInfo (d2i_PUBKEY) and, when the
+ * private key is present, the private half as a PKCS#8 PrivateKeyInfo
+ * (d2i_PKCS8_PRIV_KEY_INFO -> EVP_PKCS82PKEY) — rather than only the opaque
+ * concatenated blobs of OSSL_PKEY_PARAM_PUB_KEY / _PRIV_KEY. Each is the
+ * component's own standalone encoding, so a caller reconstructs a usable
+ * component key with no knowledge of the hybrid layout. Names are role-based and
+ * shared by both families. The PKCS#8 blobs carry key material: a caller must
+ * cleanse them after use.
  */
-#define HYBRID_PKEY_PARAM_CLASSIC_PUB "hybrid-classic-pub-spki"
-#define HYBRID_PKEY_PARAM_PQ_PUB      "hybrid-pq-pub-spki"
+#define HYBRID_PKEY_PARAM_CLASSIC_PUB  "hybrid-classic-pub-spki"
+#define HYBRID_PKEY_PARAM_PQ_PUB       "hybrid-pq-pub-spki"
+#define HYBRID_PKEY_PARAM_CLASSIC_PRIV "hybrid-classic-priv-pkcs8"
+#define HYBRID_PKEY_PARAM_PQ_PRIV      "hybrid-pq-priv-pkcs8"
 
 /*
- * Set OSSL_PARAM *p to the SubjectPublicKeyInfo DER of component |comp|, honuring
- * a size query (p->data == NULL). Returns 1 on success. Shared by the hybrid and
- * composite keymgmt get_params (hybrid_prov.c).
+ * Set OSSL_PARAM *p to the SubjectPublicKeyInfo (spki) or PKCS#8 PrivateKeyInfo
+ * (pkcs8) DER of component |comp|, honouring a size query (p->data == NULL).
+ * Returns 1 on success. Shared by the hybrid and composite keymgmt get_params
+ * (hybrid_prov.c). The pkcs8 form emits private key material.
  */
 int hybrid_component_spki_param(OSSL_PARAM *p, EVP_PKEY *comp);
+int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
 
 /*
  * TLS code-point hygiene (issue #45).

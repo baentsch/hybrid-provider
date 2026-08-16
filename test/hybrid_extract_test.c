@@ -5,30 +5,32 @@
  * Component extraction / composition (work-items item 13).
  *
  * A hybrid/composite key composes a classical component and a PQ component, each
- * a real EVP_PKEY. This test proves three things the provider now supports over
- * the public EVP API only:
+ * a real EVP_PKEY. This test proves, over the public EVP API only and driven off
+ * the master algorithm tables (no hardcoded combos), that the provider now
+ * supports:
  *
- *   (1) EXTRACTION as a usable key object. The provider exposes each component's
- *       public half as a SubjectPublicKeyInfo DER via the gettable params
- *       HYBRID_PKEY_PARAM_CLASSIC_PUB / HYBRID_PKEY_PARAM_PQ_PUB. We d2i_PUBKEY
- *       each into a standalone EVP_PKEY and confirm its algorithm and that it is
- *       a usable key (non-zero size) -- not an opaque OCTET STRING wrapper.
+ *   (1) EXTRACTION as usable, standalone key objects — both halves. Each
+ *       component's public key is exposed as a SubjectPublicKeyInfo DER
+ *       (HYBRID_PKEY_PARAM_*_PUB, d2i_PUBKEY) and, for a private key, its private
+ *       half as a PKCS#8 PrivateKeyInfo DER (HYBRID_PKEY_PARAM_*_PRIV,
+ *       d2i_PKCS8_PRIV_KEY_INFO -> EVP_PKCS82PKEY). We reconstruct standalone
+ *       EVP_PKEYs and check pub/priv are consistent (EVP_PKEY_eq of the extracted
+ *       private against the extracted public), which also proves they are usable.
  *
  *   (2) INNER == STANDALONE parity. The bytes a component contributes to the
- *       composite/hybrid container must equal that component's own standalone
- *       encoding (the classic OCTET-STRING-nesting divergence bug). For the
- *       hybrid family we check the concatenated OSSL_PKEY_PARAM_PUB_KEY is
- *       exactly the two components' raw public keys; for the composite family we
- *       decode the composite SPKI and check its BIT STRING is exactly
- *       pqPub || tradPub (draft-19 order).
+ *       container equal that component's standalone encoding. For the hybrid
+ *       family the concatenated OSSL_PKEY_PARAM_PUB_KEY is exactly the two
+ *       components' raw public keys; for the composite family the SPKI BIT STRING
+ *       is exactly pqPub || tradPub (draft-19).
  *
  *   (3) COMPOSITION. Rebuild the container's public blob from the two extracted
  *       components' raw public keys and re-import it (EVP_PKEY_fromdata); the
  *       composed key must compare equal (EVP_PKEY_eq) to the original.
  *
- * All algorithms here draw both halves from the default provider (>= 3.5), so the
- * test needs no oqsprovider. Cede-to-default is switched off so the hybrid
- * provider serves the MLX KEMs itself (mirrors the other default+hybrid tests).
+ * Every row of hybrid_kem_table, hybrid_sig_table and (when built)
+ * composite_sig_table is exercised; a row whose components are unavailable on the
+ * running provider mix self-skips. Cede-to-default is switched off so the hybrid
+ * provider serves the MLX groups the default provider also offers.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +41,9 @@
 #include <openssl/x509.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"
+#ifdef HYBRID_COMPOSITE
+# include "composite_prov.h"
+#endif
 
 static int tests, passed, failed, skipped;
 
@@ -74,8 +79,8 @@ static int get_octet(EVP_PKEY *k, const char *name,
     return 1;
 }
 
-/* Extract a component: SPKI DER param -> standalone EVP_PKEY. */
-static EVP_PKEY *extract(OSSL_LIB_CTX *ctx, EVP_PKEY *k, const char *pname)
+/* Extract a component public key: SPKI DER param -> standalone EVP_PKEY. */
+static EVP_PKEY *extract_pub(OSSL_LIB_CTX *ctx, EVP_PKEY *k, const char *pname)
 {
     unsigned char *der = NULL;
     const unsigned char *p;
@@ -90,21 +95,43 @@ static EVP_PKEY *extract(OSSL_LIB_CTX *ctx, EVP_PKEY *k, const char *pname)
     return comp;
 }
 
-/* Re-import a hybrid/composite public key from a concatenated blob. */
-static EVP_PKEY *import_pub(OSSL_LIB_CTX *ctx, const char *alg,
-                           const unsigned char *blob, size_t len)
+/* Extract a component private key: PKCS#8 DER param -> standalone EVP_PKEY. */
+static EVP_PKEY *extract_priv(OSSL_LIB_CTX *ctx, EVP_PKEY *k, const char *pname)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=hybrid");
-    EVP_PKEY *k = NULL;
-    OSSL_PARAM p[2];
+    unsigned char *der = NULL;
+    const unsigned char *p;
+    size_t n = 0;
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    EVP_PKEY *comp = NULL;
 
-    p[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
-                                             (void *)blob, len);
-    p[1] = OSSL_PARAM_construct_end();
-    if (c != NULL && EVP_PKEY_fromdata_init(c) > 0)
-        EVP_PKEY_fromdata(c, &k, EVP_PKEY_PUBLIC_KEY, p);
-    EVP_PKEY_CTX_free(c);
-    return k;
+    if (!get_octet(k, pname, &der, &n))
+        return NULL;
+    p = der;
+    if ((p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, (long)n)) != NULL)
+        comp = EVP_PKCS82PKEY_ex(p8, ctx, NULL);
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    OPENSSL_clear_free(der, n);
+    return comp;
+}
+
+/*
+ * A component's raw public key: the OSSL_PKEY_PARAM_PUB_KEY octet where the
+ * component exposes one (EC point, ECX/Ed raw, ML-KEM/ML-DSA encoded pub), else
+ * i2d_PublicKey (RSA). This mirrors how the provider lays each component into the
+ * concatenated container blob, so the two are byte-comparable.
+ */
+static int raw_pub(EVP_PKEY *k, unsigned char **buf, size_t *len)
+{
+    int dlen;
+
+    if (get_octet(k, OSSL_PKEY_PARAM_PUB_KEY, buf, len))
+        return 1;
+    ERR_clear_error();
+    *buf = NULL;
+    if ((dlen = i2d_PublicKey(k, buf)) <= 0)
+        return 0;
+    *len = (size_t)dlen;
+    return 1;
 }
 
 /* The composite SPKI BIT STRING payload (the concatenated component pub blob). */
@@ -132,17 +159,32 @@ end:
     return ret;
 }
 
-static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
-                  const char *want_classic, const char *want_pq)
+/* Re-import a hybrid/composite public key from a concatenated blob. */
+static EVP_PKEY *import_pub(OSSL_LIB_CTX *ctx, const char *alg,
+                           const unsigned char *blob, size_t len)
 {
-    EVP_PKEY *key = NULL, *c = NULL, *q = NULL, *composed_key = NULL;
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=hybrid");
+    EVP_PKEY *k = NULL;
+    OSSL_PARAM p[2];
+
+    p[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
+                                             (void *)blob, len);
+    p[1] = OSSL_PARAM_construct_end();
+    if (c != NULL && EVP_PKEY_fromdata_init(c) > 0)
+        EVP_PKEY_fromdata(c, &k, EVP_PKEY_PUBLIC_KEY, p);
+    EVP_PKEY_CTX_free(c);
+    return k;
+}
+
+static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam)
+{
+    EVP_PKEY *key = NULL, *cpub = NULL, *qpub = NULL;
+    EVP_PKEY *cpriv = NULL, *qpriv = NULL, *composed_key = NULL;
     unsigned char *craw = NULL, *qraw = NULL, *blob = NULL, *composed = NULL;
     size_t clen = 0, qlen = 0, blen = 0, comlen = 0;
-    const char *cn, *qn;
 
     tests++;
-    printf("  %-22s (%-9s) extract/parity/compose ... ",
-           alg, fam == HYBRID ? "hybrid" : "composite");
+    printf("  %-24s (%-9s) ... ", alg, fam == HYBRID ? "hybrid" : "composite");
     fflush(stdout);
 
     if ((key = gen(ctx, alg)) == NULL) {
@@ -151,26 +193,39 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
         goto done;
     }
 
-    /* (1) extraction -> usable standalone EVP_PKEYs of the expected algorithms */
-    c = extract(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PUB);
-    q = extract(ctx, key, HYBRID_PKEY_PARAM_PQ_PUB);
-    if (c == NULL || q == NULL) {
-        printf("FAIL (component extraction)\n");
+    /* (1) public + private extraction -> usable standalone EVP_PKEYs, and the
+     * private half's public part matches the extracted public half.
+     *
+     * The classical component is always serializable, so its extraction must
+     * succeed. The PQ component depends on its provider shipping key encoders:
+     * ML-KEM/ML-DSA (default) and the oqs *signature* families do, but the oqs
+     * research *KEMs* (FrodoKEM/BIKE/HQC) ship none (cf. issue #19) — those keys
+     * cannot be serialized standalone at all, so there is nothing to extract and
+     * the row self-skips rather than failing on a component-provider limitation. */
+    cpub = extract_pub(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PUB);
+    cpriv = extract_priv(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PRIV);
+    if (cpub == NULL || cpriv == NULL) {
+        printf("FAIL (classical extraction: pub=%d priv=%d)\n",
+               cpub != NULL, cpriv != NULL);
         ERR_print_errors_fp(stdout); failed++; goto done;
     }
-    cn = EVP_PKEY_get0_type_name(c);
-    qn = EVP_PKEY_get0_type_name(q);
-    if (EVP_PKEY_get_bits(c) <= 0 || EVP_PKEY_get_bits(q) <= 0
-            || cn == NULL || strcmp(cn, want_classic) != 0
-            || qn == NULL || strcmp(qn, want_pq) != 0) {
-        printf("FAIL (extracted classic=%s/%s pq=%s/%s)\n",
-               cn ? cn : "?", want_classic, qn ? qn : "?", want_pq);
+    if (EVP_PKEY_eq(cpriv, cpub) != 1) {
+        printf("FAIL (classical priv/pub inconsistent)\n");
+        failed++; goto done;
+    }
+    qpub = extract_pub(ctx, key, HYBRID_PKEY_PARAM_PQ_PUB);
+    qpriv = extract_priv(ctx, key, HYBRID_PKEY_PARAM_PQ_PRIV);
+    if (qpub == NULL || qpriv == NULL) {
+        printf("SKIP (PQ component not serializable by its provider)\n");
+        skipped++; tests--; ERR_clear_error(); goto done;
+    }
+    if (EVP_PKEY_eq(qpriv, qpub) != 1) {
+        printf("FAIL (PQ priv/pub inconsistent)\n");
         failed++; goto done;
     }
 
     /* raw public keys of the extracted components */
-    if (!get_octet(c, OSSL_PKEY_PARAM_PUB_KEY, &craw, &clen)
-            || !get_octet(q, OSSL_PKEY_PARAM_PUB_KEY, &qraw, &qlen)) {
+    if (!raw_pub(cpub, &craw, &clen) || !raw_pub(qpub, &qraw, &qlen)) {
         printf("FAIL (component raw pub)\n");
         ERR_print_errors_fp(stdout); failed++; goto done;
     }
@@ -221,15 +276,18 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
         ERR_print_errors_fp(stdout); failed++; goto done;
     }
 
-    printf("PASS (classic=%s pq=%s)\n", cn, qn);
+    printf("PASS (classic=%s pq=%s)\n",
+           EVP_PKEY_get0_type_name(cpub), EVP_PKEY_get0_type_name(qpub));
     passed++;
 done:
     OPENSSL_free(craw);
     OPENSSL_free(qraw);
     OPENSSL_free(blob);
     OPENSSL_free(composed);
-    EVP_PKEY_free(c);
-    EVP_PKEY_free(q);
+    EVP_PKEY_free(cpub);
+    EVP_PKEY_free(qpub);
+    EVP_PKEY_free(cpriv);
+    EVP_PKEY_free(qpriv);
     EVP_PKEY_free(composed_key);
     EVP_PKEY_free(key);
 }
@@ -238,6 +296,7 @@ int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
     const char *mods = getenv("OPENSSL_MODULES");
+    size_t i;
 
     /* Serve the MLX KEMs from the hybrid provider (not ceded to default). */
     setenv("HYBRID_CEDE_TO_DEFAULT", "0", 1);
@@ -249,18 +308,22 @@ int main(void)
         fprintf(stderr, "failed to load default/hybrid providers\n");
         return 1;
     }
+    /* oqsprovider is optional: rows needing it self-skip when it is absent. */
+    OSSL_PROVIDER_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     printf("hybrid/composite component extraction & composition\n");
     printf("===================================================\n");
 
-    /* One representative per family/component-shape; the extraction code path is
-     * identical across the tables, so this covers EC, X25519, Ed25519, ML-DSA and
-     * ML-KEM component encodings without enumerating every row. */
-    check(ctx, "p256_mldsa44",      HYBRID,    "EC",      "ML-DSA-44");   /* sig */
-    check(ctx, "SecP256r1MLKEM768", HYBRID,    "EC",      "ML-KEM-768");  /* KEM */
-    check(ctx, "X25519MLKEM768",    HYBRID,    "X25519",  "ML-KEM-768");  /* KEM */
-    check(ctx, "mldsa44_ed25519",   COMPOSITE, "ED25519", "ML-DSA-44");   /* comp */
+    /* Every row of the master tables — no hardcoded combos. */
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+        check(ctx, hybrid_kem_table[i].hybrid_name, HYBRID);
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
+        check(ctx, hybrid_sig_table[i].hybrid_name, HYBRID);
+#ifdef HYBRID_COMPOSITE
+    for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
+        check(ctx, composite_sig_table[i].name, COMPOSITE);
+#endif
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);

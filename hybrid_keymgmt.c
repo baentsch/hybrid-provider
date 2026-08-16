@@ -622,9 +622,12 @@ static const OSSL_PARAM hybrid_gettable[] = {
      * EVP_DigestSign one-shot path instead of streaming Update/Final, which we
      * do not implement. Mirrors ML-DSA/EdDSA. */
     OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_MANDATORY_DIGEST, NULL, 0),
-    /* Component extraction (item 13): each component's SPKI DER. */
+    /* Component extraction (item 13): each component's standalone SPKI (public)
+     * and PKCS#8 (private) DER. */
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_CLASSIC_PUB, NULL, 0),
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_PQ_PUB, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_CLASSIC_PRIV, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_PQ_PRIV, NULL, 0),
     OSSL_PARAM_END
 };
 
@@ -701,14 +704,23 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
             }
         }
 
-        /* Component extraction (item 13): each component's SPKI DER, directly
-         * d2i_PUBKEY-able into a standalone EVP_PKEY. key1 = classical,
-         * key2 = PQ. */
+        /* Component extraction (item 13): each component's standalone SPKI,
+         * d2i_PUBKEY-able into a usable EVP_PKEY. key1 = classical, key2 = PQ. */
         p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_CLASSIC_PUB);
         if (p != NULL && !hybrid_component_spki_param(p, key->key1))
             return 0;
         p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_PQ_PUB);
         if (p != NULL && !hybrid_component_spki_param(p, key->key2))
+            return 0;
+    }
+
+    /* The private halves, as standalone PKCS#8, when this key holds them. */
+    if (hybrid_have_prvkey(key)) {
+        p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_CLASSIC_PRIV);
+        if (p != NULL && !hybrid_component_pkcs8_param(p, key->key1))
+            return 0;
+        p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_PQ_PRIV);
+        if (p != NULL && !hybrid_component_pkcs8_param(p, key->key2))
             return 0;
     }
 

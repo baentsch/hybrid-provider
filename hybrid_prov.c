@@ -34,6 +34,31 @@ int hybrid_component_spki_param(OSSL_PARAM *p, EVP_PKEY *comp)
     return ret;
 }
 
+/*
+ * As above, but the PKCS#8 PrivateKeyInfo DER of component |comp|. The component
+ * carries the actual private key of a real algorithm, so this serializes it the
+ * same way any single-algorithm PKCS8 export would (via EVP_PKEY2PKCS8); the
+ * private material is cleansed before the buffer is freed.
+ */
+int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp)
+{
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    unsigned char *der = NULL;
+    int dlen;
+    int ret = 0;
+
+    if (p == NULL || comp == NULL)
+        return 0;
+    if ((p8 = EVP_PKEY2PKCS8(comp)) == NULL)
+        return 0;
+    if ((dlen = i2d_PKCS8_PRIV_KEY_INFO(p8, &der)) > 0) {
+        ret = OSSL_PARAM_set_octet_string(p, der, (size_t)dlen);
+        OPENSSL_clear_free(der, (size_t)dlen);
+    }
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    return ret;
+}
+
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;
 static OSSL_FUNC_provider_gettable_params_fn hybrid_gettable_params;
 static OSSL_FUNC_provider_get_params_fn hybrid_get_params;
