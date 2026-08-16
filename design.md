@@ -666,7 +666,14 @@ expensive or dependent on upstream drift runs weekly.**
   KEMs / signatures / composite each usable from their respective OpenSSL floor)
   is re-validated as upstream moves, and where drift of the in-repo
   `OQS_CEDE_HYBRIDS` patch against oqs-provider `main` surfaces early. A weekly
-  failure never blocks a PR.
+  failure never blocks a PR. Because this tier is not watched like a PR, a failing
+  leg opens (or bumps, deduped by title) a `weekly-ci`-labelled tracking issue in
+  this repo — one per OpenSSL leg, since the legs fail for different reasons — and
+  auto-closes it once that leg is green again (the same convention as the
+  drift/tripwire workflows). This closes a real gap: neither dedicated workflow
+  catches a weekly-matrix failure — the deprecation tripwire is a master *build*
+  only (a runtime undefined-symbol at provider load stays green there), and the
+  drift check is a buildless algorithm-set diff.
 
 On top of the two behavioural tiers, a **sanitize** leg guards the hand-written
 EVP glue for memory safety (issue #42): it builds the provider and every

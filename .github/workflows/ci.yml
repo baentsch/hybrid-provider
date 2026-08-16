@@ -391,6 +391,17 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: weekly · OpenSSL ${{ matrix.openssl.name }} (main deps)
     runs-on: ubuntu-latest
+    # issues: write lets a failing leg open/refresh a tracking issue (see the
+    # last two steps) — same convention as oqs-hybrid-drift.yml /
+    # deprecation-tripwire.yml. Without it a weekly failure is only a red run in
+    # the Actions history: nobody watches this tier like a PR, so drift (e.g. an
+    # unguarded 3.2+ API on the 3.0 floor, or a compat shim that has fallen behind
+    # master) can sit unnoticed. Neither dedicated workflow covers these: the
+    # tripwire is a master BUILD only (a runtime undefined-symbol at load stays
+    # green there), and the drift check is a buildless algorithm-set diff.
+    permissions:
+      contents: read
+      issues: write
     strategy:
       fail-fast: false
       matrix:
@@ -411,6 +422,7 @@ jobs:
       OSSL_INSTALL: ${{ github.workspace }}/ossl-install
       LIBOQS_REF: "main"
       OQSPROV_REF: "main"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -478,6 +490,59 @@ jobs:
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
             -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
+
+      # One tracking issue PER OpenSSL leg (the legs fail for different reasons — a
+      # build break on the 3.0 floor is not the master test failure), deduped by
+      # title so a persistently-red leg bumps its issue rather than filing a new one
+      # each week. Runs on any prior-step failure in this leg (build or test). The
+      # run still goes red; the issue just makes the failure actionable.
+      - name: Open/refresh a tracking issue on failure
+        if: failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="weekly CI: OpenSSL ${{ matrix.openssl.name }} leg failing (main deps)"
+          cat > /tmp/weekly-body.md <<EOF
+          The weekly exhaustive leg for OpenSSL \`${{ matrix.openssl.name }}\`
+          (resolved \`${{ steps.ossl.outputs.ref }}\`), built against liboqs and
+          oqs-provider \`main\`, failed. This tier tracks bleeding-edge upstream, so
+          triage whether it is our drift to fix or transient upstream breakage.
+
+          - Run: ${RUN_URL}
+          - Commit: ${GITHUB_SHA}
+          - OpenSSL: ${{ steps.ossl.outputs.ref }} (${{ steps.ossl.outputs.sha }})
+          - liboqs / oqs-provider: main (rebuilt fresh this run)
+
+          _Filed by the weekly matrix (.github/workflows/ci.yml). Dedupes by title,
+          so it bumps this issue while the leg stays red; it auto-closes once this
+          leg is green again._
+          EOF
+          gh label create weekly-ci --color fbca04 \
+            --description "Weekly exhaustive CI matrix failure" 2>/dev/null || true
+          NUM=$(gh issue list --state open --search "in:title $TITLE" \
+                  --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "Still failing — ${RUN_URL} (commit ${GITHUB_SHA})."
+          else
+            gh issue create --title "$TITLE" --label weekly-ci --body-file /tmp/weekly-body.md
+          fi
+
+      - name: Close the tracking issue when this leg is green again
+        if: success()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="weekly CI: OpenSSL ${{ matrix.openssl.name }} leg failing (main deps)"
+          NUM=$(gh issue list --state open --search "in:title $TITLE" \
+                  --json number,title \
+                  --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "Green again as of ${RUN_URL} — closing."
+            gh issue close "$NUM"
+          fi
 
   # -------------------------------------------------------------------- fuzz ---
   # Coverage-guided decoder fuzzing (issue #41): a bounded libFuzzer session over
