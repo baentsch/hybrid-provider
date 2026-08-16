@@ -210,6 +210,18 @@ set_tests_properties(hybrid_config_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Cross-provider test-methodology (work-items item 15): unpinned (store)
+# property-query resolution runs alongside the pinned runs, and the provider's
+# config keys are settable programmatically via OSSL_PROVIDER_load_ex() with no
+# .cnf. Uses only default-provider components (>= 3.5).
+add_executable(hybrid_methodology_test test/hybrid_methodology_test.c)
+target_include_directories(hybrid_methodology_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_methodology_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_methodology_test COMMAND hybrid_methodology_test)
+set_tests_properties(hybrid_methodology_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Cross-provider interop test against oqsprovider (built from GitHub main via
 # test/setup_oqs_interop.sh, which symlinks oqsprovider.so into the build dir).
 # Self-skips when oqsprovider is not on the module path.
