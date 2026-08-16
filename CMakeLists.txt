@@ -573,6 +573,25 @@ set_tests_properties(hybrid_cede_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Provider robustness under adverse load, coexistence, and query/init ordering
+# (issue #47): merely activating the provider must not break SSL_CTX_new; init
+# tolerates being loaded before default, activated twice, and a pre-registered
+# colliding OID; the first fetch after load resolves (query never cached-empty);
+# retained algorithms never overlap the default provider (name/OID/code point)
+# and ceding withdraws only what the default actually serves; foreign key I/O is
+# not shadowed; and repeated load failure returns rather than hanging. Drives the
+# HYBRID_CEDE_TO_DEFAULT lever itself per phase (like hybrid_cede_test), so it is
+# excluded from the suite-wide "ceding off" override below. A TIMEOUT turns any
+# hang (the load-loop / init-deadlock failure modes) into a test failure.
+add_executable(hybrid_adverse_test test/hybrid_adverse_test.c)
+target_include_directories(hybrid_adverse_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_adverse_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+add_test(NAME hybrid_adverse_test COMMAND hybrid_adverse_test)
+set_tests_properties(hybrid_adverse_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    TIMEOUT 120
+)
+
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
 # with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired
 # into ctest as a low-iteration smoke test that it runs and completes.
@@ -641,7 +660,7 @@ endif()
 # one exception — it drives the lever itself via setenv() to exercise both states.
 get_property(_hp_tests DIRECTORY PROPERTY TESTS)
 foreach(_t ${_hp_tests})
-    if(NOT _t STREQUAL "hybrid_cede_test")
+    if(NOT _t STREQUAL "hybrid_cede_test" AND NOT _t STREQUAL "hybrid_adverse_test")
         set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "HYBRID_CEDE_TO_DEFAULT=0")
     endif()
 endforeach()

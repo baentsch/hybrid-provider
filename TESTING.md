@@ -56,7 +56,14 @@ DRBG, by installing a deterministic test RAND in a private libctx), CMS
 SignedData (`hybrid_cms_test`),
 TLS code-point parity (`hybrid_capability_test`), provider coexistence
 (`hybrid_coexist_test`), cede-to-default withdrawal of the default provider's
-hybrids (`hybrid_cede_test`), concurrency / `fork()` / teardown stress
+hybrids (`hybrid_cede_test`), robustness under adverse load and query/init
+ordering (`hybrid_adverse_test` — merely activating the provider must not break
+`SSL_CTX_new`; init tolerates being loaded before the default provider, being
+activated twice, and a pre-registered colliding OID; the first fetch after load
+resolves so the provider is never cached-disabled; retained algorithms never
+overlap the default by name/OID/code point and ceding withdraws only what the
+default actually serves; foreign key I/O is not shadowed; and repeated load
+failure returns rather than hanging), concurrency / `fork()` / teardown stress
 (`hybrid_threads_test`, below), the full cross-version matrix vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 (`hybrid_matrix_test`), the coverage guard asserting every hybrid
