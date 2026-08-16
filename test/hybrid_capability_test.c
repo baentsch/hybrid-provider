@@ -23,12 +23,12 @@
 #include <openssl/provider.h>
 #include <openssl/params.h>
 #include <openssl/core_names.h>
-#include <openssl/opensslv.h>
 #include "hybrid_prov.h"
 
 /* TLS-SIGALG capability params are OpenSSL 3.2+; on 3.0/3.1 only TLS-GROUP
- * (hybrid KEM) parity is checked. Mirrors the guard in hybrid_caps.c. */
-#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+ * (hybrid KEM) parity is checked. Feature-test on the capability param name
+ * itself, mirroring the guard in hybrid_caps.c (no version-number proxy). */
+#ifdef OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT
 # define HYBRID_HAVE_TLS_SIGALG 1
 #endif
 

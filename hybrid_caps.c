@@ -5,7 +5,6 @@
 
 #include "hybrid_prov.h"
 #include <openssl/core_names.h>
-#include <openssl/opensslv.h>   /* OPENSSL_VERSION_NUMBER */
 #include <openssl/prov_ssl.h>   /* TLS1_3_VERSION */
 #include <stdarg.h>
 #include <stdio.h>
@@ -15,12 +14,15 @@
 
 /*
  * The TLS-SIGALG provider capability params (OSSL_CAPABILITY_TLS_SIGALG_*) were
- * added in OpenSSL 3.2. On 3.0/3.1 the provider builds KEM-only: the hybrid KEMs
- * and their TLS groups still work; hybrid signatures are simply not advertised as
+ * added in OpenSSL 3.2. OpenSSL ships no dedicated "have TLS-SIGALG" macro, so
+ * feature-test on the capability param name we actually use — its presence in
+ * core_names.h is the real signal, and unlike an OPENSSL_VERSION_NUMBER check it
+ * cannot be wrong. On 3.0/3.1 the provider builds KEM-only: the hybrid KEMs and
+ * their TLS groups still work; hybrid signatures are simply not advertised as
  * TLS SignatureSchemes (and hybrid signatures need a 3.2+ component provider
  * anyway). TLS-GROUP has existed since 3.0.
  */
-#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+#ifdef OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT
 # define HYBRID_HAVE_TLS_SIGALG 1
 #endif
 
