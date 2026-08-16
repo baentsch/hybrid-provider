@@ -525,6 +525,116 @@ err:
 }
 
 /*
+ * Test 5: Deterministic handling of malformed KEM ciphertext (issue #46).
+ *
+ * A truncated, oversized or otherwise wrong-length ciphertext must make
+ * decapsulate fail cleanly (return <= 0, no crash/hang, no shared secret), and a
+ * corrupted-but-correct-length ciphertext must never yield the encapsulator's
+ * shared secret (no implicit success). All error paths are expected, so the
+ * error queue is cleared after each.
+ */
+static int test_kem_negative(OSSL_LIB_CTX *libctx, const char *algname)
+{
+    char label[128];
+    EVP_PKEY_CTX *gctx = NULL, *ectx = NULL, *dctx = NULL;
+    EVP_PKEY *key = NULL;
+    unsigned char *ctext = NULL, *ss_enc = NULL, *ss_dec = NULL;
+    size_t ctlen = 0, ss_enc_len = 0, ss_dec_len = 0;
+    int ret = 0;
+
+    snprintf(label, sizeof(label), "kem malformed-ciphertext %s", algname);
+    TEST_START(label);
+
+    gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
+        || EVP_PKEY_keygen(gctx, &key) <= 0) {
+        TEST_FAIL("keygen failed");
+        goto err;
+    }
+
+    /* Produce a valid ciphertext + shared secret to work from. */
+    ectx = EVP_PKEY_CTX_new_from_pkey(libctx, key, "provider=hybrid");
+    if (ectx == NULL || EVP_PKEY_encapsulate_init(ectx, NULL) <= 0
+        || EVP_PKEY_encapsulate(ectx, NULL, &ctlen, NULL, &ss_enc_len) <= 0) {
+        TEST_FAIL("encapsulate size query failed");
+        goto err;
+    }
+    ctext = OPENSSL_malloc(ctlen + 1);   /* +1 so we can test oversized input */
+    ss_enc = OPENSSL_malloc(ss_enc_len);
+    if (ctext == NULL || ss_enc == NULL) {
+        TEST_FAIL("malloc failed");
+        goto err;
+    }
+    if (EVP_PKEY_encapsulate(ectx, ctext, &ctlen, ss_enc, &ss_enc_len) <= 0) {
+        TEST_FAIL("encapsulate failed");
+        goto err;
+    }
+
+    dctx = EVP_PKEY_CTX_new_from_pkey(libctx, key, "provider=hybrid");
+    if (dctx == NULL || EVP_PKEY_decapsulate_init(dctx, NULL) <= 0
+        || EVP_PKEY_decapsulate(dctx, NULL, &ss_dec_len, ctext, ctlen) <= 0) {
+        TEST_FAIL("decapsulate size query failed");
+        goto err;
+    }
+    ss_dec = OPENSSL_malloc(ss_dec_len);
+    if (ss_dec == NULL) {
+        TEST_FAIL("malloc failed");
+        goto err;
+    }
+
+    /* Truncated (one byte short) must fail. */
+    if (EVP_PKEY_decapsulate(dctx, ss_dec, &ss_dec_len, ctext, ctlen - 1) > 0) {
+        TEST_FAIL("truncated ciphertext accepted");
+        goto err;
+    }
+    ERR_clear_error();
+
+    /* Oversized (one byte long) must fail. */
+    ctext[ctlen] = 0x00;
+    if (EVP_PKEY_decapsulate(dctx, ss_dec, &ss_dec_len, ctext, ctlen + 1) > 0) {
+        TEST_FAIL("oversized ciphertext accepted");
+        goto err;
+    }
+    ERR_clear_error();
+
+    /* Grossly wrong length (halved) must fail. */
+    if (EVP_PKEY_decapsulate(dctx, ss_dec, &ss_dec_len, ctext, ctlen / 2) > 0) {
+        TEST_FAIL("wrong-length ciphertext accepted");
+        goto err;
+    }
+    ERR_clear_error();
+
+    /*
+     * Corrupted but correct-length: decapsulate may still return success (ML-KEM
+     * implicit rejection deliberately yields a pseudo-random secret rather than
+     * failing), but the result must never equal the encapsulator's secret.
+     */
+    ss_dec_len = ss_enc_len;
+    ctext[0] ^= 0xFF;
+    ctext[ctlen - 1] ^= 0xFF;
+    if (EVP_PKEY_decapsulate(dctx, ss_dec, &ss_dec_len, ctext, ctlen) > 0
+        && ss_dec_len == ss_enc_len
+        && memcmp(ss_dec, ss_enc, ss_enc_len) == 0) {
+        TEST_FAIL("corrupted ciphertext reproduced the shared secret");
+        goto err;
+    }
+    ERR_clear_error();
+
+    TEST_PASS();
+    ret = 1;
+
+err:
+    OPENSSL_free(ctext);
+    OPENSSL_free(ss_enc);
+    OPENSSL_free(ss_dec);
+    EVP_PKEY_CTX_free(gctx);
+    EVP_PKEY_CTX_free(ectx);
+    EVP_PKEY_CTX_free(dctx);
+    EVP_PKEY_free(key);
+    return ret;
+}
+
+/*
  * Signature test: self-consistency — keygen, sign, verify.
  */
 static int test_sig_self_consistency(OSSL_LIB_CTX *libctx, const char *algname,
@@ -700,6 +810,190 @@ err:
     return ret;
 }
 
+/*
+ * Signature test: empty message and "no default digest" (issue #46).
+ *
+ * A one-shot (pure) hybrid signature must sign and verify a zero-length message
+ * with no digest selected (mdname == NULL, which is the only correct mode for a
+ * non-prehash algorithm), and a signature over the empty message must not verify
+ * against a non-empty message.
+ */
+static int test_sig_empty_message(OSSL_LIB_CTX *libctx, const char *algname)
+{
+    char label[128];
+    EVP_PKEY_CTX *gctx = NULL;
+    EVP_PKEY *key = NULL;
+    EVP_MD_CTX *sctx = NULL, *vctx = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    const unsigned char empty[1] = { 0 };   /* valid pointer, zero length */
+    const unsigned char nonempty[] = "x";
+    int ret = 0;
+
+    snprintf(label, sizeof(label), "sig empty-message %s", algname);
+    TEST_START(label);
+
+    gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
+        || EVP_PKEY_keygen(gctx, &key) <= 0) {
+        TEST_FAIL("keygen failed");
+        goto err;
+    }
+
+    sctx = EVP_MD_CTX_new();
+    if (sctx == NULL
+        || EVP_DigestSignInit_ex(sctx, NULL, NULL, libctx,
+                                 "provider=hybrid", key, NULL) <= 0) {
+        TEST_FAIL("DigestSignInit failed");
+        goto err;
+    }
+    if (EVP_DigestSign(sctx, NULL, &siglen, empty, 0) <= 0) {
+        TEST_FAIL("DigestSign size query failed");
+        goto err;
+    }
+    if ((sig = OPENSSL_malloc(siglen)) == NULL) {
+        TEST_FAIL("malloc failed");
+        goto err;
+    }
+    if (EVP_DigestSign(sctx, sig, &siglen, empty, 0) <= 0) {
+        TEST_FAIL("DigestSign over empty message failed");
+        goto err;
+    }
+
+    vctx = EVP_MD_CTX_new();
+    if (vctx == NULL
+        || EVP_DigestVerifyInit_ex(vctx, NULL, NULL, libctx,
+                                   "provider=hybrid", key, NULL) <= 0) {
+        TEST_FAIL("DigestVerifyInit failed");
+        goto err;
+    }
+    if (EVP_DigestVerify(vctx, sig, siglen, empty, 0) <= 0) {
+        TEST_FAIL("DigestVerify over empty message failed");
+        goto err;
+    }
+
+    /* The empty-message signature must not verify a non-empty message. */
+    EVP_MD_CTX_free(vctx);
+    vctx = EVP_MD_CTX_new();
+    if (vctx == NULL
+        || EVP_DigestVerifyInit_ex(vctx, NULL, NULL, libctx,
+                                   "provider=hybrid", key, NULL) <= 0) {
+        TEST_FAIL("DigestVerifyInit (2) failed");
+        goto err;
+    }
+    if (EVP_DigestVerify(vctx, sig, siglen, nonempty, sizeof(nonempty) - 1) > 0) {
+        TEST_FAIL("empty-message signature verified a non-empty message");
+        goto err;
+    }
+    ERR_clear_error();
+
+    TEST_PASS();
+    ret = 1;
+
+err:
+    OPENSSL_free(sig);
+    EVP_MD_CTX_free(sctx);
+    EVP_MD_CTX_free(vctx);
+    EVP_PKEY_CTX_free(gctx);
+    EVP_PKEY_free(key);
+    return ret;
+}
+
+/*
+ * Signature test: per-operation context string (issue #46).
+ *
+ * A context string set on the hybrid signature must be forwarded to the PQ
+ * component (which supports it) and NOT to the classical component (which does
+ * not — forwarding it there would force a spurious failure). We prove both ends:
+ * signing and verifying with the SAME context must succeed (so the classical
+ * component clearly ran without the string, else init/sign would have failed),
+ * and verifying with a DIFFERENT context must fail (so the string genuinely
+ * reached the PQ component and changed its result).
+ */
+static int test_sig_context_string(OSSL_LIB_CTX *libctx, const char *algname)
+{
+    char label[128];
+    EVP_PKEY_CTX *gctx = NULL;
+    EVP_PKEY *key = NULL;
+    EVP_MD_CTX *sctx = NULL, *vctx = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    const unsigned char msg[] = "hybrid context-string test message";
+    size_t msglen = sizeof(msg) - 1;
+    OSSL_PARAM sp[2], vp[2];
+    int ret = 0;
+
+    snprintf(label, sizeof(label), "sig context-string %s", algname);
+    TEST_START(label);
+
+    sp[0] = OSSL_PARAM_construct_octet_string(
+        OSSL_SIGNATURE_PARAM_CONTEXT_STRING, (void *)"ctx-A", 5);
+    sp[1] = OSSL_PARAM_construct_end();
+    vp[0] = OSSL_PARAM_construct_octet_string(
+        OSSL_SIGNATURE_PARAM_CONTEXT_STRING, (void *)"ctx-B", 5);
+    vp[1] = OSSL_PARAM_construct_end();
+
+    gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
+        || EVP_PKEY_keygen(gctx, &key) <= 0) {
+        TEST_FAIL("keygen failed");
+        goto err;
+    }
+
+    sctx = EVP_MD_CTX_new();
+    if (sctx == NULL
+        || EVP_DigestSignInit_ex(sctx, NULL, NULL, libctx,
+                                 "provider=hybrid", key, sp) <= 0) {
+        TEST_FAIL("DigestSignInit with context string failed");
+        goto err;
+    }
+    if (EVP_DigestSign(sctx, NULL, &siglen, msg, msglen) <= 0
+        || (sig = OPENSSL_malloc(siglen)) == NULL
+        || EVP_DigestSign(sctx, sig, &siglen, msg, msglen) <= 0) {
+        TEST_FAIL("DigestSign with context string failed");
+        goto err;
+    }
+
+    /* Same context string -> verify succeeds. */
+    vctx = EVP_MD_CTX_new();
+    if (vctx == NULL
+        || EVP_DigestVerifyInit_ex(vctx, NULL, NULL, libctx,
+                                   "provider=hybrid", key, sp) <= 0) {
+        TEST_FAIL("DigestVerifyInit with matching context failed");
+        goto err;
+    }
+    if (EVP_DigestVerify(vctx, sig, siglen, msg, msglen) <= 0) {
+        TEST_FAIL("verify with matching context string failed");
+        goto err;
+    }
+
+    /* Different context string -> verify must fail (string reached the PQ half). */
+    EVP_MD_CTX_free(vctx);
+    vctx = EVP_MD_CTX_new();
+    if (vctx == NULL
+        || EVP_DigestVerifyInit_ex(vctx, NULL, NULL, libctx,
+                                   "provider=hybrid", key, vp) <= 0) {
+        TEST_FAIL("DigestVerifyInit with mismatched context failed");
+        goto err;
+    }
+    if (EVP_DigestVerify(vctx, sig, siglen, msg, msglen) > 0) {
+        TEST_FAIL("verify accepted a mismatched context string");
+        goto err;
+    }
+    ERR_clear_error();
+
+    TEST_PASS();
+    ret = 1;
+
+err:
+    OPENSSL_free(sig);
+    EVP_MD_CTX_free(sctx);
+    EVP_MD_CTX_free(vctx);
+    EVP_PKEY_CTX_free(gctx);
+    EVP_PKEY_free(key);
+    return ret;
+}
+
 int main(int argc, char **argv)
 {
     OSSL_LIB_CTX *libctx = NULL;
@@ -757,6 +1051,7 @@ int main(int argc, char **argv)
         test_key_roundtrip(libctx, alg);
         test_cross_encap_default_encaps(libctx, alg, NULL);
         test_cross_encap_hybrid_encaps(libctx, alg);
+        test_kem_negative(libctx, alg);
         printf("\n");
     }
 
@@ -804,6 +1099,8 @@ int main(int argc, char **argv)
             printf("[%s]\n", alg);
             test_sig_self_consistency(libctx, alg, NULL);
             test_sig_wrong_message(libctx, alg);
+            test_sig_empty_message(libctx, alg);
+            test_sig_context_string(libctx, alg);
             printf("\n");
         }
 

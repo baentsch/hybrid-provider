@@ -213,8 +213,19 @@ int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *tra
     int pqfixed = EVP_PKEY_get_size(pq);   /* fixed ML-DSA/MAYO signature length */
     int ret = 0;
 
-    if (pqfixed <= 0 || (size_t)pqfixed >= siglen)
+    /*
+     * Length sanity check BEFORE splitting the concatenated signature at the
+     * fixed PQ-signature length (issue #46). A truncated or otherwise
+     * wrong-length signature would leave no bytes (or a negative count) for the
+     * classical component; reject it with a defined error rather than passing a
+     * bogus pointer/length pair to the classical verify.
+     */
+    if (pqfixed <= 0 || (size_t)pqfixed >= siglen) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "composite verify: signature length %zu too short for "
+                       "the %d-byte PQ component", siglen, pqfixed);
         return 0;                          /* need room for both components */
+    }
     if (!build_mprime(info, libctx, msg, msglen, &mp, &mplen))
         goto end;
     if (!pq_op(0, info, pq, libctx, pq_propq, mp, mplen,

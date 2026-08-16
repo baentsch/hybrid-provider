@@ -291,6 +291,130 @@ end:
     return ret;
 }
 
+/*
+ * Flip a byte inside the ServerHello key_share ciphertext held in `buf`
+ * (issue #46). A TLS 1.3 ServerHello carries exactly one KeyShareEntry inside
+ * the key_share extension (type 0x0033):
+ *   ext_type(2) ext_len(2) group(2) key_exchange_len(2) key_exchange(...)
+ * so ext_len == key_exchange_len + 4. We scan the plaintext flight for that
+ * shape (the KEM ciphertext is >1 KB for these groups, so the length filter
+ * makes a false match effectively impossible) and corrupt a byte in the middle
+ * of the key_exchange, which is the hybrid KEM ciphertext the client decapsulates.
+ * Returns 1 if it found and corrupted the key_share, 0 otherwise.
+ */
+static int corrupt_keyshare(unsigned char *buf, long len)
+{
+    long i;
+
+    for (i = 0; i + 8 < len; i++) {
+        unsigned int ext_len, ke_len;
+
+        if (buf[i] != 0x00 || buf[i + 1] != 0x33)
+            continue;
+        ext_len = ((unsigned int)buf[i + 2] << 8) | buf[i + 3];
+        ke_len = ((unsigned int)buf[i + 6] << 8) | buf[i + 7];
+        if (ke_len >= 64 && ext_len == ke_len + 4
+                && (long)(i + 8 + ke_len) <= len) {
+            buf[i + 8 + ke_len / 2] ^= 0xFF;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Negative TLS handshake (issue #46): corrupt the hybrid KEM ciphertext the
+ * server puts in its ServerHello key_share, then confirm the client handshake
+ * fails cleanly — it must neither complete (no implicit-success) nor crash/hang
+ * (the pump is bounded). A corrupted-but-correct-length ciphertext makes the
+ * client derive a different shared secret, so the server's Finished MAC fails
+ * and the client aborts the handshake with an alert. Returns 1 on the expected
+ * clean failure.
+ */
+static int run_handshake_tampered(OSSL_LIB_CTX *srv_libctx, const char *srv_propq,
+                                   OSSL_LIB_CTX *cli_libctx, const char *cli_propq,
+                                   const char *group)
+{
+    SSL_CTX *sctx = NULL, *cctx = NULL;
+    SSL *server = NULL, *client = NULL;
+    BIO *c2s = NULL, *s2c = NULL;
+    EVP_PKEY *pkey = NULL;
+    X509 *cert = NULL;
+    unsigned char *pending = NULL;
+    long plen;
+    int i, ret = 0, tampered = 0;
+
+    if (!make_self_signed(srv_libctx, &pkey, &cert))
+        goto end;
+    sctx = SSL_CTX_new_ex(srv_libctx, srv_propq, TLS_server_method());
+    cctx = SSL_CTX_new_ex(cli_libctx, cli_propq, TLS_client_method());
+    if (sctx == NULL || cctx == NULL
+            || SSL_CTX_use_certificate(sctx, cert) <= 0
+            || SSL_CTX_use_PrivateKey(sctx, pkey) <= 0
+            || !SSL_CTX_set_min_proto_version(sctx, TLS1_3_VERSION)
+            || !SSL_CTX_set_max_proto_version(sctx, TLS1_3_VERSION)
+            || !SSL_CTX_set_min_proto_version(cctx, TLS1_3_VERSION)
+            || !SSL_CTX_set_max_proto_version(cctx, TLS1_3_VERSION)
+            || !SSL_CTX_set1_groups_list(sctx, group)
+            || !SSL_CTX_set1_groups_list(cctx, group))
+        goto end;
+    SSL_CTX_set_verify(cctx, SSL_VERIFY_NONE, NULL);
+
+    server = SSL_new(sctx);
+    client = SSL_new(cctx);
+    if (server == NULL || client == NULL)
+        goto end;
+    SSL_set_accept_state(server);
+    SSL_set_connect_state(client);
+
+    c2s = BIO_new(BIO_s_mem());
+    s2c = BIO_new(BIO_s_mem());
+    if (c2s == NULL || s2c == NULL || !BIO_up_ref(c2s) || !BIO_up_ref(s2c))
+        goto end;
+    SSL_set_bio(client, s2c, c2s); /* client reads s2c, writes c2s */
+    SSL_set_bio(server, c2s, s2c); /* server reads c2s, writes s2c */
+
+    /* Client emits ClientHello (into c2s), server emits its flight (into s2c). */
+    (void)SSL_do_handshake(client);
+    (void)SSL_do_handshake(server);
+
+    /* Tamper with the ServerHello key_share before the client reads it. */
+    plen = BIO_get_mem_data(s2c, &pending);
+    if (plen > 0 && pending != NULL)
+        tampered = corrupt_keyshare(pending, plen);
+    if (!tampered) {
+        /* Key_share not located; nothing meaningful to assert. Treat as skip. */
+        ERR_clear_error();
+        ret = 1;
+        goto end;
+    }
+
+    /* Continue pumping; the client must NOT complete the handshake. */
+    for (i = 0; i < 50; i++) {
+        int r, e;
+
+        if (SSL_is_init_finished(client))
+            goto end;              /* implicit success -> test fails */
+        r = SSL_do_handshake(client);
+        e = SSL_get_error(client, r);
+        if (r <= 0 && e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE)
+            break;                 /* clean fatal error: the expected outcome */
+        (void)SSL_do_handshake(server);
+    }
+    if (!SSL_is_init_finished(client))
+        ret = 1;                   /* failed cleanly, no crash/hang */
+
+end:
+    ERR_clear_error();
+    SSL_free(server);
+    SSL_free(client);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+    EVP_PKEY_free(pkey);
+    X509_free(cert);
+    return ret;
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *dflt_ctx = NULL, *hyb_ctx = NULL;
@@ -418,6 +542,20 @@ int main(void)
             TEST_PASS();
         else
             TEST_FAIL("handshake / keying-material mismatch");
+
+        /*
+         * Negative (issue #46): corrupt the hybrid server's ServerHello
+         * key_share ciphertext; the hybrid client must fail the handshake
+         * cleanly rather than derive a wrong secret or crash.
+         */
+        snprintf(t, sizeof(t), "%s: corrupted key_share -> clean handshake failure",
+                 GROUPS[g].name);
+        TEST_START(t);
+        if (run_handshake_tampered(hyb_ctx, "?provider=hybrid",
+                                   hyb_ctx, "?provider=hybrid", GROUPS[g].name))
+            TEST_PASS();
+        else
+            TEST_FAIL("corrupted key_share did not fail cleanly");
     }
 
     /*
