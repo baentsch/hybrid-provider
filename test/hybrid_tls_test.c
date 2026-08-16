@@ -30,6 +30,7 @@
 #include <openssl/bio.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
+#include "hybrid_prov.h"   /* HYBRID_KEM_ALG_COUNT, HYBRID_ALG_NAME_MAX */
 
 static int test_count = 0;
 static int pass_count = 0;
@@ -67,7 +68,10 @@ static const struct {
  * after a real handshake (in run_handshake). Closing that loop is acceptance
  * item 1 of issue #45.
  */
-static struct { char name[64]; unsigned int id; } g_adv[64];
+/* One slot per hybrid KEM (the provider advertises at most one group per
+ * master-list row); name buffer per the shared bound. */
+static struct { char name[HYBRID_ALG_NAME_MAX]; unsigned int id; }
+    g_adv[HYBRID_KEM_ALG_COUNT];
 static int g_nadv;
 
 static int collect_group(const OSSL_PARAM params[], void *arg)
@@ -80,7 +84,7 @@ static int collect_group(const OSSL_PARAM params[], void *arg)
     unsigned int id = 0;
 
     (void)arg;
-    if (pn != NULL && pi != NULL && g_nadv < (int)(sizeof(g_adv) / sizeof(g_adv[0]))
+    if (pn != NULL && pi != NULL && g_nadv < (int)HYBRID_KEM_ALG_COUNT
         && OSSL_PARAM_get_utf8_string_ptr(pn, &name)
         && OSSL_PARAM_get_uint(pi, &id)) {
         OPENSSL_strlcpy(g_adv[g_nadv].name, name, sizeof(g_adv[0].name));

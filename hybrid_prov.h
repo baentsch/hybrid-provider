@@ -644,22 +644,26 @@ void hybrid_log(const char *fmt, ...);
  * A provisional code point must never sit in IANA standards-track space, where
  * a later real allocation can overrun it and be silently shadowed by libssl's
  * dedup — as happened to the composite family when OpenSSL 4.1's native SLH-DSA
- * (0x0911-0x091C) collided with draft-reddy's 0x0912 (issue #38). Our hybrid
- * code points have two provenances:
- *   - IANA-assigned: only the MLX groups, whose points are registered by
- *     draft-ietf-tls-ecdhe-mlkem (0x11EB..0x11ED). Preferred; used verbatim.
+ * (0x0911-0x091C) collided with draft-reddy's 0x0912 (issue #38). So every code
+ * point this provider uses must fall into one of the ranges below, classified by
+ * VALUE alone (not by algorithm name), and hybrid_capability_test asserts that
+ * for every table entry:
+ *   - IANA-assigned span: the draft-ietf-tls-ecdhe-mlkem ML-KEM-hybrid
+ *     NamedGroups, registered as the contiguous span 0x11EB..0x11ED. The only
+ *     standards-track values we use; taken verbatim from the assignment.
  *   - Provisional: everything else, inherited from oqsprovider for on-the-wire
- *     interop. These live either in oqsprovider's experimental ML-KEM-hybrid
- *     block (0x2F00..0x2FFF) or the TLS private-use range (0xFE00..0xFFFF,
- *     which RFC 8446 §11 reserves for both NamedGroup and SignatureScheme).
- * hybrid_capability_test asserts every non-IANA code point falls in one of the
- * provisional ranges below, so a future edit cannot slip a value into managed
- * space unnoticed.
+ *     interop — either oqsprovider's experimental ML-KEM-hybrid block
+ *     (0x2F00..0x2FFF) or the TLS private-use range (0xFE00..0xFFFF, which
+ *     RFC 8446 §11 reserves for both NamedGroup and SignatureScheme).
+ * A value outside every range means a code point was invented in managed space;
+ * the test fails so it cannot slip in unnoticed.
  */
 #define HYBRID_TLS_PRIVATE_USE_MIN      0xFE00u
 #define HYBRID_TLS_PRIVATE_USE_MAX      0xFFFFu
 #define HYBRID_TLS_OQS_EXPERIMENTAL_MIN 0x2F00u
 #define HYBRID_TLS_OQS_EXPERIMENTAL_MAX 0x2FFFu
+#define HYBRID_TLS_IANA_ASSIGNED_MIN    0x11EBu   /* draft-ietf-tls-ecdhe-mlkem */
+#define HYBRID_TLS_IANA_ASSIGNED_MAX    0x11EDu
 
 static inline int hybrid_codepoint_is_provisional(unsigned int cp)
 {
@@ -668,18 +672,33 @@ static inline int hybrid_codepoint_is_provisional(unsigned int cp)
             && cp <= HYBRID_TLS_OQS_EXPERIMENTAL_MAX);
 }
 
+static inline int hybrid_codepoint_is_iana_assigned(unsigned int cp)
+{
+    return cp >= HYBRID_TLS_IANA_ASSIGNED_MIN
+        && cp <= HYBRID_TLS_IANA_ASSIGNED_MAX;
+}
+
 /*
  * Upper bound on the number of TLS groups / sigalgs advertised into a single
  * capability enumeration (issue #45). An unbounded supported_groups /
  * signature_algorithms list bloats every ClientHello and can be rejected or
  * stall a handshake on strict peers, so the advertiser caps the count and logs
- * (via hybrid_log) any surplus rather than emit an unbounded list. Sized above
- * the current master lists so nothing is dropped today; the guard exists so a
- * future growth past the bound is a conscious, logged event rather than a
- * silent regression.
+ * (via hybrid_log) any surplus. The bound is the exact number of algorithms
+ * defined in each master list: the provider can never legitimately advertise
+ * more distinct groups/sigalgs than it defines, so the count staying within the
+ * table size is the invariant — hitting the cap means a bug (a duplicate or a
+ * runaway loop), which is logged rather than emitted. No magic constant: the
+ * bound tracks the master lists automatically as they grow.
  */
-#define HYBRID_MAX_TLS_GROUPS   64
-#define HYBRID_MAX_TLS_SIGALGS  64
+#define HYBRID_MAX_TLS_GROUPS   HYBRID_KEM_ALG_COUNT
+#define HYBRID_MAX_TLS_SIGALGS  HYBRID_SIG_ALG_COUNT
+
+/*
+ * Buffer size for holding an algorithm name in tests (incl NUL). Larger than
+ * the longest name any master list registers (currently 31 chars); the capture
+ * collectors detect and flag truncation so this stays provably sufficient.
+ */
+#define HYBRID_ALG_NAME_MAX     64
 
 /* Per-algorithm keymgmt dispatch — declared by macro in hybrid_keymgmt.c */
 #define DECLARE_HYBRID_KMGMT_EXTERN(name) \

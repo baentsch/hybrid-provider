@@ -269,7 +269,7 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
             }
             if (advertised >= HYBRID_MAX_TLS_GROUPS) {
                 hybrid_log("hybrid: TLS-GROUP advertisement cap (%d) reached; "
-                           "dropping %s (0x%04x)\n", HYBRID_MAX_TLS_GROUPS,
+                           "dropping %s (0x%04x)\n", (int)HYBRID_MAX_TLS_GROUPS,
                            name, hybrid_group_list[i].group_id);
                 continue;
             }
@@ -300,7 +300,7 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
             }
             if (advertised >= HYBRID_MAX_TLS_SIGALGS) {
                 hybrid_log("hybrid: TLS-SIGALG advertisement cap (%d) reached; "
-                           "dropping %s (0x%04x)\n", HYBRID_MAX_TLS_SIGALGS,
+                           "dropping %s (0x%04x)\n", (int)HYBRID_MAX_TLS_SIGALGS,
                            name, hybrid_sigalg_list[i].code_point);
                 continue;
             }
