@@ -320,6 +320,35 @@ set_tests_properties(hybrid_param_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# "pkey -text" (TEXT) encoder coverage (item 8): every key type prints a named,
+# two-component, non-truncated text form. Always built (covers the hybrid sig
+# family); iterates the composite families too when built with -DHYBRID_COMPOSITE.
+add_executable(hybrid_text_test test/hybrid_text_test.c)
+target_include_directories(hybrid_text_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_text_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_text_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_text_test COMMAND hybrid_text_test)
+set_tests_properties(hybrid_text_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# Decoder robustness vs external/malformed inputs (item 7): multi-object PEM with
+# the target key not first (generic PEM routing), and malformed/truncated/garbage
+# SPKI failing cleanly without a crash (meaningful under the ASan leg). Composite
+# families additionally iterated with -DHYBRID_COMPOSITE.
+add_executable(hybrid_decode_neg_test test/hybrid_decode_neg_test.c)
+target_include_directories(hybrid_decode_neg_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_decode_neg_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_decode_neg_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_decode_neg_test COMMAND hybrid_decode_neg_test)
+set_tests_properties(hybrid_decode_neg_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # CMS SignedData with hybrid signatures (in-process analog of oqsprovider's CMS
 # scripts). ML-DSA hybrids need only the default provider; Falcon/MAYO/… self-
 # skip without oqsprovider, and each algorithm self-skips if unavailable.
