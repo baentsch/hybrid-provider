@@ -19,6 +19,17 @@
 #include <openssl/x509.h>
 
 /*
+ * OSSL_SIGNATURE_PARAM_CONTEXT_STRING ("context-string") was added to
+ * core_names.h in OpenSSL 3.2. On 3.0/3.1 the provider builds KEM-only and no
+ * hybrid signature is operable (they need a 3.2+ component provider), so the
+ * per-op context-string plumbing is compiled out where the param name is absent
+ * — guarding on presence of the specific define rather than assuming the name.
+ */
+#ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+# define HYBRID_HAVE_CTX_STR 1
+#endif
+
+/*
  * The operation context carries no libctx of its own: the component sign/verify
  * below source their library context and property queries from the key
  * (key->libctx / HYBRID_KEY_*_PROPQ), captured from the provider's component
@@ -81,11 +92,12 @@ static void *hybrid_sig_dupctx(void *vctx)
 static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
                                     const OSSL_PARAM params[])
 {
-    const OSSL_PARAM *p;
-
     if (params == NULL)
         return 1;
-    p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
+#ifdef HYBRID_HAVE_CTX_STR
+    const OSSL_PARAM *p =
+        OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
+
     if (p != NULL) {
         void *buf = NULL;
         size_t len = 0;
@@ -98,6 +110,9 @@ static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
         ctx->ctxstr = buf;
         ctx->ctxstrlen = len;
     }
+#else
+    (void)ctx;
+#endif
     return 1;
 }
 
@@ -199,11 +214,16 @@ static OSSL_PARAM *pq_ctx_params(HYBRID_SIG_CTX *ctx, OSSL_PARAM store[2])
 {
     if (ctx->ctxstr == NULL)
         return NULL;
+#ifdef HYBRID_HAVE_CTX_STR
     store[0] = OSSL_PARAM_construct_octet_string(
                    OSSL_SIGNATURE_PARAM_CONTEXT_STRING,
                    ctx->ctxstr, ctx->ctxstrlen);
     store[1] = OSSL_PARAM_construct_end();
     return store;
+#else
+    (void)store;                 /* ctxstr is never set without the param name */
+    return NULL;
+#endif
 }
 
 /*
@@ -324,7 +344,9 @@ static const OSSL_PARAM *hybrid_sig_settable_ctx_params(void *vctx,
                                                           void *provctx)
 {
     static const OSSL_PARAM params[] = {
+#ifdef HYBRID_HAVE_CTX_STR
         OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING, NULL, 0),
+#endif
         OSSL_PARAM_END
     };
     return params;

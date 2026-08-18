@@ -32,6 +32,10 @@
 #include <openssl/err.h>
 #include "hybrid_prov.h"
 
+/* The OSSL_DISPATCH terminator is spelled out as { 0, NULL } rather than via the
+ * OSSL_DISPATCH_END convenience macro, which only exists from OpenSSL 3.2 — this
+ * in-test deterministic-RAND provider must also build on the 3.0/3.1 floor. */
+
 static int tests, passed, failed, skipped;
 #define FAIL(...) do { failed++; printf("FAIL: "); printf(__VA_ARGS__); \
     printf("\n"); ERR_print_errors_fp(stdout); } while (0)
@@ -181,7 +185,7 @@ static const OSSL_DISPATCH det_rand_functions[] = {
     { OSSL_FUNC_RAND_GETTABLE_CTX_PARAMS,
         (void (*)(void))det_rand_gettable_ctx_params },
     { OSSL_FUNC_RAND_GET_CTX_PARAMS, (void (*)(void))det_rand_get_ctx_params },
-    OSSL_DISPATCH_END
+    { 0, NULL }
 };
 
 static const OSSL_ALGORITHM det_rand_algs[] = {
@@ -198,7 +202,7 @@ static const OSSL_ALGORITHM *det_rand_query(void *provctx, int op, int *no_cache
 static const OSSL_DISPATCH det_rand_method[] = {
     { OSSL_FUNC_PROVIDER_TEARDOWN, (void (*)(void))OSSL_LIB_CTX_free },
     { OSSL_FUNC_PROVIDER_QUERY_OPERATION, (void (*)(void))det_rand_query },
-    OSSL_DISPATCH_END
+    { 0, NULL }
 };
 
 static int det_rand_init(const OSSL_CORE_HANDLE *handle, const OSSL_DISPATCH *in,

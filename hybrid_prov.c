@@ -453,7 +453,12 @@ static int hybrid_cede_group_cb(const OSSL_PARAM params[], void *arg)
 }
 
 /* Cede any hybrid/composite signature the default provider advertises as a TLS
- * sigalg under the same name, code point or OID (arg is the set). */
+ * sigalg under the same name, code point or OID (arg is the set).
+ *
+ * The TLS-SIGALG capability params are 3.2+ (see hybrid_caps.c); the whole
+ * callback — and its registration below — is compiled out on 3.0/3.1, where the
+ * default provider advertises no TLS sigalgs and the KEM-only build must link. */
+#ifdef OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT
 static int hybrid_cede_sigalg_cb(const OSSL_PARAM params[], void *arg)
 {
     HYBRID_CEDE_SET *set = arg;
@@ -494,6 +499,7 @@ static int hybrid_cede_sigalg_cb(const OSSL_PARAM params[], void *arg)
 #endif
     return 1;
 }
+#endif /* OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT */
 
 /* Cede every algorithm the default provider resolves by a direct fetch (KEM by
  * name; signature by name, else by OID) — catching those it serves without a
@@ -627,8 +633,10 @@ static void hybrid_probe_cede(OSSL_LIB_CTX *libctx, int cede,
             hybrid_cede_by_fetch(libctx, set);
             (void)OSSL_PROVIDER_get_capabilities(def, "TLS-GROUP",
                                                  hybrid_cede_group_cb, set);
+#ifdef OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT
             (void)OSSL_PROVIDER_get_capabilities(def, "TLS-SIGALG",
                                                  hybrid_cede_sigalg_cb, set);
+#endif
             ERR_pop_to_mark();
         }
     }
