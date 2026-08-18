@@ -32,6 +32,12 @@
 #include <openssl/err.h>
 #include "hybrid_prov.h"
 
+/* OSSL_DISPATCH_END (a { 0, NULL } terminator) was added in OpenSSL 3.2; spell
+ * it out on 3.0/3.1 so the in-test deterministic-RAND provider still builds. */
+#ifndef OSSL_DISPATCH_END
+# define OSSL_DISPATCH_END { 0, NULL }
+#endif
+
 static int tests, passed, failed, skipped;
 #define FAIL(...) do { failed++; printf("FAIL: "); printf(__VA_ARGS__); \
     printf("\n"); ERR_print_errors_fp(stdout); } while (0)

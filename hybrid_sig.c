@@ -18,6 +18,14 @@
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 
+/* "context-string" is a plain signature-op param name, added to core_names.h in
+ * OpenSSL 3.2. Unlike the TLS-SIGALG capability names it drives no registration
+ * mechanism, so on 3.0/3.1 (KEM-only build, no operable hybrid sig) defining the
+ * stable string is a harmless no-op: no 3.0 component produces or consumes it. */
+#ifndef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+# define OSSL_SIGNATURE_PARAM_CONTEXT_STRING "context-string"
+#endif
+
 /*
  * The operation context carries no libctx of its own: the component sign/verify
  * below source their library context and property queries from the key

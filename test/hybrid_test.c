@@ -16,6 +16,13 @@
 #include <openssl/params.h>
 #include <openssl/param_build.h>
 
+/* "context-string" landed in core_names.h in OpenSSL 3.2; define the stable
+ * string on 3.0/3.1 so the KEM-only build compiles (the context-string test
+ * only runs for an operable hybrid signature, which 3.0/3.1 do not offer). */
+#ifndef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+# define OSSL_SIGNATURE_PARAM_CONTEXT_STRING "context-string"
+#endif
+
 static int test_count = 0;
 static int pass_count = 0;
 static int fail_count = 0;
