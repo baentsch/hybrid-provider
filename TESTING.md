@@ -75,6 +75,26 @@ combiner, provider and draft-19 KAT tests (`composite_sig_test`,
 `composite_test`, `composite_kat_test`). Each self-skips cleanly when its
 prerequisites are absent.
 
+### Cross-provider methodology (`hybrid_methodology_test`)
+
+Most of the suite pins `provider=hybrid` on every fetch. Two things a provider
+that composes components from *whichever* provider supplies them must also
+support are checked here (work-items item 15):
+
+- **Pinned *and* unpinned resolution.** Each functional round-trip runs twice —
+  once with the property query pinned to `provider=hybrid`, once with **no**
+  property query — and both must pass, proving the provider's algorithms resolve
+  through OpenSSL's normal implementation store, not only when explicitly pinned.
+  Hybrid signatures are used, since the default provider ships no hybrid
+  signatures and an unpinned fetch therefore resolves unambiguously here.
+- **Config parameters without a `.cnf`.** The provider's configuration keys are
+  set programmatically through `OSSL_PROVIDER_load_ex()`'s parameter array rather
+  than a config-file section: the test loads with `cede-to-default=no` and
+  confirms the provider then serves an MLX KEM it withdraws by default — the
+  parameter was read and applied at init with no config file involved.
+
+It draws all components from the default provider, so it needs no oqsprovider.
+
 ### Concurrency, fork and teardown (`hybrid_threads_test`)
 
 Stresses the provider's shared/cached state (issue #43): the per-instance
