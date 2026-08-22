@@ -68,7 +68,7 @@ find_package(OpenSSL 3.0 REQUIRED)
 message(STATUS "Using OpenSSL ${OPENSSL_VERSION} from ${OPENSSL_INCLUDE_DIR}")
 
 # OpenSSL 4.1 deprecated the int-typed ASN1_STRING_set()/ASN1_STRING_length() in
-# favour of the size_t ASN1_STRING_set_data()/ASN1_STRING_length_ex(). Detect the
+# favour of the size_t ASN1_STRING_set1_data()/ASN1_STRING_get_length(). Detect the
 # new API by feature test, NOT by version: 4.1.0-dev reports the same version both
 # before and after the symbols landed, so OPENSSL_VERSION_NUMBER cannot tell them
 # apart. hybrid_asn1_compat.h selects on the resulting define.
@@ -86,13 +86,13 @@ if(NOT MSVC)
 endif()
 check_c_source_compiles("
 #include <openssl/asn1.h>
-size_t hp_probe(const ASN1_STRING *s) { return ASN1_STRING_length_ex(s); }
-" HAVE_ASN1_STRING_LENGTH_EX)
+size_t hp_probe(const ASN1_STRING *s) { return ASN1_STRING_get_length(s); }
+" HAVE_ASN1_STRING_GET_LENGTH)
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_FLAGS)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_hp_saved_ttype}")
-if(HAVE_ASN1_STRING_LENGTH_EX)
-    add_compile_definitions(HAVE_ASN1_STRING_LENGTH_EX)
+if(HAVE_ASN1_STRING_GET_LENGTH)
+    add_compile_definitions(HAVE_ASN1_STRING_GET_LENGTH)
 endif()
 
 # Locate the matching `openssl` CLI (next to the OpenSSL we build against), used
@@ -333,6 +333,35 @@ target_include_directories(hybrid_param_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CM
 target_link_libraries(hybrid_param_test PRIVATE OpenSSL::Crypto)
 add_test(NAME hybrid_param_test COMMAND hybrid_param_test)
 set_tests_properties(hybrid_param_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# "pkey -text" (TEXT) encoder coverage (item 8): every key type prints a named,
+# two-component, non-truncated text form. Always built (covers the hybrid sig
+# family); iterates the composite families too when built with -DHYBRID_COMPOSITE.
+add_executable(hybrid_text_test test/hybrid_text_test.c)
+target_include_directories(hybrid_text_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_text_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_text_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_text_test COMMAND hybrid_text_test)
+set_tests_properties(hybrid_text_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# Decoder robustness vs external/malformed inputs (item 7): multi-object PEM with
+# the target key not first (generic PEM routing), and malformed/truncated/garbage
+# SPKI failing cleanly without a crash (meaningful under the ASan leg). Composite
+# families additionally iterated with -DHYBRID_COMPOSITE.
+add_executable(hybrid_decode_neg_test test/hybrid_decode_neg_test.c)
+target_include_directories(hybrid_decode_neg_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_decode_neg_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_decode_neg_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_decode_neg_test COMMAND hybrid_decode_neg_test)
+set_tests_properties(hybrid_decode_neg_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 

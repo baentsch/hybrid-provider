@@ -32,6 +32,10 @@
 #include <openssl/err.h>
 #include "hybrid_prov.h"
 
+/* The OSSL_DISPATCH terminator is spelled out as { 0, NULL } rather than via the
+ * OSSL_DISPATCH_END convenience macro, which only exists from OpenSSL 3.2 — this
+ * in-test deterministic-RAND provider must also build on the 3.0/3.1 floor. */
+
 static int tests, passed, failed, skipped;
 #define FAIL(...) do { failed++; printf("FAIL: "); printf(__VA_ARGS__); \
     printf("\n"); ERR_print_errors_fp(stdout); } while (0)
@@ -181,7 +185,7 @@ static const OSSL_DISPATCH det_rand_functions[] = {
     { OSSL_FUNC_RAND_GETTABLE_CTX_PARAMS,
         (void (*)(void))det_rand_gettable_ctx_params },
     { OSSL_FUNC_RAND_GET_CTX_PARAMS, (void (*)(void))det_rand_get_ctx_params },
-    OSSL_DISPATCH_END
+    { 0, NULL }
 };
 
 static const OSSL_ALGORITHM det_rand_algs[] = {
@@ -198,7 +202,7 @@ static const OSSL_ALGORITHM *det_rand_query(void *provctx, int op, int *no_cache
 static const OSSL_DISPATCH det_rand_method[] = {
     { OSSL_FUNC_PROVIDER_TEARDOWN, (void (*)(void))OSSL_LIB_CTX_free },
     { OSSL_FUNC_PROVIDER_QUERY_OPERATION, (void (*)(void))det_rand_query },
-    OSSL_DISPATCH_END
+    { 0, NULL }
 };
 
 static int det_rand_init(const OSSL_CORE_HANDLE *handle, const OSSL_DISPATCH *in,
@@ -608,6 +612,110 @@ end:
     EVP_PKEY_free(k);
 }
 
+/*
+ * Item 12: OSSL_FUNC_KEYMGMT_MATCH / EVP_PKEY_eq must be commutative and must
+ * compare a PUBLIC-only key against the PRIVATE key of the same pair (libssl
+ * validates a cert's public key against a loaded private key this way). The
+ * existing round-trip (common_params) compares a keypair against its full copy;
+ * this adds the public-vs-private and both-directions checks, plus a distinct-key
+ * negative so a trivially-always-equal match would be caught.
+ */
+static void check_match(OSSL_LIB_CTX *ctx, const char *alg)
+{
+    EVP_PKEY *priv = NULL, *pub = NULL, *other = NULL;
+    OSSL_PARAM *params = NULL;
+    EVP_PKEY_CTX *fc = NULL;
+
+    printf("  %-24s match commutativity ... ", alg);
+    fflush(stdout);
+    tests++;
+    if ((priv = keygen(ctx, alg)) == NULL) {
+        printf("SKIP (components unavailable)\n");
+        skipped++; tests--; ERR_clear_error();
+        return;
+    }
+
+    /* A PUBLIC-only key rebuilt from priv's exported public material. */
+    if (EVP_PKEY_todata(priv, EVP_PKEY_PUBLIC_KEY, &params) <= 0
+            || (fc = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=hybrid")) == NULL
+            || EVP_PKEY_fromdata_init(fc) <= 0
+            || EVP_PKEY_fromdata(fc, &pub, EVP_PKEY_PUBLIC_KEY, params) <= 0
+            || pub == NULL) {
+        FAIL("%s: public-only import failed", alg);
+        goto end;
+    }
+    /* An independent keypair for the negative (must-differ) case. */
+    if ((other = keygen(ctx, alg)) == NULL) {
+        FAIL("%s: second keygen failed", alg);
+        goto end;
+    }
+
+    /* Public-only vs private of the SAME pair: equal, in both directions. */
+    if (EVP_PKEY_eq(priv, pub) != 1 || EVP_PKEY_eq(pub, priv) != 1) {
+        FAIL("%s: pub-only vs priv not equal (or not commutative)", alg);
+        goto end;
+    }
+    /* Distinct pairs: not equal, in both directions. */
+    if (EVP_PKEY_eq(priv, other) == 1 || EVP_PKEY_eq(other, priv) == 1) {
+        FAIL("%s: distinct keys reported equal", alg);
+        goto end;
+    }
+    printf("PASS (pub==priv both ways, distinct differ)\n");
+    passed++;
+end:
+    OSSL_PARAM_free(params);
+    EVP_PKEY_CTX_free(fc);
+    EVP_PKEY_free(priv);
+    EVP_PKEY_free(pub);
+    EVP_PKEY_free(other);
+}
+
+/*
+ * Item 11: EVP_PKEY_fromdata must reject an empty or invalid selection rather
+ * than fabricate a usable key (a built-but-empty key with no material). The
+ * existing import tests are all positive-path; this is the negative guard.
+ */
+static void check_neg_import(OSSL_LIB_CTX *ctx, const char *alg)
+{
+    EVP_PKEY_CTX *fc = NULL;
+    EVP_PKEY *out = NULL;
+    OSSL_PARAM empty[1];
+    int bad = 0;
+
+    printf("  %-24s negative import ... ", alg);
+    fflush(stdout);
+    tests++;
+    empty[0] = OSSL_PARAM_construct_end();
+
+    fc = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=hybrid");
+    if (fc == NULL || EVP_PKEY_fromdata_init(fc) <= 0) {
+        printf("SKIP (fromdata unavailable)\n");
+        skipped++; tests--; ERR_clear_error();
+        goto end;
+    }
+
+    /* (a) KEYPAIR selection with NO params supplied -> must fail. */
+    if (EVP_PKEY_fromdata(fc, &out, EVP_PKEY_KEYPAIR, empty) > 0 && out != NULL)
+        bad = 1;
+    EVP_PKEY_free(out); out = NULL;
+    ERR_clear_error();
+
+    /* (b) empty selection (0) -> must fail. */
+    if (EVP_PKEY_fromdata(fc, &out, 0, empty) > 0 && out != NULL)
+        bad = 1;
+    EVP_PKEY_free(out); out = NULL;
+    ERR_clear_error();
+
+    if (bad)
+        FAIL("%s: fromdata accepted an empty/invalid selection", alg);
+    else {
+        printf("PASS (empty/invalid selection rejected)\n");
+        passed++;
+    }
+end:
+    EVP_PKEY_CTX_free(fc);
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -631,6 +739,26 @@ int main(void)
         check_kem(ctx, &hybrid_kem_table[i]);
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         check_sig(ctx, &hybrid_sig_table[i]);
+
+    printf("\nmatch()/EVP_PKEY_eq commutativity + public-vs-private (item 12)\n");
+    printf("==============================================================\n");
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+        check_match(ctx, hybrid_kem_table[i].hybrid_name);
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
+        check_match(ctx, hybrid_sig_table[i].hybrid_name);
+
+    printf("\nnegative import: empty/invalid selection is rejected (item 11)\n");
+    printf("==============================================================\n");
+    {
+        const char *kem = first_alg(1), *sig = first_alg(0);
+
+        if (kem != NULL)
+            check_neg_import(ctx, kem);
+        if (sig != NULL)
+            check_neg_import(ctx, sig);
+        if (kem == NULL && sig == NULL)
+            printf("  (no hybrid components available -> skipped)\n");
+    }
 
     /*
      * Issue #44: the probabilistic component operations (keygen/encaps/sign)

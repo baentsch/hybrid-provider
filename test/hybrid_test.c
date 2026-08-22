@@ -16,6 +16,14 @@
 #include <openssl/params.h>
 #include <openssl/param_build.h>
 
+/* OSSL_SIGNATURE_PARAM_CONTEXT_STRING landed in core_names.h in OpenSSL 3.2. The
+ * context-string test below exercises an operable hybrid signature, which needs
+ * a 3.2+ component provider anyway, so it is compiled out where the param name is
+ * absent (3.0/3.1, KEM-only) — guarding on the define, not assuming the name. */
+#ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+# define HYBRID_HAVE_CTX_STR 1
+#endif
+
 static int test_count = 0;
 static int pass_count = 0;
 static int fail_count = 0;
@@ -899,6 +907,7 @@ err:
     return ret;
 }
 
+#ifdef HYBRID_HAVE_CTX_STR
 /*
  * Signature test: per-operation context string (issue #46).
  *
@@ -993,6 +1002,7 @@ err:
     EVP_PKEY_free(key);
     return ret;
 }
+#endif /* HYBRID_HAVE_CTX_STR */
 
 int main(int argc, char **argv)
 {
@@ -1100,7 +1110,9 @@ int main(int argc, char **argv)
             test_sig_self_consistency(libctx, alg, NULL);
             test_sig_wrong_message(libctx, alg);
             test_sig_empty_message(libctx, alg);
+#ifdef HYBRID_HAVE_CTX_STR
             test_sig_context_string(libctx, alg);
+#endif
             printf("\n");
         }
 
