@@ -60,6 +60,27 @@ static EVP_PKEY *gen(OSSL_LIB_CTX *ctx, const char *alg)
     return k;
 }
 
+/*
+ * Can the PQ component be generated in the running provider mix? Probes the exact
+ * fetch name the provider uses internally for the component (hybrid_component_keygen
+ * calls EVP_PKEY_CTX_new_from_name with this same name), so a failure here means
+ * the component's provider is genuinely absent — the row self-skips — as opposed
+ * to a hybrid keygen failure with the component present, which is a real bug.
+ */
+static int pq_available(OSSL_LIB_CTX *ctx, const char *pq_alg)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, pq_alg, NULL);
+    EVP_PKEY *k = NULL;
+    int ok = 0;
+
+    if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &k) > 0)
+        ok = 1;
+    EVP_PKEY_free(k);
+    EVP_PKEY_CTX_free(c);
+    ERR_clear_error();
+    return ok;
+}
+
 /* Read an octet-string param into a fresh buffer. Returns 1 on success. */
 static int get_octet(EVP_PKEY *k, const char *name,
                      unsigned char **buf, size_t *len)
@@ -134,6 +155,7 @@ static int raw_pub(EVP_PKEY *k, unsigned char **buf, size_t *len)
     return 1;
 }
 
+#ifdef HYBRID_COMPOSITE
 /* The composite SPKI BIT STRING payload (the concatenated component pub blob). */
 static int composite_spki_bits(EVP_PKEY *k, unsigned char **out, size_t *outlen)
 {
@@ -158,6 +180,7 @@ end:
     OPENSSL_free(spki);
     return ret;
 }
+#endif /* HYBRID_COMPOSITE */
 
 /* Re-import a hybrid/composite public key from a concatenated blob. */
 static EVP_PKEY *import_pub(OSSL_LIB_CTX *ctx, const char *alg,
@@ -176,7 +199,8 @@ static EVP_PKEY *import_pub(OSSL_LIB_CTX *ctx, const char *alg,
     return k;
 }
 
-static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam)
+static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
+                  const char *pq_alg)
 {
     EVP_PKEY *key = NULL, *cpub = NULL, *qpub = NULL;
     EVP_PKEY *cpriv = NULL, *qpriv = NULL, *composed_key = NULL;
@@ -188,8 +212,16 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam)
     fflush(stdout);
 
     if ((key = gen(ctx, alg)) == NULL) {
-        printf("SKIP (components unavailable)\n");
-        skipped++; tests--; ERR_clear_error();
+        /* A keygen failure is only benign when a component provider is absent
+         * (the PQ half — the classical half is always default-provider). If the
+         * PQ component *can* be generated here, hybrid keygen must not fail. */
+        if (!pq_available(ctx, pq_alg)) {
+            printf("SKIP (PQ component provider absent)\n");
+            skipped++; tests--; ERR_clear_error();
+        } else {
+            printf("FAIL (keygen)\n");
+            ERR_print_errors_fp(stdout); failed++;
+        }
         goto done;
     }
 
@@ -199,9 +231,10 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam)
      * The classical component is always serializable, so its extraction must
      * succeed. The PQ component depends on its provider shipping key encoders:
      * ML-KEM/ML-DSA (default) and the oqs *signature* families do, but the oqs
-     * research *KEMs* (FrodoKEM/BIKE/HQC) ship none (cf. issue #19) — those keys
-     * cannot be serialized standalone at all, so there is nothing to extract and
-     * the row self-skips rather than failing on a component-provider limitation. */
+     * research *KEMs* (FrodoKEM/BIKE/HQC) ship none unless oqsprovider is built
+     * with OQS_KEM_ENCODERS (off by default; cf. issue #19). When they cannot be
+     * serialized standalone there is nothing to extract, so the row self-skips
+     * rather than failing on a component-provider limitation. */
     cpub = extract_pub(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PUB);
     cpriv = extract_priv(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PRIV);
     if (cpub == NULL || cpriv == NULL) {
@@ -253,7 +286,9 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam)
             failed++; goto done;
         }
         comlen = blen;
-    } else {
+    }
+#ifdef HYBRID_COMPOSITE
+    else {
         /* composite SPKI BIT STRING must be exactly pqPub || tradPub (draft-19) */
         if (!composite_spki_bits(key, &blob, &blen)) {
             printf("FAIL (composite SPKI decode)\n");
@@ -268,6 +303,7 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam)
             failed++; goto done;
         }
     }
+#endif /* HYBRID_COMPOSITE */
 
     /* (3) composition: re-import the rebuilt blob -> must equal the original */
     composed_key = import_pub(ctx, alg, composed, comlen);
@@ -315,14 +351,19 @@ int main(void)
     printf("hybrid/composite component extraction & composition\n");
     printf("===================================================\n");
 
-    /* Every row of the master tables — no hardcoded combos. */
+    /* Every row of the master tables — no hardcoded combos. The PQ component
+     * name (alg2/pq_alg) lets a row tell a genuine keygen bug from a component
+     * whose provider simply is not loaded here. */
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
-        check(ctx, hybrid_kem_table[i].hybrid_name, HYBRID);
+        check(ctx, hybrid_kem_table[i].hybrid_name, HYBRID,
+              hybrid_kem_table[i].alg2_name);
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
-        check(ctx, hybrid_sig_table[i].hybrid_name, HYBRID);
+        check(ctx, hybrid_sig_table[i].hybrid_name, HYBRID,
+              hybrid_sig_table[i].alg2_name);
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
-        check(ctx, composite_sig_table[i].name, COMPOSITE);
+        check(ctx, composite_sig_table[i].name, COMPOSITE,
+              composite_sig_table[i].pq_alg);
 #endif
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
