@@ -290,6 +290,41 @@ default-provider vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) ML-KEM/ML-DSA)
 in the same process. Run `hybrid_bench` in your own environment for numbers.
 
+**Machine-checked composition-overhead guard.** `hybrid_bench` is also a
+regression test (run as the `hybrid_bench` ctest): on every **FAIR** row — where
+the hybrid and its native peer exercise the *same* PQ implementation — it asserts,
+per steady-state operation, that the hybrid stays within a single tight multiple
+(**1.6×**) of the native peer, and exits non-zero otherwise. Two things keep the
+measurement clean so one bound suffices instead of a family of factors:
+
+- **Keygen is excluded** — it is a randomised process for essentially every
+  algorithm here (Falcon/NTRU rejection sampling, matrix expansion, fresh EC
+  scalars), so its per-call time is itself a heavy-tailed random variable and a
+  ratio on top of it measures keygen's variance, not composition glue. Only the
+  repeatable steady-state ops (encaps/decaps, sign/verify) are asserted; keygen is
+  printed for information.
+- **Rows are asserted only where the delta is untainted** — FAIR *and* free of
+  oqsprovider's blanket `no_cache=1`, which on OpenSSL ≥ 3.5 forces a
+  per-operation method reconstruction on each component fetch (an *oqsprovider*
+  artifact, not this provider's composition — see below). That tax is
+  version-gated inside oqsprovider at 3.5.0, so oqsprovider-component rows are
+  asserted on pre-3.5 builds (whose CI legs run the identical composition core,
+  tax-free) and merely **reported** on 3.5+ (tagged `TAXED`). Rows whose PQ half
+  is ceded to the default provider are tagged `UNFAIR` and likewise reported, not
+  asserted.
+
+With keygen and the tax removed, the observed steady-state delta is ~1.0× across
+every algorithm (measured on OpenSSL 3.4.2, 4.0.1, and under ASan on 3.5.6), so
+1.6× clears real noise while a genuine composition regression (an accidental extra
+copy, an O(n) blowup) is ≥ 2× and trips it comfortably. The guard runs with
+cede-to-default switched off so it measures the hybrid provider's own MLX
+implementation rather than skipping those rows.
+
+The `no_cache` effect is analysed in `design.md` (Performance) and the local
+`docs/` notes: the composition glue itself is negligible; the observable
+fast-signature tax is the sub-provider fetch flag, reproducible by toggling it in
+a stub, and is out of this provider's scope.
+
 ### Composite signature benchmark
 
 `composite_sig_bench` (built only with `-DHYBRID_COMPOSITE`) reports, for **every**

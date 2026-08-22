@@ -23,13 +23,93 @@
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 #include <openssl/err.h>
+#include <openssl/crypto.h>     /* OpenSSL_version_num */
 
 #define ITERATIONS 1000
+
+/*
+ * Composition-overhead regression guard (work-items item 20).
+ *
+ * The hybrid provider's job is to COMPOSE two component algorithms; the glue it
+ * adds (buffer split/concat, the length prefix, an EVP_MD_CTX) is a small additive
+ * constant next to the component crypto. This guard makes that machine-checked so
+ * a regression (e.g. an accidental extra copy or fetch in the hot path) fails CI
+ * instead of only showing up in the printed numbers.
+ *
+ * It compares the hybrid against the NATIVE peer that runs the SAME components,
+ * per operation, and asserts a single tight ceiling. Two refinements keep the
+ * measurement clean so ONE bound suffices instead of a menagerie of factors:
+ *
+ *   - Keygen is excluded (see check_overhead). Keygen is a randomised process for
+ *     essentially every algorithm here (Falcon/NTRU rejection sampling, matrix
+ *     expansion, fresh EC scalars), so its per-call time is itself a heavy-tailed
+ *     random variable. A ratio on top of that measures keygen's intrinsic variance,
+ *     not our glue. Only the repeatable steady-state ops (encaps/decaps,
+ *     sign/verify) carry a clean composition signal, and there the delta is ~1.0x.
+ *
+ *   - A row is asserted only where the measurement is untainted: same PQ impl on
+ *     both sides (FAIR) AND no oqsprovider no_cache tax. That tax (a per-op method
+ *     reconstruction forced by oqsprovider's blanket no_cache=1 — an oqsprovider
+ *     artifact, NOT our composition; see docs/ and design.md Performance) is
+ *     version-gated inside oqsprovider at OpenSSL 3.5.0. So oqsprovider-component
+ *     rows are asserted on pre-3.5 builds (whose CI legs exercise the identical
+ *     composition core, tax-free) and merely reported on 3.5+. See oqs_no_cache_tax.
+ *
+ * With keygen and the tax removed, the observed steady-state delta is ~1.0x across
+ * every algorithm, so a single 1.6x ceiling clears real noise while a genuine
+ * composition regression (a doubled copy, an O(n) blowup) trips it comfortably.
+ */
+#define OVERHEAD_CEIL   1.6     /* composition glue only; the native peer is itself
+                                 * a hybrid doing both halves, so expected ~1.0x */
+#define OVERHEAD_MIN_MS 0.010   /* below this per-op, timing noise dominates */
+
+typedef struct {
+    double op[3];   /* KEM: keygen, encaps, decaps.  SIG: keygen, sign, verify. */
+    int valid;      /* 1 once measured; 0 on skip/error (no assertion made) */
+} BENCH_TIMES;
+
+static const char *const KEM_OPS[3] = { "keygen", "encaps", "decaps" };
+static const char *const SIG_OPS[3] = { "keygen", "sign",   "verify" };
+
+static int overhead_failures;   /* nonzero -> main() returns failure */
 
 static double time_diff_ms(struct timespec *start, struct timespec *end)
 {
     return (end->tv_sec - start->tv_sec) * 1000.0
          + (end->tv_nsec - start->tv_nsec) / 1e6;
+}
+
+/*
+ * Assert the hybrid stays within `ceil` x the native peer per operation (only
+ * where both were measured and native is above the noise floor). Prints one line
+ * per violation and bumps the global failure counter.
+ */
+static void check_overhead(const char *alg, const BENCH_TIMES *native,
+                           const BENCH_TIMES *hybrid, const char *const ops[3],
+                           double ceil)
+{
+    int i;
+
+    if (!native->valid || !hybrid->valid)
+        return;
+    /*
+     * Start at index 1: op[0] is keygen, which is randomised (rejection sampling,
+     * fresh entropy) and thus a heavy-tailed random variable in its own right --
+     * a hybrid/native ratio on it measures keygen's variance, not composition
+     * overhead. It is printed for information but never asserted. The steady-state
+     * ops (encaps/decaps, sign/verify) are the clean, repeatable signal.
+     */
+    for (i = 1; i < 3; i++) {
+        if (native->op[i] < OVERHEAD_MIN_MS)
+            continue;   /* too small to time reliably */
+        if (hybrid->op[i] > native->op[i] * ceil) {
+            printf("  !! %s %s: composition overhead %.2fx native "
+                   "(%.4f vs %.4f ms) exceeds %.2fx ceiling\n",
+                   alg, ops[i], hybrid->op[i] / native->op[i],
+                   hybrid->op[i], native->op[i], ceil);
+            overhead_failures++;
+        }
+    }
 }
 
 /*
@@ -43,7 +123,7 @@ static double time_diff_ms(struct timespec *start, struct timespec *end)
  */
 static int bench_kem(OSSL_LIB_CTX *libctx, const char *algname,
                      const char *select_propq, const char *comp_propq,
-                     const char *label, int iterations)
+                     const char *label, int iterations, BENCH_TIMES *out)
 {
     EVP_PKEY_CTX *gctx = NULL, *ectx = NULL, *dctx = NULL;
     EVP_PKEY *key = NULL;
@@ -168,6 +248,12 @@ static int bench_kem(OSSL_LIB_CTX *libctx, const char *algname,
     printf("  %-46s  keygen: %7.3f ms  encaps: %7.3f ms  decaps: %7.3f ms\n",
            label, keygen_ms, encaps_ms, decaps_ms);
 
+    if (out != NULL) {
+        out->op[0] = keygen_ms;
+        out->op[1] = encaps_ms;
+        out->op[2] = decaps_ms;
+        out->valid = 1;
+    }
     ret = 1;
 
 err:
@@ -219,7 +305,7 @@ static int provider_has_mldsa(OSSL_LIB_CTX *libctx, const char *provname)
  */
 static int bench_sig(OSSL_LIB_CTX *libctx, const char *algname,
                      const char *select_propq, const char *comp_propq,
-                     const char *label, int iterations)
+                     const char *label, int iterations, BENCH_TIMES *out)
 {
     EVP_PKEY_CTX *gctx = NULL;
     EVP_PKEY *key = NULL;
@@ -341,6 +427,12 @@ static int bench_sig(OSSL_LIB_CTX *libctx, const char *algname,
 
     printf("  %-40s  keygen: %7.3f ms  sign: %7.3f ms  verify: %7.3f ms\n",
            label, keygen_ms, sign_ms, verify_ms);
+    if (out != NULL) {
+        out->op[0] = keygen_ms;
+        out->op[1] = sign_ms;
+        out->op[2] = verify_ms;
+        out->valid = 1;
+    }
     ret = 1;
 
 err:
@@ -383,33 +475,68 @@ static int pq_from_oqs_sig(OSSL_LIB_CTX *libctx, const char *pqname)
     return ok;
 }
 
-#define FAIR_TAG(fair) \
-    ((fair) ? "[FAIR: same PQ impl both sides]" \
-            : "[UNFAIR: hybrid PQ=default portable-C vs native liboqs]")
+/*
+ * oqsprovider's blanket no_cache=1 -- which forces a full method reconstruction on
+ * every component fetch (see docs/oqsprovider-no-cache-issue.md and design.md
+ * Performance) -- is gated inside oqsprovider at OpenSSL 3.5.0. Below that, the
+ * hybrid's component fetches are cached just like the native peer's, so an
+ * oqsprovider-sourced row is a clean composition measurement; at/above it the
+ * hybrid pays the tax per component per op and the ratio is inflated by an upstream
+ * artifact, not our glue. So we assert oqsprovider-component rows only on pre-3.5
+ * builds and merely report them on 3.5+ (the pre-3.5 CI legs run the identical
+ * composition core, so coverage is unchanged).
+ */
+static int oqs_no_cache_tax(void)
+{
+    return OpenSSL_version_num() >= 0x30500000L;
+}
+
+/*
+ * Print the per-row classification that says whether the ceiling is asserted on
+ * this row. Three states: not comparable (UNFAIR), comparable but tax-tainted on
+ * 3.5+ (reported only), or clean (steady-state ops asserted).
+ */
+static void print_row_class(const char *alg, int fair, int taxed)
+{
+    if (!fair)
+        printf("%s:  [UNFAIR: hybrid PQ ceded to default portable-C vs native "
+               "liboqs -- reported, not asserted]\n", alg);
+    else if (taxed)
+        printf("%s:  [FAIR but oqsprovider no_cache tax active (OpenSSL>=3.5) "
+               "-- reported, not asserted]\n", alg);
+    else
+        printf("%s:  [FAIR: same PQ impl, no tax -- steady-state ops asserted "
+               "<= %.1fx]\n", alg, OVERHEAD_CEIL);
+}
 
 /*
  * Compare one KEM hybrid across the providers that implement it: the native
  * implementation (default for MLX names, oqsprovider for OQS-legacy names) and
  * the hybrid provider. For the hybrid provider we source the PQ base from the
  * same place the native peer uses (comp_propq), so the delta is the hybrid
- * provider's composition overhead, not a different PQ implementation -- but only
- * when the row is FAIR (see pq_from_oqs_kem).
+ * provider's composition overhead, not a different PQ implementation -- but the
+ * ceiling is asserted only where that delta is clean (FAIR and tax-free).
  */
 static void compare_kem(OSSL_LIB_CTX *libctx, const char *alg,
                         const char *native, const char *pq, int it)
 {
     char lbl[80];
-    int fair = (native[0] == 'd') ? 1 : pq_from_oqs_kem(libctx, pq);
+    int from_default = (native[0] == 'd');
+    int fair = from_default ? 1 : pq_from_oqs_kem(libctx, pq);
+    int taxed = fair && !from_default && oqs_no_cache_tax();
+    BENCH_TIMES nt = { {0}, 0 }, ht = { {0}, 0 };
 
-    printf("%s:  %s\n", alg, FAIR_TAG(fair));
+    print_row_class(alg, fair, taxed);
     snprintf(lbl, sizeof(lbl), "  %s (native)", native);
-    bench_kem(libctx, alg, native[0] == 'd' ? "provider=default"
-                                            : "provider=oqsprovider",
-              NULL, lbl, it);
+    bench_kem(libctx, alg, from_default ? "provider=default"
+                                        : "provider=oqsprovider",
+              NULL, lbl, it, &nt);
     snprintf(lbl, sizeof(lbl), "  hybrid (PQ from %s)", native);
     bench_kem(libctx, alg, "provider=hybrid",
-              native[0] == 'd' ? "provider=default" : "?provider=oqsprovider",
-              lbl, it);
+              from_default ? "provider=default" : "?provider=oqsprovider",
+              lbl, it, &ht);
+    if (fair && !taxed)
+        check_overhead(alg, &nt, &ht, KEM_OPS, OVERHEAD_CEIL);
 }
 
 /* Same, for a signature hybrid (native peer is always oqsprovider). */
@@ -418,12 +545,17 @@ static void compare_sig(OSSL_LIB_CTX *libctx, const char *alg,
 {
     char lbl[80];
     int fair = pq_from_oqs_sig(libctx, pq);
+    int taxed = fair && oqs_no_cache_tax();   /* native peer is always oqsprovider */
+    BENCH_TIMES nt = { {0}, 0 }, ht = { {0}, 0 };
 
-    printf("%s:  %s\n", alg, FAIR_TAG(fair));
+    print_row_class(alg, fair, taxed);
     snprintf(lbl, sizeof(lbl), "  oqsprovider (native)");
-    bench_sig(libctx, alg, "provider=oqsprovider", NULL, lbl, it);
+    bench_sig(libctx, alg, "provider=oqsprovider", NULL, lbl, it, &nt);
     snprintf(lbl, sizeof(lbl), "  hybrid");
-    bench_sig(libctx, alg, "provider=hybrid", "?provider=oqsprovider", lbl, it);
+    bench_sig(libctx, alg, "provider=hybrid", "?provider=oqsprovider", lbl, it,
+              &ht);
+    if (fair && !taxed)
+        check_overhead(alg, &nt, &ht, SIG_OPS, OVERHEAD_CEIL);
 }
 
 int main(int argc, char **argv)
@@ -459,6 +591,12 @@ int main(int argc, char **argv)
         it = atoi(argv[1]);
     modulepath = getenv("OPENSSL_MODULES");
 
+    /* Measure the HYBRID provider's own MLX implementation, not the default's:
+     * without this the cede-to-default lever withdraws the MLX groups from the
+     * hybrid provider and its rows would be skipped (and the tight default-
+     * component ceiling never exercised). */
+    setenv("HYBRID_CEDE_TO_DEFAULT", "0", 1);
+
     libctx = OSSL_LIB_CTX_new();
     if (libctx == NULL || (dflt_prov = OSSL_PROVIDER_load(libctx, "default"))
                               == NULL) {
@@ -491,11 +629,16 @@ int main(int argc, char **argv)
            has_oqs ? "loaded" : "not available");
     printf("=====================================================\n");
     printf("FAIR   = hybrid and native use the same PQ implementation; the delta\n"
-           "         is pure composition overhead.\n"
+           "         is pure composition overhead. Steady-state ops (encaps/decaps,\n"
+           "         sign/verify) are asserted <= %.1fx; keygen is randomised, so\n"
+           "         it is printed but never asserted.\n"
            "UNFAIR = the PQ primitive is ceded to default (portable C), so the\n"
-           "         hybrid runs a DIFFERENT impl than native's liboqs; the delta\n"
-           "         reflects implementation choice, not composition (may be\n"
-           "         faster or slower per operation).\n");
+           "         hybrid runs a DIFFERENT impl than native's liboqs; reported,\n"
+           "         not asserted.\n"
+           "TAXED  = FAIR, but on OpenSSL>=3.5 oqsprovider's no_cache=1 inflates the\n"
+           "         ratio with a per-op fetch (an oqsprovider artifact, not our\n"
+           "         glue); reported, not asserted (pre-3.5 legs assert it clean).\n",
+           OVERHEAD_CEIL);
 
     printf("\n[KEM: MLX groups — hybrid vs default provider]\n");
     for (i = 0; i < sizeof(mlx_kems) / sizeof(mlx_kems[0]); i++)
@@ -513,10 +656,17 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
+    if (overhead_failures == 0)
+        printf("Composition-overhead guard: PASS (all asserted ops within "
+               "ceiling)\n");
+    else
+        printf("Composition-overhead guard: FAIL (%d operation(s) over "
+               "ceiling)\n", overhead_failures);
+
     OSSL_PROVIDER_unload(hybrid_prov);
     if (oqs_prov != NULL)
         OSSL_PROVIDER_unload(oqs_prov);
     OSSL_PROVIDER_unload(dflt_prov);
     OSSL_LIB_CTX_free(libctx);
-    return 0;
+    return overhead_failures == 0 ? 0 : 1;
 }
