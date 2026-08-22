@@ -48,7 +48,9 @@
  *      peer, no FAIR/UNFAIR matching, no version gating. Keygen is excluded
  *      (randomised, heavy-tailed) and timings are the minimum per-op latency.
  */
-#define HYBRID_OVERHEAD_CEIL 1.6   /* combiner glue only; expected ~1.0x */
+/* Combiner glue is a fixed per-op cost (~0.03 ms): ~1.0x for ops >=1ms but up to
+ * ~1.9x for the fastest sigs -- hence the additive slack in bench_util's bound. */
+#define HYBRID_OVERHEAD_CEIL 1.6
 
 typedef struct {
     double op[3];   /* KEM: keygen, encaps, decaps.  SIG: keygen, sign, verify. */

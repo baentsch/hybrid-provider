@@ -262,10 +262,13 @@ the results combined.
 standalone *ML-DSA* enabled on 3.5+, unlike ML-KEM, so the default-vs-oqs
 signature comparison runs in a single 3.5+ process.)
 
-Comparing configurations 1 and 2 isolates the composition cost: the hybrid
-provider's EVP-based composition adds no measurable overhead over OpenSSL's
-built-in MLX hybrid — the time is spent in the underlying primitives, not the
-glue. The remaining configurations compare component implementations (e.g.
+Comparing configurations 1 and 2 isolates the composition cost: for KEMs (and any
+operation ≳ 1 ms) the hybrid provider's EVP-based composition tracks OpenSSL's
+built-in MLX hybrid to within a few percent — the time is spent in the underlying
+primitives. The glue is *not* zero, though: it is a small fixed per-op cost
+(~0.03 ms for hybrids) that becomes percentage-wise substantial only for the very
+fastest signatures — see the guard below and design.md *Performance*. The
+remaining configurations compare component implementations (e.g.
 default-provider vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) ML-KEM/ML-DSA)
 in the same process. Run `hybrid_bench` in your own environment for numbers.

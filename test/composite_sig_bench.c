@@ -38,7 +38,8 @@
 #define OP_MIN_ITERS     5
 #define OP_MAX_ITERS     500
 
-/* combiner glue only; expected ~1.0x. See bench_util.h for the model. */
+/* Combiner glue is a small fixed per-op cost (~0.003 ms -> ~1.0x); the additive
+ * slack in bench_util's bound covers it. See bench_util.h for the model. */
 #define COMPOSITE_OVERHEAD_CEIL 1.6
 
 /* Per-op wall-clock budget in ms (overridable via argv[1]); a measurement stops
