@@ -335,6 +335,18 @@ keygens (UOV/MQOM/CROSS) don't dominate while fast verifies still get enough
 samples. It defaults to 1000; `ctest` runs it with a short budget as a smoke
 test, so pass a larger value (e.g. `./composite_sig_bench 2000`) for stable numbers.
 
+**Machine-checked composition-overhead guard.** After the report, the bench
+asserts (and exits non-zero on breach, gating the `composite_sig_bench` ctest)
+that each composite's **sign/verify** stays within **1.6×** the *sum of its two
+standalone components*. A composite signature is one PQ signature plus one
+classical signature over the same message, so the sum-of-components is the natural
+peer where — unlike the hybrid family — no native composite peer exists. Because
+the peer literally *is* the two components, any per-component cost (including
+oqsprovider's `no_cache` tax) cancels; what remains is the combiner's own glue,
+observed at ~1.0–1.25×. Keygen is excluded (randomised, heavy-tailed, like the
+hybrid guard), and timings use the **minimum** per-op latency so scheduler spikes
+don't flake the ratio of two small numbers.
+
 An illustrative results snapshot and the deployment recommendations that follow
 from it are in [composite-sig-bench-results.md](composite-sig-bench-results.md)
 (numbers are hardware-specific — regenerate for your own environment).
@@ -357,6 +369,14 @@ as `composite_sig_bench`; the experimental rows need
 cd build
 LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_kem_bench [budget_ms]
 ```
+
+It carries the same **sum-of-components guard** as `composite_sig_bench`: after the
+report it asserts each composite's **encaps/decaps** within **1.6×** the sum of its
+ML-KEM component and its classical KEM (DHKEM = ephemeral keygen + derive, or
+RSA-OAEP), gating the `composite_kem_bench` ctest. The component contexts are set
+up per-op (as the combiner does internally), so oqsprovider's per-op `no_cache` tax
+cancels symmetrically rather than inflating fast Frodo/BIKE rows; observed
+~1.0–1.25×.
 
 An illustrative snapshot and per-axis analysis are in
 [composite-kem-bench-results.md](composite-kem-bench-results.md).
