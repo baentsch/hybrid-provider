@@ -356,6 +356,59 @@ EVP_PKEY_fromdata(ctx, &pkey, selection, params);
 Extracts raw bytes from each component via `EVP_PKEY_export()`, concatenates
 in slot order, and delivers via the export callback.
 
+### Component extraction and composition
+
+`keymgmt_export` and the SPKI/PKCS8 encoders emit the *combined* key. For callers
+that need an individual component as a first-class, usable `EVP_PKEY` — not an
+opaque slice of the concatenated blob — the key also exposes gettable,
+provider-specific params (shared by the hybrid and composite families), for both
+the public and the private half:
+
+- `HYBRID_PKEY_PARAM_CLASSIC_PUB`  (`"hybrid-classic-pub-spki"`)  — SPKI DER
+- `HYBRID_PKEY_PARAM_PQ_PUB`       (`"hybrid-pq-pub-spki"`)       — SPKI DER
+- `HYBRID_PKEY_PARAM_CLASSIC_PRIV` (`"hybrid-classic-priv-pkcs8"`) — PKCS#8 DER
+- `HYBRID_PKEY_PARAM_PQ_PRIV`      (`"hybrid-pq-priv-pkcs8"`)      — PKCS#8 DER
+
+Each returns the component's own standalone encoding — the public half as a
+`SubjectPublicKeyInfo` (`i2d_PUBKEY`), the private half as a PKCS#8
+`PrivateKeyInfo` (`EVP_PKEY2PKCS8`) — produced by the underlying component's own
+provider encoder, so this stays EVP-only and provider-agnostic. A caller
+reconstructs a standalone key it can use directly:
+
+```c
+size_t n = 0;
+EVP_PKEY_get_octet_string_param(hybrid, "hybrid-pq-pub-spki", NULL, 0, &n);
+unsigned char *der = OPENSSL_malloc(n);
+EVP_PKEY_get_octet_string_param(hybrid, "hybrid-pq-pub-spki", der, n, &n);
+const unsigned char *p = der;
+EVP_PKEY *pq = d2i_PUBKEY_ex(NULL, &p, n, libctx, NULL);   /* standalone ML-DSA/ML-KEM */
+```
+
+The private (PKCS#8) blobs carry key material; a caller must cleanse them after
+use, as the provider does internally. Extraction requires the component's provider
+to actually produce a standalone encoding for that algorithm: ML-KEM/ML-DSA
+(default) and the oqs *signature* families do, but the oqs research *KEMs*
+(FrodoKEM/BIKE/HQC) do not — no standalone `SubjectPublicKeyInfo`/PKCS#8 encoding
+is available for them even with oqsprovider's `OQS_KEM_ENCODERS` build option
+enabled (those algorithms carry no OID for the encode path), so those components
+are not individually serializable and the combined PKCS8/SPKI encoders remain the
+only way to serialize them. None of this is hardcoded: the extraction params
+return whatever the component's provider encodes, and `hybrid_extract_test`
+decides at runtime — a row skips only after proving a *standalone* key of that PQ
+algorithm cannot itself be encoded, so a component that is serializable but fails
+to extract is a hard failure, never a silent skip.
+
+**Inner == standalone.** The bytes a component contributes to the container equal
+that component's standalone encoding. For the hybrid family the concatenated
+`OSSL_PKEY_PARAM_PUB_KEY` is exactly `raw(comp_a) || raw(comp_b)`; for the
+composite family the SPKI `BIT STRING` is exactly `pqPub || tradPub` (draft-19).
+`hybrid_extract_test` asserts this across every row of the master tables: it
+extracts both halves (public and private) as standalone keys, checks the extracted
+private and public agree (`EVP_PKEY_eq`), and **recomposes** the container by
+concatenating the two components' raw public keys and re-importing them through
+`EVP_PKEY_fromdata()`, then checks the result compares equal to the original — the
+inverse of extraction.
+
 ### Other keymgmt functions
 
 - `has`: checks `key->state`
