@@ -386,15 +386,17 @@ EVP_PKEY *pq = d2i_PUBKEY_ex(NULL, &p, n, libctx, NULL);   /* standalone ML-DSA/
 
 The private (PKCS#8) blobs carry key material; a caller must cleanse them after
 use, as the provider does internally. Extraction requires the component's provider
-to ship key encoders: ML-KEM/ML-DSA (default) and the oqs *signature* families do,
-but the oqs research *KEMs* (FrodoKEM/BIKE/HQC) ship none *by default* — their
-encoders are gated behind oqsprovider's `OQS_KEM_ENCODERS` build option (off by
-default; see oqsprovider `CONFIGURE.md`). Where that option is not enabled those
-components are not individually serializable and the combined PKCS8/SPKI encoders
-remain the way to serialize them. The behaviour is not hardcoded either way: the
-extraction params return whatever the component's provider actually encodes, so a
-build with `OQS_KEM_ENCODERS` on extracts the research-KEM components too, and the
-test discovers this at runtime (a component that will not serialize self-skips).
+to actually produce a standalone encoding for that algorithm: ML-KEM/ML-DSA
+(default) and the oqs *signature* families do, but the oqs research *KEMs*
+(FrodoKEM/BIKE/HQC) do not — no standalone `SubjectPublicKeyInfo`/PKCS#8 encoding
+is available for them even with oqsprovider's `OQS_KEM_ENCODERS` build option
+enabled (those algorithms carry no OID for the encode path), so those components
+are not individually serializable and the combined PKCS8/SPKI encoders remain the
+only way to serialize them. None of this is hardcoded: the extraction params
+return whatever the component's provider encodes, and `hybrid_extract_test`
+decides at runtime — a row skips only after proving a *standalone* key of that PQ
+algorithm cannot itself be encoded, so a component that is serializable but fails
+to extract is a hard failure, never a silent skip.
 
 **Inner == standalone.** The bytes a component contributes to the container equal
 that component's standalone encoding. For the hybrid family the concatenated

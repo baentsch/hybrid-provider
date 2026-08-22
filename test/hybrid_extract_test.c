@@ -81,6 +81,36 @@ static int pq_available(OSSL_LIB_CTX *ctx, const char *pq_alg)
     return ok;
 }
 
+/*
+ * Can a standalone key of this PQ algorithm be serialized to SubjectPublicKeyInfo
+ * *and* PKCS#8 by its own provider? If yes, the hybrid's component extraction must
+ * succeed too, so an extraction failure is a real bug (FAIL) — not a skip. If no
+ * (the oqs research KEMs Frodo/BIKE/HQC, which get no standalone encoding even
+ * with OQS_KEM_ENCODERS=ON — they carry no OID for the encode path), extraction
+ * genuinely cannot work and the row legitimately self-skips. This mirrors exactly
+ * what the provider's extraction params do (i2d_PUBKEY / EVP_PKEY2PKCS8 on the
+ * component), so it keeps skips trustworthy without hardcoding an allowlist.
+ */
+static int pq_serializable(OSSL_LIB_CTX *ctx, const char *pq_alg)
+{
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(ctx, pq_alg, NULL);
+    EVP_PKEY *k = NULL;
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    unsigned char *der = NULL;
+    int ok = 0;
+
+    if (g != NULL && EVP_PKEY_keygen_init(g) > 0 && EVP_PKEY_keygen(g, &k) > 0
+            && i2d_PUBKEY(k, &der) > 0
+            && (p8 = EVP_PKEY2PKCS8(k)) != NULL)
+        ok = 1;
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    OPENSSL_free(der);
+    EVP_PKEY_free(k);
+    EVP_PKEY_CTX_free(g);
+    ERR_clear_error();
+    return ok;
+}
+
 /* Read an octet-string param into a fresh buffer. Returns 1 on success. */
 static int get_octet(EVP_PKEY *k, const char *name,
                      unsigned char **buf, size_t *len)
@@ -229,12 +259,13 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
      * private half's public part matches the extracted public half.
      *
      * The classical component is always serializable, so its extraction must
-     * succeed. The PQ component depends on its provider shipping key encoders:
-     * ML-KEM/ML-DSA (default) and the oqs *signature* families do, but the oqs
-     * research *KEMs* (FrodoKEM/BIKE/HQC) ship none unless oqsprovider is built
-     * with OQS_KEM_ENCODERS (off by default; cf. issue #19). When they cannot be
-     * serialized standalone there is nothing to extract, so the row self-skips
-     * rather than failing on a component-provider limitation. */
+     * succeed. The PQ component depends on its provider producing a standalone
+     * encoding: ML-KEM/ML-DSA (default) and the oqs *signature* families do, but
+     * the oqs research *KEMs* (FrodoKEM/BIKE/HQC) do not — even with oqsprovider
+     * built with OQS_KEM_ENCODERS they carry no OID for the encode path, so no
+     * standalone SPKI/PKCS8 is produced (cf. issue #19). Such a row self-skips,
+     * but only after pq_serializable() confirms the component genuinely cannot be
+     * serialized standalone — otherwise a failed extraction is a real FAIL. */
     cpub = extract_pub(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PUB);
     cpriv = extract_priv(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PRIV);
     if (cpub == NULL || cpriv == NULL) {
@@ -249,8 +280,17 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
     qpub = extract_pub(ctx, key, HYBRID_PKEY_PARAM_PQ_PUB);
     qpriv = extract_priv(ctx, key, HYBRID_PKEY_PARAM_PQ_PRIV);
     if (qpub == NULL || qpriv == NULL) {
-        printf("SKIP (PQ component not serializable by its provider)\n");
-        skipped++; tests--; ERR_clear_error(); goto done;
+        /* Only a genuine "component cannot be serialized standalone" is a skip;
+         * if the component IS serializable, the hybrid must extract it too. */
+        if (pq_serializable(ctx, pq_alg)) {
+            printf("FAIL (PQ extraction pub=%d priv=%d, but component IS "
+                   "serializable standalone)\n", qpub != NULL, qpriv != NULL);
+            ERR_print_errors_fp(stdout); failed++;
+        } else {
+            printf("SKIP (PQ component not serializable by its provider)\n");
+            skipped++; tests--; ERR_clear_error();
+        }
+        goto done;
     }
     if (EVP_PKEY_eq(qpriv, qpub) != 1) {
         printf("FAIL (PQ priv/pub inconsistent)\n");
