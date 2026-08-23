@@ -35,9 +35,9 @@
 #define OP_MIN_ITERS     5
 #define OP_MAX_ITERS     500
 
-/* Combiner glue is a small fixed per-op cost (~0.003 ms -> ~1.0x); the additive
- * slack in bench_util's bound covers it. See bench_util.h for the model. */
-#define COMPOSITE_OVERHEAD_CEIL 1.6
+/* Combiner glue is small (~1.0x, up to ~1.25x for the fastest KEMs). See
+ * bench_util.h for the model. */
+#define COMPOSITE_OVERHEAD_CEIL 1.3
 
 /* Per-op wall-clock budget; shared with the guard timers via bench_set_budget_ms(). */
 static double g_budget_ms = 1000.0;

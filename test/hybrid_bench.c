@@ -48,9 +48,9 @@
  *      peer, no FAIR/UNFAIR matching, no version gating. Keygen is excluded
  *      (randomised, heavy-tailed) and timings are the minimum per-op latency.
  */
-/* Combiner glue is a fixed per-op cost (~0.03 ms): ~1.0x for ops >=1ms but up to
- * ~1.9x for the fastest sigs -- hence the additive slack in bench_util's bound. */
-#define HYBRID_OVERHEAD_CEIL 1.6
+/* Combiner glue is small: ~1.0x for sigs, up to ~1.25x for the fastest KEMs; at
+ * parity with oqsprovider's own hybrids. See bench_util.h for the model. */
+#define HYBRID_OVERHEAD_CEIL 1.3
 
 typedef struct {
     double op[3];   /* KEM: keygen, encaps, decaps.  SIG: keygen, sign, verify. */
@@ -501,17 +501,11 @@ int main(int argc, char **argv)
         /* classical component's own digest, per its PQ NIST level */
         const char *md = r->nist_level <= 1 ? "SHA256"
                        : r->nist_level <= 3 ? "SHA384" : "SHA512";
-        int is_rsa = (strcmp(r->alg1_name, "RSA") == 0);
-        /*
-         * RSA-classical hybrids are reported but NOT asserted (failures == NULL):
-         * their verify runs ~13-18x the sum-of-components (≈ an RSA private-op),
-         * an anomaly in the hybrid provider's RSA path -- NOT the composition glue
-         * this guard bounds. The composite provider's RSA signatures measure ~1.0x
-         * with this same code, so it is provider-specific. Tracked in issue #70.
-         */
+        int rsa_bits = (strcmp(r->alg1_name, "RSA") == 0) ? 3072 : 0;
+
         bench_guard_sig(libctx, r->hybrid_name, "provider=hybrid", r->alg2_name,
-                        r->alg1_name, r->alg1_group, is_rsa ? 3072 : 0, md,
-                        HYBRID_OVERHEAD_CEIL, is_rsa ? NULL : &guard_failures);
+                        r->alg1_name, r->alg1_group, rsa_bits, md,
+                        HYBRID_OVERHEAD_CEIL, &guard_failures);
     }
     if (guard_failures == 0)
         printf("  guard: PASS (all measured hybrids within ceiling)\n");

@@ -262,13 +262,10 @@ the results combined.
 standalone *ML-DSA* enabled on 3.5+, unlike ML-KEM, so the default-vs-oqs
 signature comparison runs in a single 3.5+ process.)
 
-Comparing configurations 1 and 2 isolates the composition cost: for KEMs (and any
-operation ≳ 1 ms) the hybrid provider's EVP-based composition tracks OpenSSL's
-built-in MLX hybrid to within a few percent — the time is spent in the underlying
-primitives. The glue is *not* zero, though: it is a small fixed per-op cost
-(~0.03 ms for hybrids) that becomes percentage-wise substantial only for the very
-fastest signatures — see the guard below and design.md *Performance*. The
-remaining configurations compare component implementations (e.g.
+Comparing configurations 1 and 2 isolates the composition cost: the hybrid
+provider's EVP-based composition tracks OpenSSL's built-in MLX hybrid closely —
+the time is spent in the underlying primitives, and the glue is small (see the
+guard below). The remaining configurations compare component implementations (e.g.
 default-provider vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) ML-KEM/ML-DSA)
 in the same process. Run `hybrid_bench` in your own environment for numbers.
@@ -277,7 +274,7 @@ in the same process. Run `hybrid_bench` in your own environment for numbers.
 `hybrid_bench` runs the **same sum-of-components guard** as the composite benches
 (shared code in `test/bench_util.c`): a hybrid IS its two constituent components
 plus a small combiner glue, so the guard asserts each hybrid's steady-state ops
-stay within a bound of the *sum of its components* measured standalone, exiting
+stay within **1.3×** the *sum of its components* measured standalone, exiting
 non-zero (gating the `hybrid_bench` ctest) on breach. It iterates the provider's
 **own** `hybrid_{kem,sig}_table`, so the peer fetches each component by the exact
 name the provider composes with — same implementation by construction. That single
@@ -286,27 +283,25 @@ property removes everything the old native-peer model needed: no native peer, no
 is the two components, any per-component cost (including oqsprovider's `no_cache`
 tax) cancels in the ratio on every OpenSSL version.
 
-The bound is `composed ≤ sum × 1.6 + 0.08 ms`:
+Measured this way the glue is small: **~1.0× for signatures** and **up to ~1.2×
+for the fastest KEMs** (the SHA3-256 combiner pass / provider dispatch on a
+~0.07 ms base), and a hybrid is at **parity with oqsprovider's own hybrid** for the
+same algorithm. Three things keep the tight bound sound:
 
-- **1.6× multiplicative** — the composition glue is a small multiple of the
-  component crypto.
-- **0.08 ms additive slack** — the fixed per-op cost (provider dispatch, a second
-  `EVP_MD_CTX` for signatures, the length-prefix/concat) is independent of the
-  component crypto; for the very fastest primitives (UOV sign ~0.04 ms) it is a
-  large *fraction* but a small *absolute* constant, so a pure ratio would flag it
-  with no regression. The slack keeps 1.6× meaningful for slow ops without
-  penalising tiny ones.
 - **Keygen is excluded** — randomised (rejection sampling, fresh entropy), a
-  heavy-tailed variable whose ratio measures keygen's variance, not glue. Timings
-  use the **minimum** per-op latency so scheduler spikes don't flake the ratio.
+  heavy-tailed variable whose ratio measures keygen's variance, not glue.
+- **Minimum per-op latency** — noise only adds time, so the ratio stays stable at
+  the short ctest budget.
+- **The composed op is measured with its provider's property query** (as real
+  callers / libssl do). Signing a provider-native key with a *NULL* propq instead
+  forces a per-op cross-provider resolution that can dwarf the crypto for fast
+  primitives — an early version of this guard did that and mis-measured fast-UOV
+  and RSA hybrids by up to ~18×; with the explicit propq every hybrid, RSA
+  included, sits at ~1.0×.
 
-Validated ~1.0× across the full provider table on OpenSSL 3.4.2, 3.5.6, 4.0.1 and
-under ASan. The guard runs with cede-to-default off so it measures the hybrid
-provider's own MLX implementation. **Exception:** the RSA-classical signature
-hybrids (`rsa3072_*`) are reported but *not* asserted — their verify runs ~13–18×
-the sum-of-components (≈ an RSA private-op), an anomaly in the hybrid provider's
-RSA path (the composite provider's RSA signatures measure ~1.0× with this same
-code), tracked in issue #70.
+Validated ~1.0–1.2× across the full provider table on OpenSSL 3.4.2, 3.5.6, 4.0.1
+and under ASan. The guard runs with cede-to-default off so it measures the hybrid
+provider's own MLX implementation.
 
 ### Composite signature benchmark
 
@@ -340,16 +335,15 @@ test, so pass a larger value (e.g. `./composite_sig_bench 2000`) for stable numb
 
 **Machine-checked composition-overhead guard.** After the report, the bench
 asserts (and exits non-zero on breach, gating the `composite_sig_bench` ctest)
-that each composite's **sign/verify** stays within `sum × 1.6 + 0.08 ms` of the
-*sum of its two standalone components* — the shared sum-of-components model used by
-all three benches (`test/bench_util.c`; the hybrid family uses the identical
-guard). A composite signature is one PQ signature plus one classical signature
-over the same message, and because the peer literally *is* the two components, any
-per-component cost (including oqsprovider's `no_cache` tax) cancels; what remains
-is the combiner's own glue, observed at ~1.0–1.25×. Keygen is excluded
-(randomised, heavy-tailed), the additive slack absorbs the fixed per-op cost of
-the fastest primitives, and timings use the **minimum** per-op latency so scheduler
-spikes don't flake the ratio of two small numbers.
+that each composite's **sign/verify** stays within **1.3×** the *sum of its two
+standalone components* — the shared sum-of-components model used by all three
+benches (`test/bench_util.c`; the hybrid family uses the identical guard). A
+composite signature is one PQ signature plus one classical signature over the same
+message, and because the peer literally *is* the two components, any per-component
+cost (including oqsprovider's `no_cache` tax) cancels; what remains is the
+combiner's own glue, observed at ~1.0× (composite signatures sit right at parity).
+Keygen is excluded (randomised, heavy-tailed) and timings use the **minimum**
+per-op latency so scheduler spikes don't flake the ratio of two small numbers.
 
 An illustrative results snapshot and the deployment recommendations that follow
 from it are in [composite-sig-bench-results.md](composite-sig-bench-results.md)
@@ -375,12 +369,13 @@ LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./composite_kem_bench [bu
 ```
 
 It carries the same **sum-of-components guard** as `composite_sig_bench`: after the
-report it asserts each composite's **encaps/decaps** within **1.6×** the sum of its
+report it asserts each composite's **encaps/decaps** within **1.3×** the sum of its
 ML-KEM component and its classical KEM (DHKEM = ephemeral keygen + derive, or
 RSA-OAEP), gating the `composite_kem_bench` ctest. The component contexts are set
 up per-op (as the combiner does internally), so oqsprovider's per-op `no_cache` tax
-cancels symmetrically rather than inflating fast Frodo/BIKE rows; observed
-~1.0–1.25×.
+cancels symmetrically rather than inflating fast Frodo/BIKE rows. Observed
+~1.0×, rising to ~1.2× only for the fastest combo (`mlkem768_p256`), where the
+combiner's SHA3-256 KDF is a fixed cost on a ~0.07 ms base.
 
 An illustrative snapshot and per-axis analysis are in
 [composite-kem-bench-results.md](composite-kem-bench-results.md).

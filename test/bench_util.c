@@ -17,17 +17,6 @@
 #define OP_MIN_ITERS     5
 #define OP_MAX_ITERS     500
 #define OVERHEAD_MIN_MS  0.010   /* below this per-op, timing noise dominates */
-/*
- * The guard bounds composed <= sum * ceil + slack. The additive slack absorbs the
- * fixed per-op composition cost (the provider's own dispatch, a second EVP_MD_CTX
- * for signatures, the length-prefix/concat) which is independent of the component
- * crypto. For the very fastest primitives (e.g. UOV sign, ~0.04 ms) that fixed
- * cost is a large FRACTION -- pushing a pure ratio past any tight ceiling without
- * any regression -- yet it is a small ABSOLUTE constant (~0.03 ms observed). The
- * slack keeps the 1.6x meaningful for slow ops while not penalising tiny ones; a
- * genuine regression (a doubled copy, an O(n) blowup) dwarfs it.
- */
-#define OVERHEAD_SLACK_MS 0.08
 #define GUARD_MSG_LEN    32
 
 static double g_budget_ms = 1000.0;
@@ -94,7 +83,7 @@ done:
 }
 
 int bench_make_sig(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
-                   unsigned char **sig, size_t *siglen)
+                   const char *propq, unsigned char **sig, size_t *siglen)
 {
     EVP_MD_CTX *m = EVP_MD_CTX_new();
     unsigned char *s = NULL;
@@ -102,7 +91,7 @@ int bench_make_sig(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
     int ret = 0;
 
     if (m != NULL
-            && EVP_DigestSignInit_ex(m, NULL, md, ctx, NULL, key, NULL) > 0
+            && EVP_DigestSignInit_ex(m, NULL, md, ctx, propq, key, NULL) > 0
             && EVP_DigestSign(m, NULL, &l, guard_msg, GUARD_MSG_LEN) > 0
             && (s = OPENSSL_malloc(l)) != NULL
             && EVP_DigestSign(m, s, &l, guard_msg, GUARD_MSG_LEN) > 0) {
@@ -123,7 +112,8 @@ int bench_make_sig(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
  * so a real regression still shows; transient spikes -- which otherwise make the
  * ratio of two small timings flaky at the short ctest budget -- are filtered out.
  */
-double bench_time_sign(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md)
+double bench_time_sign(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
+                       const char *propq)
 {
     double t0 = bench_now_ms(), best = -1.0;
     int n;
@@ -133,7 +123,7 @@ double bench_time_sign(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md)
         size_t l = 0;
         double a = bench_now_ms(), dt;
 
-        if (!bench_make_sig(ctx, key, md, &s, &l))
+        if (!bench_make_sig(ctx, key, md, propq, &s, &l))
             return -1.0;
         dt = bench_now_ms() - a;
         OPENSSL_free(s);
@@ -146,7 +136,8 @@ double bench_time_sign(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md)
 }
 
 double bench_time_verify(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
-                         const unsigned char *sig, size_t siglen)
+                         const char *propq, const unsigned char *sig,
+                         size_t siglen)
 {
     double t0 = bench_now_ms(), best = -1.0;
     int n;
@@ -155,7 +146,7 @@ double bench_time_verify(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
         EVP_MD_CTX *m = EVP_MD_CTX_new();
         double a = bench_now_ms(), dt;
         int ok = m != NULL
-                 && EVP_DigestVerifyInit_ex(m, NULL, md, ctx, NULL, key, NULL) > 0
+                 && EVP_DigestVerifyInit_ex(m, NULL, md, ctx, propq, key, NULL) > 0
                  && EVP_DigestVerify(m, sig, siglen, guard_msg, GUARD_MSG_LEN) == 1;
 
         dt = bench_now_ms() - a;
@@ -424,14 +415,11 @@ void bench_guard_op(const char *alg, const char *op, double comp, double sum,
 {
     if (sum < OVERHEAD_MIN_MS)
         return;                            /* too small to time reliably */
-    /* failures == NULL -> report the row but don't assert it (the caller has a
-     * known reason to exclude it, e.g. a tracked anomaly). */
-    printf("    %-30s %-6s  %8.3f vs sum %8.3f  (%.2fx)%s\n",
-           alg, op, comp, sum, comp / sum,
-           failures == NULL ? "  [reported, not asserted]" : "");
-    if (failures != NULL && comp > sum * ceil + OVERHEAD_SLACK_MS) {
+    printf("    %-30s %-6s  %8.3f vs sum %8.3f  (%.2fx)\n",
+           alg, op, comp, sum, comp / sum);
+    if (comp > sum * ceil) {
         printf("    !! %s %s composition overhead %.2fx sum-of-components exceeds "
-               "%.1fx + %.2fms\n", alg, op, comp / sum, ceil, OVERHEAD_SLACK_MS);
+               "%.1fx ceiling\n", alg, op, comp / sum, ceil);
         (*failures)++;
     }
 }
@@ -455,19 +443,24 @@ void bench_guard_sig(OSSL_LIB_CTX *ctx, const char *composed_name,
                                           trad_rsa_bits)) == NULL)
         goto done;
 
-    /* The composed signature always signs the message directly (NULL md), like
-     * the PQ half; the classical component uses its own trad_md. */
-    if (!bench_make_sig(ctx, comp, NULL, &csig, &cl)
-            || !bench_make_sig(ctx, pq, NULL, &psig, &pl)
-            || !bench_make_sig(ctx, trad, trad_md, &tsig, &tl))
+    /*
+     * The composed signature always signs the message directly (NULL md), like the
+     * PQ half; the classical component uses its own trad_md. The composed op uses
+     * its provider propq (representative of real use, and avoids a per-op cross-
+     * provider resolution that would inflate fast primitives); the standalone
+     * components resolve naturally (NULL -> their sole provider).
+     */
+    if (!bench_make_sig(ctx, comp, NULL, composed_propq, &csig, &cl)
+            || !bench_make_sig(ctx, pq, NULL, NULL, &psig, &pl)
+            || !bench_make_sig(ctx, trad, trad_md, NULL, &tsig, &tl))
         goto done;
 
-    cs = bench_time_sign(ctx, comp, NULL);
-    ps = bench_time_sign(ctx, pq, NULL);
-    ts = bench_time_sign(ctx, trad, trad_md);
-    cv = bench_time_verify(ctx, comp, NULL, csig, cl);
-    pv = bench_time_verify(ctx, pq, NULL, psig, pl);
-    tv = bench_time_verify(ctx, trad, trad_md, tsig, tl);
+    cs = bench_time_sign(ctx, comp, NULL, composed_propq);
+    ps = bench_time_sign(ctx, pq, NULL, NULL);
+    ts = bench_time_sign(ctx, trad, trad_md, NULL);
+    cv = bench_time_verify(ctx, comp, NULL, composed_propq, csig, cl);
+    pv = bench_time_verify(ctx, pq, NULL, NULL, psig, pl);
+    tv = bench_time_verify(ctx, trad, trad_md, NULL, tsig, tl);
     if (cs < 0 || ps < 0 || ts < 0 || cv < 0 || pv < 0 || tv < 0)
         goto done;
 

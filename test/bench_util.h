@@ -12,10 +12,17 @@
  * and no version-gating: because the peer literally is the two components, any
  * per-component cost -- including oqsprovider's per-op no_cache tax -- cancels.
  *
- * Two invariants make a single tight bound sound (see the individual functions):
+ * Measured this way the glue is small: ~1.0x for signatures and up to ~1.2x for
+ * the fastest KEMs (the composite SHA3-256 combiner pass / provider dispatch on a
+ * ~0.07ms base), and a hybrid is at parity with oqsprovider's own hybrid. Three
+ * invariants make a single tight bound sound (see the individual functions):
  *   - keygen is never asserted (randomised, heavy-tailed);
  *   - timings are the MINIMUM per-op latency (noise only adds time), with per-op
- *     component context setup so the tax cancels symmetrically.
+ *     component context setup so the tax cancels symmetrically;
+ *   - the composed op is measured with its provider's property query, as real
+ *     callers do -- signing a provider-native key with a NULL propq forces a
+ *     per-op cross-provider resolution that can dwarf the crypto for fast
+ *     primitives (RSA especially) and grossly misreport the overhead.
  */
 #ifndef HYBRID_TEST_BENCH_UTIL_H
 #define HYBRID_TEST_BENCH_UTIL_H
@@ -38,14 +45,22 @@ EVP_PKEY *bench_gen_key(OSSL_LIB_CTX *ctx, const char *name, const char *propq);
 EVP_PKEY *bench_gen_trad_key(OSSL_LIB_CTX *ctx, const char *alg,
                              const char *group, int rsa_bits);
 
-/* One raw signature over the fixed guard message (caller frees). md may be NULL. */
+/*
+ * One raw signature over the fixed guard message (caller frees). md may be NULL.
+ * propq matters: signing a provider-native key with NULL forces a per-op
+ * cross-provider signature resolution that the explicit "provider=..." hint (as
+ * real callers and libssl use) avoids -- for fast primitives that resolution can
+ * dwarf the crypto and misreport composition overhead. Pass the key's provider.
+ */
 int    bench_make_sig(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
-                      unsigned char **sig, size_t *siglen);
+                      const char *propq, unsigned char **sig, size_t *siglen);
 
 /* Minimum per-op latency (ms) for the named op; -1.0 on error. */
-double bench_time_sign(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md);
+double bench_time_sign(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
+                       const char *propq);
 double bench_time_verify(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
-                         const unsigned char *sig, size_t siglen);
+                         const char *propq, const unsigned char *sig,
+                         size_t siglen);
 double bench_time_kem_encaps(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *propq);
 double bench_time_kem_decaps(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *propq);
 
@@ -59,9 +74,7 @@ int    bench_time_trad_kem(OSSL_LIB_CTX *ctx, const char *trad_alg,
                            double *enc_ms, double *dec_ms);
 
 /* Assert one op: composed time within ceil x the summed-components time; prints a
- * row, and on breach prints "!!" and bumps *failures. Sub-noise-floor sums skip.
- * A NULL failures pointer reports the row without asserting it (for a caller that
- * deliberately excludes a known anomaly). bench_guard_{sig,kem} forward it. */
+ * row, and on breach prints "!!" and bumps *failures. Sub-noise-floor sums skip. */
 void   bench_guard_op(const char *alg, const char *op, double comp, double sum,
                       double ceil, int *failures);
 
