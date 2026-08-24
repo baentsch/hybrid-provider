@@ -2,16 +2,16 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Benchmark X25519MLKEM768 across three configurations:
- *   1. default provider's native MLX hybrid          (OpenSSL 3.5+)
- *   2. hybrid provider, both components from default  (OpenSSL 3.5+)
- *   3. hybrid provider, X25519 from default and
- *      ML-KEM from oqsprovider                        (OpenSSL 3.4.x + oqs)
+ * Benchmark the hybrid provider against the native implementations, in two parts:
+ *   Part 1 (informational): for every hybrid the provider serves, a side-by-side
+ *     of the provider vs its native peer -- the default provider's own group where
+ *     it has one (native MLX from OpenSSL 3.5+), else oqsprovider's own hybrid.
+ *     The set of rows and each row's peer are discovered at runtime from the
+ *     provider tables, so nothing is hardcoded and rows with no peer are skipped.
+ *   Part 2 (asserted): the sum-of-components composition-overhead guard.
  *
- * Configurations that the running OpenSSL/provider mix cannot satisfy are
- * skipped rather than treated as failures, so the same binary can be run
- * against both a 3.5+ build (configs 1 and 2) and a 3.4.x build with
- * oqsprovider (config 3).
+ * Configurations the running OpenSSL/provider mix cannot satisfy are skipped, not
+ * failed, so the same binary runs against a 3.5+ build and a 3.4.x + oqs build.
  */
 
 #include <stdio.h>
@@ -369,6 +369,38 @@ err:
 }
 
 /*
+ * Does `prov` (e.g. "default"/"oqsprovider") serve algorithm `name`? Probed via the
+ * keymgmt path that the benches actually use, so the informational report discovers
+ * its native peer dynamically instead of naming algorithms -- it adapts to whatever
+ * each provider serves on the running OpenSSL (native MLX only from 3.5, oqs naming
+ * for the legacy hybrids, etc.). Returns the provider string on success, else NULL.
+ */
+static const char *served_by(OSSL_LIB_CTX *libctx, const char *name,
+                             const char *prov)
+{
+    char propq[64];
+    EVP_PKEY_CTX *c;
+    int ok;
+
+    snprintf(propq, sizeof(propq), "provider=%s", prov);
+    c = EVP_PKEY_CTX_new_from_name(libctx, name, propq);
+    ok = c != NULL && EVP_PKEY_keygen_init(c) > 0;
+    EVP_PKEY_CTX_free(c);
+    if (!ok)
+        ERR_clear_error();
+    return ok ? prov : NULL;
+}
+
+/* The native peer for a KEM: default's built-in group if it has one, else
+ * oqsprovider's own hybrid, else NULL (no peer -> row skipped in the report). */
+static const char *kem_native_peer(OSSL_LIB_CTX *libctx, const char *name)
+{
+    const char *p = served_by(libctx, name, "default");
+
+    return p != NULL ? p : served_by(libctx, name, "oqsprovider");
+}
+
+/*
  * Informational side-by-side print (NOT asserted -- the guard is the separate
  * sum-of-components pass): the native peer (default's built-in MLX for the
  * standardized groups, else oqsprovider's own hybrid) next to the hybrid provider.
@@ -407,20 +439,6 @@ int main(int argc, char **argv)
     const char *modulepath;
     int it = ITERATIONS, has_oqs, guard_failures = 0;
     size_t i;
-    /* Informational native-comparison subset (the guard itself covers the full
-     * provider table). MLX groups compare against the default provider's built-in
-     * MLX; the OQS-legacy rows against oqsprovider's own hybrid. */
-    static const struct { const char *alg; } mlx_kems[] = {
-        { "X25519MLKEM768" }, { "SecP256r1MLKEM768" }, { "SecP384r1MLKEM1024" },
-    };
-    static const struct { const char *alg; } oqs_kems[] = {
-        { "p256_mlkem512" }, { "x25519_mlkem512" }, { "p384_mlkem768" },
-        { "p256_frodo640aes" }, { "p256_hqc1" },
-    };
-    static const struct { const char *alg; } sig_algs[] = {
-        { "p256_mldsa44" }, { "p384_mldsa65" }, { "p256_falcon512" },
-        { "p256_mayo1" }, { "p256_snova2454" },
-    };
 
     if (argc > 1 && atoi(argv[1]) > 0)
         it = atoi(argv[1]);
@@ -444,16 +462,7 @@ int main(int argc, char **argv)
     if (modulepath != NULL)
         OSSL_PROVIDER_set_default_search_path(libctx, modulepath);
     oqs_prov = OSSL_PROVIDER_load(libctx, "oqsprovider");
-    if (oqs_prov != NULL) {
-        /* Under OpenSSL 3.5 oqsprovider cedes standalone ML-KEM to default, so
-         * probe a hybrid it actually owns. */
-        EVP_KEM *k = EVP_KEM_fetch(libctx, "p256_mlkem512",
-                                   "provider=oqsprovider");
-        has_oqs = k != NULL;
-        EVP_KEM_free(k);
-    } else {
-        has_oqs = 0;
-    }
+    has_oqs = oqs_prov != NULL;   /* per-alg availability is discovered below */
     ERR_clear_error();
     hybrid_prov = OSSL_PROVIDER_load(libctx, "hybrid");
     if (hybrid_prov == NULL) {
@@ -469,26 +478,36 @@ int main(int argc, char **argv)
     printf("Part 1 (informational): hybrid provider vs the native peer, per op.\n"
            "Part 2 (asserted): the sum-of-components guard.\n");
 
-    printf("\n[KEM: MLX groups — hybrid vs default provider]\n");
-    for (i = 0; i < sizeof(mlx_kems) / sizeof(mlx_kems[0]); i++)
-        compare_kem(libctx, mlx_kems[i].alg, "default", it);
+    /* Part 1 iterates the provider's OWN hybrid tables and discovers each row's
+     * native peer at runtime (see kem_native_peer) -- no algorithm is named here;
+     * rows with no peer on this OpenSSL are simply not printed. */
+    printf("\n[KEM: hybrid vs native peer]\n");
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+        const char *name = hybrid_kem_table[i].hybrid_name;
+        const char *peer = kem_native_peer(libctx, name);
+
+        if (peer != NULL)
+            compare_kem(libctx, name, peer, it);
+    }
 
     if (has_oqs) {
-        printf("\n[KEM: OQS-legacy hybrids — hybrid vs oqsprovider]\n");
-        for (i = 0; i < sizeof(oqs_kems) / sizeof(oqs_kems[0]); i++)
-            compare_kem(libctx, oqs_kems[i].alg, "oqsprovider", it);
+        /* The default provider has no hybrid signatures, so oqsprovider is the
+         * only possible native peer; discover which sigs it actually serves. */
+        printf("\n[SIG: hybrid vs oqsprovider]\n");
+        for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+            const char *name = hybrid_sig_table[i].hybrid_name;
 
-        printf("\n[SIG: hybrids — hybrid vs oqsprovider]\n");
-        for (i = 0; i < sizeof(sig_algs) / sizeof(sig_algs[0]); i++)
-            compare_sig(libctx, sig_algs[i].alg, it);
+            if (served_by(libctx, name, "oqsprovider") != NULL)
+                compare_sig(libctx, name, it);
+        }
     }
 
     /*
      * Composition-overhead guard: each hybrid's steady-state ops vs the sum of its
      * two components, iterating the provider's OWN tables so the peer fetches each
      * component by the exact name the provider composes with (same impl -> tax
-     * cancels; see bench_util.h). Covers every hybrid the provider serves, not just
-     * the informational subset above; unavailable ones self-skip.
+     * cancels; see bench_util.h). Unlike Part 1 this needs no native peer -- only
+     * the two components -- so it covers every hybrid, including those Part 1 skips.
      */
     if (bench_timing_unreliable()) {
         printf("\ncomposition-overhead guard — SKIPPED "
