@@ -17,8 +17,15 @@
  * ~0.07ms base), and a hybrid is at parity with oqsprovider's own hybrid. Three
  * invariants make a single tight bound sound (see the individual functions):
  *   - keygen is never asserted (randomised, heavy-tailed);
- *   - timings are the MINIMUM per-op latency (noise only adds time), with per-op
- *     component context setup so the tax cancels symmetrically;
+ *   - each timing is the MINIMUM per-op latency over a budgeted run (noise only
+ *     adds time); the output buffers are sized once and reused and the clock is read
+ *     once per op, so per-op output malloc/free and timer calls are not charged to
+ *     the crypto (they dominated at the short ctest budget). The per-op EVP context
+ *     creation + operation *_init is deliberately NOT hoisted: the composed op
+ *     re-inits its two components every call (re-paying any oqsprovider no_cache
+ *     re-fetch on >=3.5), so the standalone components re-init per op too and that
+ *     cost is present on both sides of the ratio, where it cancels; hoisting it made
+ *     fast oqsprovider KEMs read 2-7x;
  *   - the composed op is measured with its provider's property query, as real
  *     callers do -- signing a provider-native key with a NULL propq forces a
  *     per-op cross-provider resolution that can dwarf the crypto for fast
@@ -29,6 +36,14 @@
 
 #include <stddef.h>
 #include <openssl/evp.h>
+
+/*
+ * 1 when built under a sanitizer (ASan/TSan/MSan). Timing is meaningless there --
+ * the instrumentation adds a large, uneven slowdown that inflates the composition
+ * ratios and makes the guard flaky -- so the benches run the informational report
+ * but SKIP the machine-checked overhead assertion under a sanitizer.
+ */
+int bench_timing_unreliable(void);
 
 /* Per-op wall-clock budget shared by every timing loop (default 1000 ms). */
 void   bench_set_budget_ms(double ms);
@@ -55,7 +70,7 @@ EVP_PKEY *bench_gen_trad_key(OSSL_LIB_CTX *ctx, const char *alg,
 int    bench_make_sig(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
                       const char *propq, unsigned char **sig, size_t *siglen);
 
-/* Minimum per-op latency (ms) for the named op; -1.0 on error. */
+/* Minimum per-op latency (ms) over a budgeted run for the named op; -1.0 on error. */
 double bench_time_sign(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
                        const char *propq);
 double bench_time_verify(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,

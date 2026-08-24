@@ -14,8 +14,31 @@
 #include <openssl/rsa.h>
 #include <openssl/err.h>
 
-#define OP_MIN_ITERS     5
-#define OP_MAX_ITERS     500
+/*
+ * Timing model. The result is the MINIMUM single-op latency over a budget-bounded
+ * run: scheduler preemption and cache blips only ever ADD time, so the fastest
+ * observed op is the cleanest estimate of the true cost and the ratio of two small
+ * numbers stays stable at the short ctest budget. (A batch mean or chunk-mean was
+ * tried and flakes the fast standardized-composite signatures to 1.3-1.65x on >=3.5,
+ * where the composed op has more per-op variance than its components; the per-op
+ * minimum rejects that.) Two efficiencies keep the harness out of the measurement:
+ *   - the OUTPUT BUFFER and the size query are set up ONCE and reused, so no per-op
+ *     malloc/free of outputs is charged to the crypto (it dominated fast primitives
+ *     at the short budget);
+ *   - the clock is read ONCE per op -- the end timestamp of one op is the start of
+ *     the next -- and that same reading drives the budget check, so there is no
+ *     separate per-op budget clock read.
+ *
+ * What is NOT hoisted is the per-op EVP context creation + operation *_init. That is
+ * load-bearing, not churn: a composed op re-initialises its two component operations
+ * on every call -- which on OpenSSL >=3.5 re-pays oqsprovider's per-op no_cache
+ * method-construct, and for a composite re-runs the combiner setup -- so the
+ * standalone components must re-init per op too, or the amortised components would
+ * make the ratio explode (2-7x observed when the context was hoisted). Paying the
+ * per-op setup on BOTH sides keeps it present in the sum, where it cancels.
+ */
+#define OP_MIN_ITERS     5       /* honor the budget only after this many ops */
+#define OP_MAX_ITERS     200000  /* runaway guard; the ms budget normally governs */
 #define OVERHEAD_MIN_MS  0.010   /* below this per-op, timing noise dominates */
 #define GUARD_MSG_LEN    32
 
@@ -26,6 +49,22 @@ void bench_set_budget_ms(double ms)
 {
     if (ms > 0.0)
         g_budget_ms = ms;
+}
+
+int bench_timing_unreliable(void)
+{
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    return 1;
+#elif defined(__has_feature)
+# if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) \
+        || __has_feature(memory_sanitizer)
+    return 1;
+# else
+    return 0;
+# endif
+#else
+    return 0;
+#endif
 }
 
 double bench_now_ms(void)
@@ -105,111 +144,143 @@ int bench_make_sig(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
 }
 
 /*
- * Minimum single-op latency (ms) over a budget-bounded run. We take the MIN, not
- * the mean: scheduler preemption and cache blips only ever ADD time, so the
- * fastest observed op is the cleanest estimate of the true compute cost.
- * Deterministic combiner overhead is present in every op (including the fastest),
- * so a real regression still shows; transient spikes -- which otherwise make the
- * ratio of two small timings flaky at the short ctest budget -- are filtered out.
+ * Fold one just-completed op into a measurement loop and decide whether to continue.
+ * Reads the clock once (this op's end is the next op's start), keeps *best as the
+ * running minimum latency, and returns 1 to keep looping or 0 to stop: on op failure
+ * (ok == 0, which also sets *best < 0 so the caller can tell), on reaching the ms
+ * budget (after OP_MIN_ITERS), or on the OP_MAX_ITERS runaway cap. Every timing loop
+ * starts with best = -1, n = 0 and t0 = prev = bench_now_ms(), so the min/budget/
+ * timestamp logic lives here once instead of being repeated per op.
+ */
+static int bench_tick(int ok, double t0, double *prev, double *best, long *n)
+{
+    double now = bench_now_ms(), dt = now - *prev;
+
+    *prev = now;
+    if (!ok) {
+        *best = -1.0;
+        return 0;
+    }
+    if (*best < 0 || dt < *best)
+        *best = dt;
+    return !((++*n >= OP_MIN_ITERS && now - t0 >= g_budget_ms)
+             || *n >= OP_MAX_ITERS);
+}
+
+/*
+ * Per-op sign latency (ms), minimum over the budget; see the timing-model note.
+ * The signature buffer is sized once and reused, so no output malloc/free is charged
+ * to the crypto; the EVP_MD_CTX is created fresh per op (a real per-signature cost,
+ * paid identically by the composed alg and its standalone components -- see the note
+ * on why the per-op context/init must not be hoisted). -1.0 on error.
  */
 double bench_time_sign(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
                        const char *propq)
 {
-    double t0 = bench_now_ms(), best = -1.0;
-    int n;
+    EVP_MD_CTX *mq = EVP_MD_CTX_new();
+    unsigned char *s = NULL;
+    size_t cap = 0;
+    double t0, prev, best = -1.0, r = -1.0;
+    long n = 0;
 
-    for (n = 0; n < OP_MAX_ITERS; n++) {
-        unsigned char *s = NULL;
-        size_t l = 0;
-        double a = bench_now_ms(), dt;
+    /* one-time size query (untimed) sizes the reusable signature buffer */
+    if (mq == NULL
+            || EVP_DigestSignInit_ex(mq, NULL, md, ctx, propq, key, NULL) <= 0
+            || EVP_DigestSign(mq, NULL, &cap, guard_msg, GUARD_MSG_LEN) <= 0
+            || (s = OPENSSL_malloc(cap)) == NULL)
+        goto done;
+    EVP_MD_CTX_free(mq);
+    mq = NULL;
+    t0 = prev = bench_now_ms();
+    for (;;) {
+        EVP_MD_CTX *m = EVP_MD_CTX_new();   /* fresh ctx per op (see model note) */
+        size_t l = cap;
+        int ok = m != NULL
+                 && EVP_DigestSignInit_ex(m, NULL, md, ctx, propq, key, NULL) > 0
+                 && EVP_DigestSign(m, s, &l, guard_msg, GUARD_MSG_LEN) > 0;
 
-        if (!bench_make_sig(ctx, key, md, propq, &s, &l))
-            return -1.0;
-        dt = bench_now_ms() - a;
-        OPENSSL_free(s);
-        if (best < 0 || dt < best)
-            best = dt;
-        if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms)
+        EVP_MD_CTX_free(m);
+        if (!bench_tick(ok, t0, &prev, &best, &n))
             break;
     }
-    return best;
+    r = best;
+done:
+    OPENSSL_free(s);
+    EVP_MD_CTX_free(mq);
+    if (r < 0)
+        ERR_clear_error();
+    return r;
 }
 
 double bench_time_verify(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *md,
                          const char *propq, const unsigned char *sig,
                          size_t siglen)
 {
-    double t0 = bench_now_ms(), best = -1.0;
-    int n;
+    double t0, prev, best = -1.0, r = -1.0;
+    long n = 0;
 
-    for (n = 0; n < OP_MAX_ITERS; n++) {
-        EVP_MD_CTX *m = EVP_MD_CTX_new();
-        double a = bench_now_ms(), dt;
+    t0 = prev = bench_now_ms();
+    for (;;) {
+        EVP_MD_CTX *m = EVP_MD_CTX_new();   /* fresh ctx per op (see model note) */
         int ok = m != NULL
-                 && EVP_DigestVerifyInit_ex(m, NULL, md, ctx, propq, key, NULL) > 0
-                 && EVP_DigestVerify(m, sig, siglen, guard_msg, GUARD_MSG_LEN) == 1;
+                 && EVP_DigestVerifyInit_ex(m, NULL, md, ctx, propq, key,
+                                            NULL) > 0
+                 && EVP_DigestVerify(m, sig, siglen, guard_msg,
+                                     GUARD_MSG_LEN) == 1;
 
-        dt = bench_now_ms() - a;
         EVP_MD_CTX_free(m);
-        if (!ok) {
-            ERR_clear_error();
-            return -1.0;
-        }
-        if (best < 0 || dt < best)
-            best = dt;
-        if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms)
+        if (!bench_tick(ok, t0, &prev, &best, &n))
             break;
     }
-    return best;
+    r = best;
+    if (r < 0)
+        ERR_clear_error();
+    return r;
 }
 
 /*
- * KEM timers create+init the context INSIDE the loop, per op: the composed
- * algorithm sets up its two component operations on every encapsulate, and a
- * persistent-context peer would amortise the sub-provider fetch (including
- * oqsprovider's per-op no_cache tax) that the composed op pays every time --
- * making fast oqsprovider-component rows look artificially slow. Per-op setup
- * keeps the comparison symmetric (and mirrors the one-encaps-per-handshake TLS
- * pattern). Minimum per-op latency, as for the signature timers.
+ * KEM timers reuse ONE pair of output buffers (sized by an untimed size query) but
+ * create a fresh EVP_PKEY_CTX and re-run *_init on every op -- load-bearing, not
+ * churn, for the reason in the timing-model note above: the composed op re-inits its
+ * two component operations every encapsulate/decapsulate (re-paying oqsprovider's
+ * per-op no_cache method-construct on OpenSSL >=3.5), so the standalone components
+ * must do the same or the amortised components make the ratio explode (2-7x observed
+ * when the context was hoisted). What we drop is the harness churn the reviewer
+ * flagged: per-op output-buffer malloc/free and the separate per-op budget clock
+ * read. Minimum per-op latency, one clock read per op (see the model note).
  */
 double bench_time_kem_encaps(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *propq)
 {
-    EVP_PKEY_CTX *ec = EVP_PKEY_CTX_new_from_pkey(ctx, key, propq);
+    EVP_PKEY_CTX *q = EVP_PKEY_CTX_new_from_pkey(ctx, key, propq);
     unsigned char *ct = NULL, *ss = NULL;
     size_t ctlen = 0, sslen = 0;
-    double t0, best = -1.0, r = -1.0;
-    int n;
+    double t0, prev, best = -1.0, r = -1.0;
+    long n = 0;
 
-    /* size query (untimed) to allocate reusable output buffers */
-    if (ec == NULL || EVP_PKEY_encapsulate_init(ec, NULL) <= 0
-            || EVP_PKEY_encapsulate(ec, NULL, &ctlen, NULL, &sslen) <= 0
+    /* one-time size query (untimed) sizes the reusable output buffers */
+    if (q == NULL || EVP_PKEY_encapsulate_init(q, NULL) <= 0
+            || EVP_PKEY_encapsulate(q, NULL, &ctlen, NULL, &sslen) <= 0
             || (ct = OPENSSL_malloc(ctlen)) == NULL
             || (ss = OPENSSL_malloc(sslen)) == NULL)
         goto done;
-    EVP_PKEY_CTX_free(ec);
-    ec = NULL;
-    t0 = bench_now_ms();
-    for (n = 0; n < OP_MAX_ITERS; n++) {
-        size_t cl = ctlen, sl = sslen;
-        double a = bench_now_ms(), dt;
+    EVP_PKEY_CTX_free(q);
+    q = NULL;
+    t0 = prev = bench_now_ms();
+    for (;;) {
         EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_pkey(ctx, key, propq);
+        size_t cl = ctlen, sl = sslen;
         int ok = c != NULL && EVP_PKEY_encapsulate_init(c, NULL) > 0
                  && EVP_PKEY_encapsulate(c, ct, &cl, ss, &sl) > 0;
 
-        dt = bench_now_ms() - a;
         EVP_PKEY_CTX_free(c);
-        if (!ok)
-            goto done;
-        if (best < 0 || dt < best)
-            best = dt;
-        if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms)
+        if (!bench_tick(ok, t0, &prev, &best, &n))
             break;
     }
     r = best;
 done:
     OPENSSL_free(ct);
     OPENSSL_free(ss);
-    EVP_PKEY_CTX_free(ec);
+    EVP_PKEY_CTX_free(q);
     if (r < 0)
         ERR_clear_error();
     return r;
@@ -220,30 +291,27 @@ double bench_time_kem_decaps(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *propq
     EVP_PKEY_CTX *ec = EVP_PKEY_CTX_new_from_pkey(ctx, key, propq);
     unsigned char *ct = NULL, *ss = NULL;
     size_t ctlen = 0, sslen = 0;
-    double t0, best = -1.0, r = -1.0;
-    int n;
+    double t0, prev, best = -1.0, r = -1.0;
+    long n = 0;
 
+    /* produce one ciphertext to decapsulate (untimed); buffers are then reused */
     if (ec == NULL || EVP_PKEY_encapsulate_init(ec, NULL) <= 0
             || EVP_PKEY_encapsulate(ec, NULL, &ctlen, NULL, &sslen) <= 0
             || (ct = OPENSSL_malloc(ctlen)) == NULL
             || (ss = OPENSSL_malloc(sslen)) == NULL
             || EVP_PKEY_encapsulate(ec, ct, &ctlen, ss, &sslen) <= 0)
         goto done;
-    t0 = bench_now_ms();
-    for (n = 0; n < OP_MAX_ITERS; n++) {
-        size_t sl = sslen;
-        double a = bench_now_ms(), dt;
+    EVP_PKEY_CTX_free(ec);
+    ec = NULL;
+    t0 = prev = bench_now_ms();
+    for (;;) {
         EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_pkey(ctx, key, propq);
+        size_t sl = sslen;
         int ok = c != NULL && EVP_PKEY_decapsulate_init(c, NULL) > 0
                  && EVP_PKEY_decapsulate(c, ss, &sl, ct, ctlen) > 0;
 
-        dt = bench_now_ms() - a;
         EVP_PKEY_CTX_free(c);
-        if (!ok)
-            goto done;
-        if (best < 0 || dt < best)
-            best = dt;
-        if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms)
+        if (!bench_tick(ok, t0, &prev, &best, &n))
             break;
     }
     r = best;
@@ -305,8 +373,8 @@ int bench_time_trad_kem(OSSL_LIB_CTX *ctx, const char *trad_alg,
                         const char *group, int rsa_bits, EVP_PKEY *trad,
                         double *enc_ms, double *dec_ms)
 {
-    double t0, best;
-    int n;
+    double t0, prev, best;
+    long n;
 
     if (strcmp(trad_alg, "RSA-OAEP") == 0) {
         EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_pkey(ctx, trad, NULL);
@@ -314,48 +382,53 @@ int bench_time_trad_kem(OSSL_LIB_CTX *ctx, const char *trad_alg,
         size_t ctlen = 0;
         int ok = 0;
 
-        /* encaps = OAEP encrypt of a random secret; decaps = OAEP decrypt. */
+        /* encaps = OAEP encrypt of a random secret; decaps = OAEP decrypt. The
+         * context and ciphertext buffer are set up once and reused; minimum per-op
+         * latency, matching the composed-KEM timers. */
         if (c == NULL || EVP_PKEY_encrypt_init(c) <= 0
                 || EVP_PKEY_CTX_set_rsa_padding(c, RSA_PKCS1_OAEP_PADDING) <= 0
                 || EVP_PKEY_encrypt(c, NULL, &ctlen, sec, sizeof(sec)) <= 0
-                || (ct = OPENSSL_malloc(ctlen)) == NULL)
-            goto rdone;
-        t0 = bench_now_ms();
+                || (ct = OPENSSL_malloc(ctlen)) == NULL
+                || EVP_PKEY_encrypt(c, ct, &ctlen, sec, sizeof(sec)) <= 0)
+            goto rdone;                     /* last encrypt doubles as warm-up */
         best = -1.0;
-        for (n = 0; n < OP_MAX_ITERS; n++) {
+        n = 0;
+        t0 = prev = bench_now_ms();
+        for (;;) {
             size_t cl = ctlen;
-            double a = bench_now_ms(), dt;
+            int ok = EVP_PKEY_encrypt(c, ct, &cl, sec, sizeof(sec)) > 0;
 
-            if (EVP_PKEY_encrypt(c, ct, &cl, sec, sizeof(sec)) <= 0)
-                goto rdone;
-            dt = bench_now_ms() - a;
-            if (best < 0 || dt < best)
-                best = dt;
-            if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms)
+            if (!bench_tick(ok, t0, &prev, &best, &n))
                 break;
         }
+        if (best < 0)
+            goto rdone;
         *enc_ms = best;
 
         EVP_PKEY_CTX_free(c);
         c = EVP_PKEY_CTX_new_from_pkey(ctx, trad, NULL);
-        if (c == NULL || EVP_PKEY_decrypt_init(c) <= 0
-                || EVP_PKEY_CTX_set_rsa_padding(c, RSA_PKCS1_OAEP_PADDING) <= 0)
-            goto rdone;
-        t0 = bench_now_ms();
-        best = -1.0;
-        for (n = 0; n < OP_MAX_ITERS; n++) {
+        {
             unsigned char out[64];
             size_t ol = sizeof(out);
-            double a = bench_now_ms(), dt;
 
-            if (EVP_PKEY_decrypt(c, out, &ol, ct, ctlen) <= 0)
-                goto rdone;
-            dt = bench_now_ms() - a;
-            if (best < 0 || dt < best)
-                best = dt;
-            if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms)
+            if (c == NULL || EVP_PKEY_decrypt_init(c) <= 0
+                    || EVP_PKEY_CTX_set_rsa_padding(c, RSA_PKCS1_OAEP_PADDING) <= 0
+                    || EVP_PKEY_decrypt(c, out, &ol, ct, ctlen) <= 0)
+                goto rdone;                 /* decrypt doubles as warm-up */
+        }
+        best = -1.0;
+        n = 0;
+        t0 = prev = bench_now_ms();
+        for (;;) {
+            unsigned char out[64];
+            size_t ol = sizeof(out);
+            int oper = EVP_PKEY_decrypt(c, out, &ol, ct, ctlen) > 0;
+
+            if (!bench_tick(oper, t0, &prev, &best, &n))
                 break;
         }
+        if (best < 0)
+            goto rdone;
         *dec_ms = best;
         ok = 1;
 rdone:
@@ -366,40 +439,38 @@ rdone:
         return ok;
     }
 
-    /* DHKEM: encaps = ephemeral keygen + derive; decaps = one derive. */
+    /*
+     * DHKEM: encaps = ephemeral keygen + derive; decaps = one derive. Each op is a
+     * from-scratch DHKEM operation (the ephemeral keygen and its context are part
+     * of the encaps cost the composed KEM's classical half also pays every call),
+     * so dh_encaps_once/dh_derive_once stay per-op; minimum per-op latency.
+     */
     {
         EVP_PKEY *peer = bench_gen_trad_key(ctx, trad_alg, group, rsa_bits);
         int ok = 0;
 
-        if (peer == NULL)
+        if (peer == NULL || !dh_encaps_once(ctx, trad))   /* warm-up */
             goto ddone;
-        t0 = bench_now_ms();
         best = -1.0;
-        for (n = 0; n < OP_MAX_ITERS; n++) {
-            double a = bench_now_ms(), dt;
-
-            if (!dh_encaps_once(ctx, trad))
-                goto ddone;
-            dt = bench_now_ms() - a;
-            if (best < 0 || dt < best)
-                best = dt;
-            if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms)
+        n = 0;
+        t0 = prev = bench_now_ms();
+        for (;;)
+            if (!bench_tick(dh_encaps_once(ctx, trad), t0, &prev, &best, &n))
                 break;
-        }
+        if (best < 0)
+            goto ddone;
         *enc_ms = best;
-        t0 = bench_now_ms();
-        best = -1.0;
-        for (n = 0; n < OP_MAX_ITERS; n++) {
-            double a = bench_now_ms(), dt;
 
-            if (!dh_derive_once(ctx, trad, peer))
-                goto ddone;
-            dt = bench_now_ms() - a;
-            if (best < 0 || dt < best)
-                best = dt;
-            if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms)
+        if (!dh_derive_once(ctx, trad, peer))             /* warm-up */
+            goto ddone;
+        best = -1.0;
+        n = 0;
+        t0 = prev = bench_now_ms();
+        for (;;)
+            if (!bench_tick(dh_derive_once(ctx, trad, peer), t0, &prev, &best, &n))
                 break;
-        }
+        if (best < 0)
+            goto ddone;
         *dec_ms = best;
         ok = 1;
 ddone:
