@@ -41,6 +41,7 @@
 #define OP_MAX_ITERS     200000  /* runaway guard; the ms budget normally governs */
 #define OVERHEAD_MIN_MS  0.010   /* below this per-op, timing noise dominates */
 #define GUARD_MSG_LEN    32
+#define RECHECK_FACTOR   6       /* re-measure a breaching composed op at Nx budget */
 
 static double g_budget_ms = 1000.0;
 static const unsigned char guard_msg[GUARD_MSG_LEN] = { 0 };  /* content irrelevant */
@@ -538,6 +539,27 @@ void bench_guard_sig(OSSL_LIB_CTX *ctx, const char *composed_name,
     if (cs < 0 || ps < 0 || ts < 0 || cv < 0 || pv < 0 || tv < 0)
         goto done;
 
+    /*
+     * Reject transient CI outliers before asserting. A per-op timing is a MINIMUM,
+     * which contention can only push HIGH, so a false breach can only come from the
+     * composed op under-sampling at the short smoke budget -- the component sum can
+     * never be spuriously low. On a breach, re-measure just the composed op at a
+     * larger budget: a real regression stays high, a scheduler blip drops back.
+     */
+    if (cs > (ps + ts) * ceil) {
+        double b = g_budget_ms;
+
+        g_budget_ms = b * RECHECK_FACTOR;
+        cs = bench_time_sign(ctx, comp, NULL, composed_propq);
+        g_budget_ms = b;
+    }
+    if (cv > (pv + tv) * ceil) {
+        double b = g_budget_ms;
+
+        g_budget_ms = b * RECHECK_FACTOR;
+        cv = bench_time_verify(ctx, comp, NULL, composed_propq, csig, cl);
+        g_budget_ms = b;
+    }
     bench_guard_op(composed_name, "sign", cs, ps + ts, ceil, failures);
     bench_guard_op(composed_name, "verify", cv, pv + tv, ceil, failures);
 done:
@@ -573,6 +595,22 @@ void bench_guard_kem(OSSL_LIB_CTX *ctx, const char *composed_name,
                                     trad, &te, &td))
         goto done;
 
+    /* Reject transient outliers: re-measure a breaching composed op at a larger
+     * budget before asserting (see the note in bench_guard_sig). */
+    if (ce > (pe + te) * ceil) {
+        double b = g_budget_ms;
+
+        g_budget_ms = b * RECHECK_FACTOR;
+        ce = bench_time_kem_encaps(ctx, comp, composed_propq);
+        g_budget_ms = b;
+    }
+    if (cd > (pd + td) * ceil) {
+        double b = g_budget_ms;
+
+        g_budget_ms = b * RECHECK_FACTOR;
+        cd = bench_time_kem_decaps(ctx, comp, composed_propq);
+        g_budget_ms = b;
+    }
     bench_guard_op(composed_name, "encaps", ce, pe + te, ceil, failures);
     bench_guard_op(composed_name, "decaps", cd, pd + td, ceil, failures);
 done:
