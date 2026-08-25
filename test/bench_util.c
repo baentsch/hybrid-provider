@@ -516,10 +516,13 @@ void bench_guard_sig(OSSL_LIB_CTX *ctx, const char *composed_name,
 
     /*
      * The composed signature always signs the message directly (NULL md), like the
-     * PQ half; the classical component uses its own trad_md. The composed op uses
-     * its provider propq (representative of real use, and avoids a per-op cross-
-     * provider resolution that would inflate fast primitives); the standalone
-     * components resolve naturally (NULL -> their sole provider).
+     * PQ half; the classical component uses its own trad_md. The composed op needs
+     * its explicit provider propq -- it is a composite/hybrid keytype, and NULL
+     * would force a costly per-op cross-provider resolution (see bench_util.h). The
+     * standalone components correctly use NULL: each is a plain single-algorithm key
+     * that only one provider owns, so NULL resolves the cached way to that provider
+     * (the same impl the composed op composes from) -- not the composite-keytype
+     * pathology. The measured ~1.0x sum is the check that they aren't inflated.
      */
     if (!bench_make_sig(ctx, comp, NULL, composed_propq, &csig, &cl)
             || !bench_make_sig(ctx, pq, NULL, NULL, &psig, &pl)

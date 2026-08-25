@@ -26,10 +26,17 @@
  *     re-fetch on >=3.5), so the standalone components re-init per op too and that
  *     cost is present on both sides of the ratio, where it cancels; hoisting it made
  *     fast oqsprovider KEMs read 2-7x;
- *   - the composed op is measured with its provider's property query, as real
- *     callers do -- signing a provider-native key with a NULL propq forces a
- *     per-op cross-provider resolution that can dwarf the crypto for fast
- *     primitives (RSA especially) and grossly misreport the overhead.
+ *   - the COMPOSED op is measured with its provider's property query (provider=...),
+ *     as real callers do. It is a hybrid/composite *keytype*, and resolving that
+ *     with a NULL propq forces a per-op cross-provider method construction that can
+ *     dwarf the crypto for fast primitives (RSA especially) and grossly misreport
+ *     the overhead -- an earlier revision saw ~13-18x. The STANDALONE components,
+ *     by contrast, keep NULL on purpose: each is a plain single-algorithm key
+ *     (ML-DSA, ECDSA, RSA, ...) whose keytype only one provider owns, so NULL
+ *     resolves the ordinary cached way to that same provider the composed op
+ *     composes from -- no cross-provider fan-out. That the components are NOT
+ *     inflated is visible in the result: if they were, the sum would balloon and
+ *     ratios would sit far below 1.0; instead they sit at ~1.0.
  */
 #ifndef HYBRID_TEST_BENCH_UTIL_H
 #define HYBRID_TEST_BENCH_UTIL_H
