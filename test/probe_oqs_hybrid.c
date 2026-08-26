@@ -87,7 +87,7 @@ int main(void)
     /* component pub sizes: EC uncompressed point / X25519 raw; ML-KEM pub */
     probe(ctx, "x25519_mlkem512", 32, 800);    /* ML-KEM-512 pub = 800 */
     probe(ctx, "p384_mlkem768",   97, 1184);   /* P-384 uncompressed; MLKEM768 */
-    probe(ctx, "p256_mlkem512",   65, 800);
+    probe(ctx, "SecP256r1MLKEM512", 65, 800);
     probe(ctx, "x448_mlkem768",   56, 1184);
 
     OSSL_LIB_CTX_free(ctx);

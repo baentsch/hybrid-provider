@@ -48,7 +48,7 @@ static const char *kem_hybrids[] = {
     /* MLX */
     "X25519MLKEM768", "SecP256r1MLKEM768", "X448MLKEM1024", "SecP384r1MLKEM1024",
     /* OQS-legacy ML-KEM */
-    "x25519_mlkem512", "p256_mlkem512", "bp256_mlkem512", "p384_mlkem768",
+    "x25519_mlkem512", "SecP256r1MLKEM512", "bp256_mlkem512", "p384_mlkem768",
     "x448_mlkem768", "bp384_mlkem768", "p521_mlkem1024", "bp512_mlkem1024",
     /* FrodoKEM / eFrodoKEM / BIKE / HQC — PQ base is oqsprovider-only */
     "p256_frodo640aes", "x25519_frodo640aes", "p384_frodo976shake",
@@ -239,7 +239,7 @@ int main(void)
      * this means the cede patch is missing or has drifted -- a real regression
      * for the drop-in, so FAIL (do not skip): the weekly drift watcher must go
      * red rather than silently pass an untested drop-in. */
-    if (provider_serves(ctx, "p256_mlkem512", "provider=oqsprovider", 1)
+    if (provider_serves(ctx, "SecP256r1MLKEM512", "provider=oqsprovider", 1)
         || provider_serves(ctx, "p256_mldsa44", "provider=oqsprovider", 0)) {
         printf("FAIL: oqsprovider still serves hybrids -- OQS_CEDE_HYBRIDS not "
                "honored\n");

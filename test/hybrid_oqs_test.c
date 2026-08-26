@@ -24,7 +24,7 @@ static int tests = 0, passed = 0, failed = 0;
 
 static const char *legacy_kems[] = {
     /* ML-KEM hybrids */
-    "x25519_mlkem512", "p256_mlkem512", "bp256_mlkem512",
+    "x25519_mlkem512", "SecP256r1MLKEM512", "bp256_mlkem512",
     "p384_mlkem768",   "x448_mlkem768", "bp384_mlkem768",
     "p521_mlkem1024",  "bp512_mlkem1024",
     /* FrodoKEM hybrids */
