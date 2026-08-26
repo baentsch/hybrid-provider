@@ -796,7 +796,8 @@ fork-then-operate leg proving this.
 The provider is a **low-cost EVP composition layer**: the glue it adds over the
 two component operations is small. Measured by the machine-checked guard
 (sum-of-components; see *Testing* and `test/bench_util.c`) across the full
-algorithm table on OpenSSL 3.4.2 / 3.5.6 / 4.0.1, a composed operation stays within
+algorithm table on the OpenSSL versions CI covers (a pre-3.5 release, a current
+&ge;3.5 release, and `master`), a composed operation stays within
 **~1.0× for signatures** and **up to ~1.2× for the fastest KEMs** of the sum of its
 standalone components. The ~1.2× is the SHA3-256 combiner pass / provider dispatch
 as a *fixed* cost on a tiny (~0.07 ms) base — negligible for anything ≳ 1 ms. A

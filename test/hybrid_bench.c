@@ -409,7 +409,7 @@ static void compare_kem(OSSL_LIB_CTX *libctx, const char *alg,
                         const char *native, int it)
 {
     char lbl[80];
-    int from_default = (native[0] == 'd');
+    int from_default = (strcmp(native, "default") == 0);
 
     printf("%s:\n", alg);
     snprintf(lbl, sizeof(lbl), "  %s (native)", native);

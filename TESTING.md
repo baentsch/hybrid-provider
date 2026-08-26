@@ -308,8 +308,9 @@ same algorithm. Three things keep the tight bound sound:
   and RSA hybrids by up to ~18×; with the explicit propq every hybrid, RSA
   included, sits at ~1.0×.
 
-Validated ~1.0–1.2× across the full provider table on OpenSSL 3.4.2, 3.5.6 and
-4.0.1. Under a **sanitizer** (ASan/TSan) the assertion is **skipped** — the
+Validated ~1.0–1.2× across the full provider table on the OpenSSL versions CI
+covers (a pre-3.5 release, a current &ge;3.5 release, and `master`). Under a
+**sanitizer** (ASan/TSan) the assertion is **skipped** — the
 instrumentation's large, uneven slowdown inflates the ratios and would flake the
 guard — while the informational report still runs. The guard runs with
 cede-to-default off so it measures the hybrid provider's own MLX implementation.
