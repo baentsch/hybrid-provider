@@ -91,7 +91,8 @@ jobs:
     env:
       PREFIX: ${{ github.workspace }}/.local
       LIBOQS_REF: "0.16.0"
-      OQSPROV_REF: "00fde3373e466043ee30ed31e32c56f6964ee5f4"
+      # incl. oqsprovider #802: mlkem512 rename (SecP256r1MLKEM512) + code points
+      OQSPROV_REF: "72e7dae5aab022167aa7ae8f5afdb9667d848104"
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -190,7 +191,8 @@ jobs:
     env:
       PREFIX: ${{ github.workspace }}/.local
       LIBOQS_REF: "0.16.0"
-      OQSPROV_REF: "00fde3373e466043ee30ed31e32c56f6964ee5f4"
+      # incl. oqsprovider #802: mlkem512 rename (SecP256r1MLKEM512) + code points
+      OQSPROV_REF: "72e7dae5aab022167aa7ae8f5afdb9667d848104"
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -289,7 +291,7 @@ jobs:
           path: |
             ${{ env.PREFIX }}
             ${{ github.workspace }}/.interop/oqs-provider
-          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-0.16.0-oqsp-00fde3373e466043ee30ed31e32c56f6964ee5f4
+          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-0.16.0-oqsp-72e7dae5aab022167aa7ae8f5afdb9667d848104
 
       - name: Build OpenSSL
         if: steps.cache.outputs.cache-hit != 'true'
@@ -334,7 +336,8 @@ jobs:
     env:
       PREFIX: ${{ github.workspace }}/.local
       LIBOQS_REF: "0.16.0"
-      OQSPROV_REF: "00fde3373e466043ee30ed31e32c56f6964ee5f4"
+      # incl. oqsprovider #802: mlkem512 rename (SecP256r1MLKEM512) + code points
+      OQSPROV_REF: "72e7dae5aab022167aa7ae8f5afdb9667d848104"
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -614,7 +617,7 @@ jobs:
           path: |
             ${{ env.PREFIX }}
             ${{ github.workspace }}/.interop/oqs-provider
-          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-0.16.0-oqsp-00fde3373e466043ee30ed31e32c56f6964ee5f4
+          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-0.16.0-oqsp-72e7dae5aab022167aa7ae8f5afdb9667d848104
 
       - name: Build OpenSSL
         if: steps.cache.outputs.cache-hit != 'true'

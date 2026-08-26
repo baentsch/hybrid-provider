@@ -70,7 +70,7 @@ FrodoKEM/eFrodoKEM/BIKE/HQC need
 
 | Family | Algorithms |
 |---|---|
-| ML-KEM | `x25519_mlkem512`, `p256_mlkem512`, `bp256_mlkem512`, `p384_mlkem768`, `x448_mlkem768`, `bp384_mlkem768`, `p521_mlkem1024`, `bp512_mlkem1024` |
+| ML-KEM | `x25519_mlkem512`, `SecP256r1MLKEM512`, `bp256_mlkem512`, `p384_mlkem768`, `x448_mlkem768`, `bp384_mlkem768`, `p521_mlkem1024`, `bp512_mlkem1024` |
 | FrodoKEM | `p256_frodo640aes`, `x25519_frodo640aes`, `p256_frodo640shake`, `x25519_frodo640shake`, `p384_frodo976aes`, `x448_frodo976aes`, `p384_frodo976shake`, `x448_frodo976shake`, `p521_frodo1344aes`, `p521_frodo1344shake` |
 | eFrodoKEM | `p256_efrodo640aes`, `x25519_efrodo640aes`, `p256_efrodo640shake`, `x25519_efrodo640shake`, `p384_efrodo976aes`, `x448_efrodo976aes`, `p384_efrodo976shake`, `x448_efrodo976shake`, `p521_efrodo1344aes`, `p521_efrodo1344shake` |
 | BIKE | `p256_bikel1`, `x25519_bikel1`, `p384_bikel3`, `x448_bikel3`, `p521_bikel5` |
@@ -230,7 +230,7 @@ auto-disables it regardless of this flag.
 `OQS_KEM_ENCODERS` option, and off for the same reasons: KEM keys are usually
 ephemeral, and only the hybrid KEMs that
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) assigns an OID
-are key-file encodable (`p256_mlkem512`, `x25519_mlkem512`; `SecP384r1MLKEM1024`
+are key-file encodable (`SecP256r1MLKEM512`, `x25519_mlkem512`; `SecP384r1MLKEM1024`
 on OpenSSL < 3.5). The MLX KEMs the default provider implements are TLS groups
 with no key-file encoders on either side, so they are not serializable as key
 files. Signature key files (needed for certificates) are always built. When

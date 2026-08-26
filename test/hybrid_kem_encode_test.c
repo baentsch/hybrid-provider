@@ -13,7 +13,7 @@
  * oqsprovider is unavailable / built without OQS_KEM_ENCODERS.
  *
  * The three encodable hybrid KEMs cover both component orderings and classical
- * key encodings: p256_mlkem512 (EC, forward), SecP384r1MLKEM1024 (EC, forward),
+ * key encodings: SecP256r1MLKEM512 (EC, forward), SecP384r1MLKEM1024 (EC, forward),
  * x25519_mlkem512 (X25519 raw, reverse-share).
  */
 #include <stdio.h>
@@ -35,7 +35,7 @@ static int tests, passed, failed;
  * >= 3.5; the per-alg peer check below then skips it rather than failing.
  */
 static const char *kems[] = {
-    "p256_mlkem512", "x25519_mlkem512", "SecP384r1MLKEM1024",
+    "SecP256r1MLKEM512", "x25519_mlkem512", "SecP384r1MLKEM1024",
 };
 
 /* Can `prop` generate this algorithm? (peer-availability probe) */
