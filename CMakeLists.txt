@@ -544,24 +544,28 @@ if(HYBRID_COMPOSITE)
     # Certificate benchmark: self-signed X.509 cert size + cert-gen/verify time
     # for every composite (standardized ML-DSA + experimental OQS families). Runs
     # a short per-op budget under ctest (smoke); pass a larger budget in ms for
-    # real numbers, e.g. `composite_sig_bench 2000`.
-    add_executable(composite_sig_bench test/composite_sig_bench.c)
+    # real numbers, e.g. `composite_sig_bench 2000`. The 100 ms smoke budget (vs a
+    # tighter value) gives the guard's per-op minimum enough clean samples on shared
+    # CI runners: the fastest standardized composites are sub-0.4 ms, and the ratio
+    # of two such small minimums flakes if a whole short window is descheduled.
+    add_executable(composite_sig_bench test/composite_sig_bench.c test/bench_util.c)
     target_include_directories(composite_sig_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
     target_link_libraries(composite_sig_bench PRIVATE OpenSSL::Crypto)
     add_dependencies(composite_sig_bench hybrid-provider)
-    add_test(NAME composite_sig_bench COMMAND composite_sig_bench 20)
+    add_test(NAME composite_sig_bench COMMAND composite_sig_bench 100)
     set_tests_properties(composite_sig_bench PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 
     # KEM benchmark: keygen/encaps/decaps time + pk/ct/sk sizes for every composite
     # ML-KEM (standardized + experimental Frodo/BIKE/HQC). The KEM analogue of
-    # composite_sig_bench; same short smoke budget under ctest, larger via argv[1].
-    add_executable(composite_kem_bench test/composite_kem_bench.c)
+    # composite_sig_bench; same 100 ms smoke budget under ctest (see above), larger
+    # via argv[1].
+    add_executable(composite_kem_bench test/composite_kem_bench.c test/bench_util.c)
     target_include_directories(composite_kem_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
     target_link_libraries(composite_kem_bench PRIVATE OpenSSL::Crypto)
     add_dependencies(composite_kem_bench hybrid-provider)
-    add_test(NAME composite_kem_bench COMMAND composite_kem_bench 20)
+    add_test(NAME composite_kem_bench COMMAND composite_kem_bench 100)
     set_tests_properties(composite_kem_bench PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
@@ -678,7 +682,7 @@ set_tests_properties(hybrid_leakcheck_test PROPERTIES
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
 # with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired
 # into ctest as a low-iteration smoke test that it runs and completes.
-add_executable(hybrid_bench test/hybrid_bench.c)
+add_executable(hybrid_bench test/hybrid_bench.c test/bench_util.c)
 add_test(NAME hybrid_bench COMMAND hybrid_bench 10)
 set_tests_properties(hybrid_bench PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"

@@ -270,7 +270,8 @@ Both families combine a classical and a PQ algorithm for the same reason —
 defense-in-depth that is deployable now (if either component is later broken, the
 other still holds). They are **not redundant**: they sit at different layers and
 interoperate with different ecosystems, and neither is faster (both are
-primitive-bound; composition glue ≈ 0 — see *Performance*).
+primitive-bound; composition glue is small — ~1.0×, up to ~1.2× for the fastest
+KEMs, and the hybrid is at parity with oqsprovider's own hybrid — see *Performance*).
 
 | | Hybrid (concatenation) | Composite (LAMPS) |
 | --- | --- | --- |
@@ -279,7 +280,7 @@ primitive-bound; composition glue ≈ 0 — see *Performance*).
 | **Binding** | two independent signatures with a length prefix (separable) | joint message representative `M'` — **non-separable** |
 | **Interop peer** | default provider + oqsprovider (TLS wire, OQS ecosystem) | LAMPS implementations (BouncyCastle, future OpenSSL-native) in certificates |
 | **Standardization** | MLX KEM is IETF-standard; concat sigs follow the oqsprovider convention | IETF/LAMPS standards-track (composite-sigs draft-19, composite-kem draft-18) |
-| **Performance** | primitive-bound | primitive-bound + one SHA3-256 combiner pass (negligible) |
+| **Performance** | primitive-bound; ~1.0× glue (up to ~1.2× fastest KEMs), at parity with oqsprovider's own hybrid | primitive-bound; ~1.0× glue incl. one SHA3-256 combiner pass (up to ~1.2× fastest KEM) |
 
 **Can the hybrids be dropped in favour of composites only? No.**
 
@@ -845,12 +846,26 @@ fork-then-operate leg proving this.
 
 ## Performance
 
-The provider is a **near-zero-cost EVP composition layer**: its own glue adds
-essentially nothing, and a hybrid runs only as fast as each component's EVP path.
-The composition double-dispatch is negligible against both slow and fast PQ
-primitives (a hybrid's sign time equals a hand-written inline composite doing the
-identical EVP calls). Keygen is competitive; KEM encaps/decaps is at parity with
-the default provider and oqsprovider.
+The provider is a **low-cost EVP composition layer**: the glue it adds over the
+two component operations is small. Measured by the machine-checked guard
+(sum-of-components; see *Testing* and `test/bench_util.c`) across the full
+algorithm table on the OpenSSL versions CI covers (a pre-3.5 release, a current
+&ge;3.5 release, and `master`), a composed operation stays within
+**~1.0× for signatures** and **up to ~1.2× for the fastest KEMs** of the sum of its
+standalone components. The ~1.2× is the SHA3-256 combiner pass / provider dispatch
+as a *fixed* cost on a tiny (~0.07 ms) base — negligible for anything ≳ 1 ms. A
+hybrid is at **parity with oqsprovider's own hybrid** of the same name (identical
+components, so comparing the composed times directly measures glue-vs-glue): e.g.
+`p256_OV_Is_pkc` sign 0.048 ms ours vs 0.049 ms oqsprovider, tax-free on 3.4.
+Keygen is competitive; KEM encaps/decaps is at parity with the default provider
+and oqsprovider.
+
+(An earlier internal measurement suggested a much larger, hybrid-specific glue —
+including a ~13–18× RSA-verify figure — but that was a **benchmark artifact**:
+signing/verifying a provider-native key with a NULL property query forced a per-op
+cross-provider algorithm resolution that dwarfed the crypto for the fastest
+primitives, RSA worst. With the explicit property query real callers use, every
+hybrid, RSA included, sits at ~1.0×. No provider issue remains.)
 
 The one non-obvious effect is a ~1.9× tax on *fast* PQ signatures (Falcon/MAYO/
 SNOVA) when the PQ component is sourced from oqsprovider on OpenSSL ≥ 3.5. This is

@@ -24,13 +24,12 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <time.h>
 #include <openssl/evp.h>
 #include <openssl/provider.h>
 #include <openssl/x509.h>
 #include <openssl/err.h>
 #include "../composite_prov.h"
+#include "bench_util.h"
 
 #define CERT_VALIDITY_SECS (60L * 60 * 24 * 365)
 
@@ -39,32 +38,15 @@
 #define OP_MIN_ITERS     5
 #define OP_MAX_ITERS     500
 
+/* Combiner glue is small (~1.0x, up to ~1.25x for the fastest KEMs). Ceiling is
+ * 1.4x for headroom: a few standardized composite signatures sit at ~1.3x on
+ * >=3.5 and the short ctest smoke budget adds jitter. See bench_util.h. */
+#define COMPOSITE_OVERHEAD_CEIL 1.4
+
 /* Per-op wall-clock budget in ms (overridable via argv[1]); a measurement stops
- * at whichever of MIN_ITERS/budget/MAX_ITERS it reaches last/first respectively. */
+ * at whichever of MIN_ITERS/budget/MAX_ITERS it reaches last/first respectively.
+ * Shared with the guard timers via bench_set_budget_ms(). */
 static double g_budget_ms = 1000.0;
-
-static double now_ms(void)
-{
-    struct timespec t;
-
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return t.tv_sec * 1000.0 + t.tv_nsec / 1e6;
-}
-
-/* Generate one composite (provider=hybrid) or reference (provider=default) key. */
-static EVP_PKEY *gen_key(OSSL_LIB_CTX *ctx, const char *name, const char *propq)
-{
-    EVP_PKEY_CTX *gctx = EVP_PKEY_CTX_new_from_name(ctx, name, propq);
-    EVP_PKEY *key = NULL;
-
-    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
-            || EVP_PKEY_keygen(gctx, &key) <= 0) {
-        ERR_clear_error();
-        key = NULL;
-    }
-    EVP_PKEY_CTX_free(gctx);
-    return key;
-}
 
 /* Build a self-signed (but not yet signed) certificate carrying key's pubkey. */
 static X509 *make_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *key)
@@ -101,23 +83,23 @@ static int bench_one(OSSL_LIB_CTX *ctx, const char *name, const char *tier,
     int n, derlen = 0, sklen = 0, ret = 0;
 
     /* Probe: if the first keygen fails, the components aren't available. */
-    if ((key = gen_key(ctx, name, propq)) == NULL) {
+    if ((key = bench_gen_key(ctx, name, propq)) == NULL) {
         printf("  %-34s %-4s  SKIPPED (component unavailable)\n", name, tier);
         return -1;
     }
 
     /* keygen */
-    t0 = now_ms();
+    t0 = bench_now_ms();
     for (n = 0; n < KEYGEN_MAX_ITERS; n++) {
         EVP_PKEY_free(key);
-        if ((key = gen_key(ctx, name, propq)) == NULL)
+        if ((key = bench_gen_key(ctx, name, propq)) == NULL)
             goto err;
-        if (n + 1 >= KEYGEN_MIN_ITERS && now_ms() - t0 >= g_budget_ms) {
+        if (n + 1 >= KEYGEN_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms) {
             n++;
             break;
         }
     }
-    keygen_ms = (now_ms() - t0) / n;
+    keygen_ms = (bench_now_ms() - t0) / n;
 
     /* private-key size: DER length of the PKCS8 PrivateKeyInfo */
     if ((sklen = i2d_PrivateKey(key, &skder)) <= 0)
@@ -127,31 +109,31 @@ static int bench_one(OSSL_LIB_CTX *ctx, const char *name, const char *tier,
         goto err;
 
     /* sign (cert generation proper) */
-    t0 = now_ms();
+    t0 = bench_now_ms();
     for (n = 0; n < OP_MAX_ITERS; n++) {
         if (X509_sign(cert, key, NULL) == 0)
             goto err;
-        if (n + 1 >= OP_MIN_ITERS && now_ms() - t0 >= g_budget_ms) {
+        if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms) {
             n++;
             break;
         }
     }
-    sign_ms = (now_ms() - t0) / n;
+    sign_ms = (bench_now_ms() - t0) / n;
 
     if ((derlen = i2d_X509(cert, &der)) <= 0)
         goto err;
 
     /* verify */
-    t0 = now_ms();
+    t0 = bench_now_ms();
     for (n = 0; n < OP_MAX_ITERS; n++) {
         if (X509_verify(cert, key) != 1)
             goto err;
-        if (n + 1 >= OP_MIN_ITERS && now_ms() - t0 >= g_budget_ms) {
+        if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms) {
             n++;
             break;
         }
     }
-    verify_ms = (now_ms() - t0) / n;
+    verify_ms = (bench_now_ms() - t0) / n;
 
     printf("  %-34s %-4s  %9.3f %9.3f %9.3f   %7d %7d\n",
            name, tier, keygen_ms, sign_ms, verify_ms, derlen, sklen);
@@ -174,6 +156,7 @@ static const struct { const char *name; } refs[] = {
 int main(int argc, char **argv)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
+    int guard_failures = 0;
     size_t i;
 
     if (argc > 1) {
@@ -182,6 +165,7 @@ int main(int argc, char **argv)
         if (b > 0.0)
             g_budget_ms = b;
     }
+    bench_set_budget_ms(g_budget_ms);       /* shared with the guard timers */
     if (ctx == NULL
             || OSSL_PROVIDER_load(ctx, "default") == NULL
             || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
@@ -233,6 +217,32 @@ int main(int argc, char **argv)
     for (i = 0; i < sizeof(refs) / sizeof(refs[0]); i++)
         bench_one(ctx, refs[i].name, "ref", "provider=default");
 
+    /*
+     * Composition-overhead guard: composite sign/verify vs the sum of its two
+     * standalone components (see bench_guard_sig). Available combos only; the rest
+     * were already reported as skipped above.
+     */
+    if (bench_timing_unreliable()) {
+        printf("\ncomposition-overhead guard — SKIPPED "
+               "(timing unreliable under a sanitizer)\n");
+    } else {
+        printf("\ncomposition-overhead guard — composite vs sum-of-components "
+               "(ceiling %.1fx, keygen excluded)\n", COMPOSITE_OVERHEAD_CEIL);
+        for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {
+            const COMPOSITE_SIG_INFO *info = &composite_sig_table[i];
+
+            bench_guard_sig(ctx, info->name, "provider=hybrid", info->pq_alg,
+                            info->trad_alg, info->trad_group,
+                            info->trad_rsa_bits, info->trad_md,
+                            COMPOSITE_OVERHEAD_CEIL, &guard_failures);
+        }
+        if (guard_failures == 0)
+            printf("  guard: PASS (all measured composites within ceiling)\n");
+        else
+            printf("  guard: FAIL (%d operation(s) over ceiling)\n",
+                   guard_failures);
+    }
+
     OSSL_LIB_CTX_free(ctx);
-    return 0;
+    return guard_failures == 0 ? 0 : 1;
 }
