@@ -18,6 +18,18 @@
 #                   you build yourself first; 3.5+ recommended so the default
 #                   provider also offers the MLX hybrids — otherwise those tests
 #                   self-skip). No system OpenSSL is assumed.
+#   LIBOQS_PREFIX   Where liboqs is installed/detected (default: OPENSSL_PREFIX,
+#                   i.e. everything in one prefix — the local-dev default). CI
+#                   sets this to a separate dir so the pinned liboqs is cached
+#                   independently of the OpenSSL patch level. liboqs links
+#                   libcrypto (for AES/SHA), but only via the soname-stable
+#                   public EVP API — its imports are all @OPENSSL_3.0.0, and it
+#                   carries no RUNPATH — so one build resolves libcrypto.so.3 at
+#                   runtime against whichever OpenSSL 3.x is staged beside it and
+#                   need not be rebuilt per OpenSSL patch.
+#   ONLY_LIBOQS     If "1", build/install liboqs into LIBOQS_PREFIX and stop
+#                   (no oqs-provider, no OpenSSL required). Used by CI to populate
+#                   the standalone liboqs cache before OpenSSL is staged.
 #   BUILD_DIR       hybrid-provider build dir to drop oqsprovider.so into.
 #
 # Everything lives under the repo (.interop/, .local/, build/) — nothing in /tmp.
@@ -25,6 +37,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OPENSSL_PREFIX="${OPENSSL_PREFIX:-$REPO/.local}"
+LIBOQS_PREFIX="${LIBOQS_PREFIX:-$OPENSSL_PREFIX}"
+ONLY_LIBOQS="${ONLY_LIBOQS:-0}"
 INTEROP="$REPO/.interop"
 BUILD_DIR="${BUILD_DIR:-$REPO/build}"
 
@@ -81,9 +95,12 @@ apply_cede_patch() {  # <oqs-provider src dir>
 
 echo ">> repo:           $REPO"
 echo ">> openssl prefix: $OPENSSL_PREFIX"
+echo ">> liboqs prefix:  $LIBOQS_PREFIX"
 echo ">> interop dir:    $INTEROP"
 
-if [ ! -d "$OPENSSL_PREFIX/include/openssl" ]; then
+# OpenSSL is needed to build oqs-provider, but NOT to build liboqs — so the
+# ONLY_LIBOQS pre-build (which runs before OpenSSL is staged) skips this check.
+if [ "$ONLY_LIBOQS" != "1" ] && [ ! -d "$OPENSSL_PREFIX/include/openssl" ]; then
     echo "!! No OpenSSL found at $OPENSSL_PREFIX (need 3.5+). Set OPENSSL_PREFIX." >&2
     exit 1
 fi
@@ -91,22 +108,31 @@ fi
 mkdir -p "$INTEROP"
 
 # --- liboqs ------------------------------------------------------------------
-# Rebuild liboqs into the OpenSSL prefix unless already installed there (a cache
-# hit; the CI cache key includes LIBOQS_REF, so "installed" implies the right ref).
+# Rebuild liboqs into LIBOQS_PREFIX unless already installed there (a cache hit;
+# the CI cache key includes LIBOQS_REF, so "installed" implies the right ref).
+# liboqs links libcrypto only through the soname-stable @OPENSSL_3.0.0 EVP API
+# (see the LIBOQS_PREFIX note above), so its prefix caches independently of the
+# OpenSSL patch level.
 echo ">> liboqs ref:      $LIBOQS_REF"
 echo ">> oqs-provider ref: $OQSPROV_REF"
-if [ -f "$OPENSSL_PREFIX/include/oqs/oqs.h" ]; then
-    echo ">> liboqs already installed in $OPENSSL_PREFIX (skipping rebuild)"
+if [ -f "$LIBOQS_PREFIX/include/oqs/oqs.h" ]; then
+    echo ">> liboqs already installed in $LIBOQS_PREFIX (skipping rebuild)"
 else
     if [ ! -d "$LIBOQS_SRC/.git" ]; then
         git clone https://github.com/open-quantum-safe/liboqs.git "$LIBOQS_SRC"
     fi
     checkout_ref "$LIBOQS_SRC" "$LIBOQS_REF"
     cmake -S "$LIBOQS_SRC" -B "$LIBOQS_SRC/_build" -GNinja \
-        -DCMAKE_INSTALL_PREFIX="$OPENSSL_PREFIX" \
+        -DCMAKE_INSTALL_PREFIX="$LIBOQS_PREFIX" \
         -DBUILD_SHARED_LIBS=ON -DOQS_BUILD_ONLY_LIB=ON -DCMAKE_BUILD_TYPE=Release
     cmake --build "$LIBOQS_SRC/_build"
     cmake --install "$LIBOQS_SRC/_build"
+fi
+
+# ONLY_LIBOQS: populate the standalone liboqs cache and stop (no OpenSSL yet).
+if [ "$ONLY_LIBOQS" = "1" ]; then
+    echo ">> ONLY_LIBOQS=1 — liboqs ready in $LIBOQS_PREFIX; skipping oqs-provider"
+    exit 0
 fi
 
 # --- oqs-provider ------------------------------------------------------------
@@ -115,9 +141,11 @@ if [ ! -d "$OQSPROV_SRC/.git" ]; then
 fi
 checkout_ref "$OQSPROV_SRC" "$OQSPROV_REF"
 apply_cede_patch "$OQSPROV_SRC"
+# CMAKE_PREFIX_PATH carries both prefixes so oqs-provider finds liboqs even when
+# it lives in a prefix separate from OpenSSL (identical when the two coincide).
 cmake -S "$OQSPROV_SRC" -B "$OQSPROV_BUILD" -GNinja \
     -DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
-    -DCMAKE_PREFIX_PATH="$OPENSSL_PREFIX" \
+    -DCMAKE_PREFIX_PATH="$OPENSSL_PREFIX;$LIBOQS_PREFIX" \
     -DOQS_KEM_ENCODERS=ON \
     -DCMAKE_BUILD_TYPE=Release
 cmake --build "$OQSPROV_BUILD"
