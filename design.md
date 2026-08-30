@@ -729,6 +729,27 @@ expensive or dependent on upstream drift runs weekly.**
   only (a runtime undefined-symbol at provider load stays green there), and the
   drift check is a buildless algorithm-set diff.
 
+The pinned tier caches its toolchain as **three independent `actions/cache`
+entries**, not one bundle, so a pin that did not change is never rebuilt: OpenSSL
+keyed on its resolved commit (which moves on every patch release), the pinned
+liboqs keyed on its ref *alone*, and oqs-provider keyed on both. liboqs *does*
+link libcrypto (for its AES/SHA symmetric primitives), but only through the
+soname-stable public EVP API — its imports are all `@OPENSSL_3.0.0` and it
+carries no RUNPATH — so a single liboqs build resolves `libcrypto.so.3` at
+runtime against whichever OpenSSL 3.x is staged beside it (via
+`LD_LIBRARY_PATH`), and can be reused across OpenSSL patch bumps *and* across the
+3.4 / latest legs without rebuilding. (This was already true implicitly: the
+liboqs build is never pointed at the pinned `$PREFIX` OpenSSL, so the split only
+stops rebuilding an artifact that never depended on the specific OpenSSL patch.)
+Each leg builds OpenSSL and liboqs into separate staging prefixes, then merges
+both into the single runtime prefix the build and tests expect. The earlier
+single-bundle cache keyed on the OpenSSL SHA rebuilt the pinned liboqs on every
+OpenSSL bump — pure waste, since liboqs had not moved. `setup_oqs_interop.sh`
+grows an `ONLY_LIBOQS` / `LIBOQS_PREFIX` mode to populate the standalone liboqs
+cache; its local-dev default (one shared prefix) is unchanged. The weekly tier
+deliberately does the opposite — it caches only OpenSSL and rebuilds liboqs +
+oqs-provider `main` fresh, which is its whole point.
+
 On top of the two behavioural tiers, a **sanitize** leg guards the hand-written
 EVP glue for memory safety (issue #42): it builds the provider and every
 in-process test with AddressSanitizer + UndefinedBehaviorSanitizer (LeakSanitizer
