@@ -735,6 +735,89 @@ err:
 }
 
 /*
+ * Signature test: raw one-shot path (issue #79). Exercises the non-digest
+ * EVP_PKEY_sign_init/EVP_PKEY_sign and EVP_PKEY_verify_init/EVP_PKEY_verify
+ * interface — distinct from the EVP_DigestSign/Verify message path above.
+ * Also confirms a context reused across two EVP_PKEY_sign calls keeps working,
+ * matching the reused-context benchmark pattern that surfaced the bug.
+ */
+static int test_sig_raw_signverify(OSSL_LIB_CTX *libctx, const char *algname)
+{
+    char label[160];
+    EVP_PKEY_CTX *gctx = NULL, *sctx = NULL, *vctx = NULL;
+    EVP_PKEY *key = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    const unsigned char msg[] = "hybrid raw sign/verify test message";
+    size_t msglen = sizeof(msg) - 1;
+    int ret = 0;
+
+    snprintf(label, sizeof(label), "sig raw sign/verify %s", algname);
+    TEST_START(label);
+
+    gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
+    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
+            || EVP_PKEY_keygen(gctx, &key) <= 0) {
+        TEST_FAIL("keygen failed");
+        goto err;
+    }
+
+    /* Raw sign via EVP_PKEY_sign_init/EVP_PKEY_sign. */
+    sctx = EVP_PKEY_CTX_new_from_pkey(libctx, key, "provider=hybrid");
+    if (sctx == NULL || EVP_PKEY_sign_init(sctx) <= 0) {
+        TEST_FAIL("EVP_PKEY_sign_init failed");
+        goto err;
+    }
+    if (EVP_PKEY_sign(sctx, NULL, &siglen, msg, msglen) <= 0) {
+        TEST_FAIL("EVP_PKEY_sign size query failed");
+        goto err;
+    }
+    sig = OPENSSL_malloc(siglen);
+    if (sig == NULL) {
+        TEST_FAIL("malloc failed");
+        goto err;
+    }
+    if (EVP_PKEY_sign(sctx, sig, &siglen, msg, msglen) <= 0) {
+        TEST_FAIL("EVP_PKEY_sign failed");
+        goto err;
+    }
+
+    /* Raw verify via EVP_PKEY_verify_init/EVP_PKEY_verify. */
+    vctx = EVP_PKEY_CTX_new_from_pkey(libctx, key, "provider=hybrid");
+    if (vctx == NULL || EVP_PKEY_verify_init(vctx) <= 0) {
+        TEST_FAIL("EVP_PKEY_verify_init failed");
+        goto err;
+    }
+    if (EVP_PKEY_verify(vctx, sig, siglen, msg, msglen) <= 0) {
+        TEST_FAIL("EVP_PKEY_verify failed");
+        goto err;
+    }
+
+    /* Reuse the same signing context for a second signature (bench pattern). */
+    siglen = 0;
+    if (EVP_PKEY_sign(sctx, NULL, &siglen, msg, msglen) <= 0
+            || EVP_PKEY_sign(sctx, sig, &siglen, msg, msglen) <= 0) {
+        TEST_FAIL("reused-context EVP_PKEY_sign failed");
+        goto err;
+    }
+    if (EVP_PKEY_verify(vctx, sig, siglen, msg, msglen) <= 0) {
+        TEST_FAIL("reused-context EVP_PKEY_verify failed");
+        goto err;
+    }
+
+    TEST_PASS();
+    ret = 1;
+
+err:
+    OPENSSL_free(sig);
+    EVP_PKEY_CTX_free(sctx);
+    EVP_PKEY_CTX_free(vctx);
+    EVP_PKEY_CTX_free(gctx);
+    EVP_PKEY_free(key);
+    return ret;
+}
+
+/*
  * Signature test: wrong message — sign, corrupt message, verify should fail.
  */
 static int test_sig_wrong_message(OSSL_LIB_CTX *libctx, const char *algname)
@@ -1108,6 +1191,7 @@ int main(int argc, char **argv)
 
             printf("[%s]\n", alg);
             test_sig_self_consistency(libctx, alg, NULL);
+            test_sig_raw_signverify(libctx, alg);
             test_sig_wrong_message(libctx, alg);
             test_sig_empty_message(libctx, alg);
 #ifdef HYBRID_HAVE_CTX_STR

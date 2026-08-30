@@ -145,6 +145,25 @@ hybrid_sig_digest_verify_init(void *vctx, const char *mdname,
 }
 
 /*
+ * Raw (non-digest) signature init. EVP_PKEY_sign_init()/EVP_PKEY_verify_init()
+ * dispatch here; without these entries the raw one-shot SIGN/VERIFY below are
+ * unreachable via the public EVP API. The digest is chosen internally by NIST
+ * level, so there is no mdname to honour — defer to the digest-init helpers,
+ * exactly as the message-signature init wrappers do.
+ */
+static int
+hybrid_sig_sign_init(void *vctx, void *vkey, const OSSL_PARAM params[])
+{
+    return hybrid_sig_digest_sign_init(vctx, NULL, vkey, params);
+}
+
+static int
+hybrid_sig_verify_init(void *vctx, void *vkey, const OSSL_PARAM params[])
+{
+    return hybrid_sig_digest_verify_init(vctx, NULL, vkey, params);
+}
+
+/*
  * Digest the classical component signs, chosen by the PQ NIST level. Uses the
  * static (non-fetched) EVP_MD accessors — matching oqsprovider and avoiding an
  * EVP_MD_fetch per operation.
@@ -421,6 +440,19 @@ const OSSL_DISPATCH hybrid_sig_functions[] = {
     { OSSL_FUNC_SIGNATURE_DIGEST_VERIFY_INIT,
       (void (*)(void))hybrid_sig_digest_verify_init },
     { OSSL_FUNC_SIGNATURE_DIGEST_VERIFY,
+      (void (*)(void))hybrid_sig_digest_verify },
+    /*
+     * Raw one-shot API (EVP_PKEY_sign/verify). sign/verify reuse the digest-sign
+     * one-shot, which already signs the raw message; their *_INIT entries make
+     * that path reachable via EVP_PKEY_sign_init/verify_init (issue #79).
+     */
+    { OSSL_FUNC_SIGNATURE_SIGN_INIT,
+      (void (*)(void))hybrid_sig_sign_init },
+    { OSSL_FUNC_SIGNATURE_SIGN,
+      (void (*)(void))hybrid_sig_digest_sign },
+    { OSSL_FUNC_SIGNATURE_VERIFY_INIT,
+      (void (*)(void))hybrid_sig_verify_init },
+    { OSSL_FUNC_SIGNATURE_VERIFY,
       (void (*)(void))hybrid_sig_digest_verify },
     { OSSL_FUNC_SIGNATURE_SET_CTX_PARAMS,
       (void (*)(void))hybrid_sig_set_ctx_params },
