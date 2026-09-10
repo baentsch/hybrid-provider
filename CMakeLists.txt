@@ -54,6 +54,42 @@ if(HYBRID_TSAN)
     add_link_options(-fsanitize=thread)
 endif()
 
+# Compiler/linker hardening. Enables the "compiler defenses" the OpenSSF
+# Security-Focused Guide for AI Code Assistant Instructions calls for in its
+# C/C++ guidance (stack canaries, FORTIFY_SOURCE, DEP/NX) — see CONTRIBUTING.md
+# "Security conventions". OFF by default so local dev builds stay fast and unhardened;
+# CI's push/PR leg turns it ON (-DHYBRID_HARDEN=ON) so the shipped provider AND
+# the test binaries are proven to build clean and pass with hardening on. The
+# dynamic analysis legs (ASan/UBSan/TSan/libFuzzer) remain the primary defence;
+# this is a cheap belt-and-suspenders check, not a replacement. Each flag is
+# feature-tested rather than assumed, so an older or non-x86 toolchain skips the
+# ones it lacks instead of failing to configure.
+option(HYBRID_HARDEN "Build with compiler/linker hardening flags (CI leg)" OFF)
+if(HYBRID_HARDEN)
+    if(MSVC)
+        message(FATAL_ERROR "HYBRID_HARDEN is GCC/Clang only")
+    endif()
+    include(CheckCCompilerFlag)
+    # FORTIFY_SOURCE is a no-op without optimization, so force -O2 for this build.
+    add_compile_options(-O2)
+    # -U first: Ubuntu's gcc predefines _FORTIFY_SOURCE under -O; redefining it
+    # warns, and -Werror=format-security (below) would turn that warning fatal.
+    add_compile_options(-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
+    foreach(_hp_flag
+            -fstack-protector-strong    # stack canaries
+            -fstack-clash-protection    # large-stack-probe guard
+            -fcf-protection=full        # Intel CET (DEP/NX-class CFI)
+            -Wformat -Wformat-security -Werror=format-security)
+        string(MAKE_C_IDENTIFIER "HAVE_HP${_hp_flag}" _hp_var)
+        check_c_compiler_flag("${_hp_flag}" ${_hp_var})
+        if(${_hp_var})
+            add_compile_options("${_hp_flag}")
+        endif()
+    endforeach()
+    # Link-time hardening: full RELRO (GOT read-only) + non-executable stack.
+    add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
+endif()
+
 # Allow pointing to a local OpenSSL build:
 #   cmake .. -DOPENSSL_ROOT_DIR=../.local
 if(DEFINED OPENSSL_ROOT_DIR)

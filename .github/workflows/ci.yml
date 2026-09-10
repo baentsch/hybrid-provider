@@ -157,8 +157,13 @@ jobs:
           cp -a "$OSSL_INSTALL"/. "$PREFIX"/
           cp -a "$OQS_INSTALL"/. "$PREFIX"/
 
+      # Push/PR fast tier also builds the shipped provider + tests hardened
+      # (-DHYBRID_HARDEN=ON: stack canaries, FORTIFY_SOURCE, full RELRO, non-exec
+      # stack, CET) so the OpenSSF-guide compiler defenses are proven to compile
+      # clean and pass here. Local dev builds leave it OFF. The sanitizer/TSan/fuzz
+      # legs stay the primary dynamic defence; this is a cheap static complement.
       - name: Configure hybrid provider
-        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_HARDEN=ON
 
       - name: Cache oqs-provider (pinned)
         id: cache-oqsp
