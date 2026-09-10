@@ -23,42 +23,25 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <time.h>
 #include <openssl/evp.h>
 #include <openssl/provider.h>
 #include <openssl/encoder.h>
 #include <openssl/err.h>
 #include "../composite_kem_prov.h"
+#include "bench_util.h"
 
 #define KEYGEN_MIN_ITERS 2
 #define KEYGEN_MAX_ITERS 50
 #define OP_MIN_ITERS     5
 #define OP_MAX_ITERS     500
 
+/* Combiner glue is small (~1.0x, up to ~1.25x for the fastest KEMs). Ceiling is
+ * 1.4x for headroom: a few composites sit at ~1.3x on >=3.5 and the short ctest
+ * smoke budget adds jitter to sub-0.1ms ops. See bench_util.h. */
+#define COMPOSITE_OVERHEAD_CEIL 1.4
+
+/* Per-op wall-clock budget; shared with the guard timers via bench_set_budget_ms(). */
 static double g_budget_ms = 1000.0;
-
-static double now_ms(void)
-{
-    struct timespec t;
-
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return t.tv_sec * 1000.0 + t.tv_nsec / 1e6;
-}
-
-static EVP_PKEY *gen_key(OSSL_LIB_CTX *ctx, const char *name, const char *propq)
-{
-    EVP_PKEY_CTX *gctx = EVP_PKEY_CTX_new_from_name(ctx, name, propq);
-    EVP_PKEY *key = NULL;
-
-    if (gctx == NULL || EVP_PKEY_keygen_init(gctx) <= 0
-            || EVP_PKEY_keygen(gctx, &key) <= 0) {
-        ERR_clear_error();
-        key = NULL;
-    }
-    EVP_PKEY_CTX_free(gctx);
-    return key;
-}
 
 /* DER length of the key's SPKI (public) or PKCS8 (private) encoding, or 0. */
 static size_t der_len(EVP_PKEY *key, int selection, const char *structure,
@@ -89,23 +72,23 @@ static int bench_one(OSSL_LIB_CTX *ctx, const char *name, const char *tier,
     double t0, keygen_ms, encaps_ms, decaps_ms;
     int n, ret = 0;
 
-    if ((key = gen_key(ctx, name, propq)) == NULL) {
+    if ((key = bench_gen_key(ctx, name, propq)) == NULL) {
         printf("  %-30s %-4s  SKIPPED (component unavailable)\n", name, tier);
         return -1;
     }
 
     /* keygen */
-    t0 = now_ms();
+    t0 = bench_now_ms();
     for (n = 0; n < KEYGEN_MAX_ITERS; n++) {
         EVP_PKEY_free(key);
-        if ((key = gen_key(ctx, name, propq)) == NULL)
+        if ((key = bench_gen_key(ctx, name, propq)) == NULL)
             goto err;
-        if (n + 1 >= KEYGEN_MIN_ITERS && now_ms() - t0 >= g_budget_ms) {
+        if (n + 1 >= KEYGEN_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms) {
             n++;
             break;
         }
     }
-    keygen_ms = (now_ms() - t0) / n;
+    keygen_ms = (bench_now_ms() - t0) / n;
 
     pklen = der_len(key, EVP_PKEY_PUBLIC_KEY, "SubjectPublicKeyInfo", propq);
     sklen = der_len(key, EVP_PKEY_KEYPAIR, "PrivateKeyInfo", propq);
@@ -119,35 +102,35 @@ static int bench_one(OSSL_LIB_CTX *ctx, const char *name, const char *tier,
         goto err;
 
     /* encaps */
-    t0 = now_ms();
+    t0 = bench_now_ms();
     for (n = 0; n < OP_MAX_ITERS; n++) {
         size_t cl = ctlen, sl = sslen;
 
         if (EVP_PKEY_encapsulate(ec, ct, &cl, ss, &sl) <= 0)
             goto err;
-        if (n + 1 >= OP_MIN_ITERS && now_ms() - t0 >= g_budget_ms) {
+        if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms) {
             n++;
             break;
         }
     }
-    encaps_ms = (now_ms() - t0) / n;
+    encaps_ms = (bench_now_ms() - t0) / n;
 
     /* decaps (of the last ct) */
     if ((dc = EVP_PKEY_CTX_new_from_pkey(ctx, key, propq)) == NULL
             || EVP_PKEY_decapsulate_init(dc, NULL) <= 0)
         goto err;
-    t0 = now_ms();
+    t0 = bench_now_ms();
     for (n = 0; n < OP_MAX_ITERS; n++) {
         size_t sl = sslen;
 
         if (EVP_PKEY_decapsulate(dc, ss, &sl, ct, ctlen) <= 0)
             goto err;
-        if (n + 1 >= OP_MIN_ITERS && now_ms() - t0 >= g_budget_ms) {
+        if (n + 1 >= OP_MIN_ITERS && bench_now_ms() - t0 >= g_budget_ms) {
             n++;
             break;
         }
     }
-    decaps_ms = (now_ms() - t0) / n;
+    decaps_ms = (bench_now_ms() - t0) / n;
 
     printf("  %-30s %-4s  %9.3f %9.3f %9.3f   %7zu %7zu %7zu\n",
            name, tier, keygen_ms, encaps_ms, decaps_ms, pklen, ctlen, sklen);
@@ -171,6 +154,7 @@ static const struct { const char *name; } refs[] = {
 int main(int argc, char **argv)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
+    int guard_failures = 0;
     size_t i;
 
     if (argc > 1) {
@@ -179,6 +163,7 @@ int main(int argc, char **argv)
         if (b > 0.0)
             g_budget_ms = b;
     }
+    bench_set_budget_ms(g_budget_ms);       /* shared with the guard timers */
     if (ctx == NULL
             || OSSL_PROVIDER_load(ctx, "default") == NULL
             || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
@@ -187,13 +172,22 @@ int main(int argc, char **argv)
     }
     OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier */
 
-    printf("composite KEM benchmark — keygen / encaps / decaps + sizes\n");
-    printf("  %-30s %-4s  %9s %9s %9s   %7s %7s %7s\n",
-           "algorithm", "tier", "keygen", "encaps", "decaps", "pk", "ct", "sk");
-    printf("  %-30s %-4s  %9s %9s %9s   %7s %7s %7s\n",
-           "", "", "(ms)", "(ms)", "(ms)", "(bytes)", "(bytes)", "(bytes)");
+    /*
+     * Part 1 (informational, not asserted): the per-algorithm timing + size
+     * report over the whole composite-KEM inventory plus references -- the bulk of
+     * this bench's wall-clock. The ctest smoke run sets HYBRID_BENCH_GUARD_ONLY to
+     * skip it and run only the asserted guard below.
+     */
+    if (bench_guard_only()) {
+        printf("composite KEM benchmark — report skipped "
+               "(HYBRID_BENCH_GUARD_ONLY)\n");
+    } else {
+        printf("composite KEM benchmark — keygen / encaps / decaps + sizes\n");
+        printf("  %-30s %-4s  %9s %9s %9s   %7s %7s %7s\n",
+               "algorithm", "tier", "keygen", "encaps", "decaps", "pk", "ct", "sk");
+        printf("  %-30s %-4s  %9s %9s %9s   %7s %7s %7s\n",
+               "", "", "(ms)", "(ms)", "(ms)", "(bytes)", "(bytes)", "(bytes)");
 
-    {
         static const struct { int sb; const char *title; } levels[] = {
             { 128, "--- NIST level 1 (128-bit): experimental only ---" },
             { 192, "--- NIST level 3 (192-bit): ML-KEM-768 vs experimental ---" },
@@ -218,12 +212,37 @@ int main(int argc, char **argv)
                 }
             }
         }
+
+        printf("  --- reference (single algorithm, default provider) ---\n");
+        for (i = 0; i < sizeof(refs) / sizeof(refs[0]); i++)
+            bench_one(ctx, refs[i].name, "ref", "provider=default");
     }
 
-    printf("  --- reference (single algorithm, default provider) ---\n");
-    for (i = 0; i < sizeof(refs) / sizeof(refs[0]); i++)
-        bench_one(ctx, refs[i].name, "ref", "provider=default");
+    /*
+     * Composition-overhead guard: composite encaps/decaps vs the sum of its two
+     * standalone components (see bench_guard_kem). Available combos only.
+     */
+    if (bench_timing_unreliable()) {
+        printf("\ncomposition-overhead guard — SKIPPED "
+               "(timing unreliable under a sanitizer)\n");
+    } else {
+        printf("\ncomposition-overhead guard — composite vs sum-of-components "
+               "(ceiling %.1fx, keygen excluded)\n", COMPOSITE_OVERHEAD_CEIL);
+        for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++) {
+            const COMPOSITE_KEM_INFO *info = &composite_kem_table[i];
+
+            bench_guard_kem(ctx, info->name, "provider=hybrid", info->pq_alg,
+                            info->trad_alg, info->trad_group,
+                            info->trad_rsa_bits, COMPOSITE_OVERHEAD_CEIL,
+                            &guard_failures);
+        }
+        if (guard_failures == 0)
+            printf("  guard: PASS (all measured composites within ceiling)\n");
+        else
+            printf("  guard: FAIL (%d operation(s) over ceiling)\n",
+                   guard_failures);
+    }
 
     OSSL_LIB_CTX_free(ctx);
-    return 0;
+    return guard_failures == 0 ? 0 : 1;
 }

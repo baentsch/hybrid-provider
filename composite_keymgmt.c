@@ -81,6 +81,12 @@ static const OSSL_PARAM *composite_gettable_params(void *provctx)
         OSSL_PARAM_int(OSSL_PKEY_PARAM_SECURITY_BITS, NULL),
         OSSL_PARAM_int(OSSL_PKEY_PARAM_MAX_SIZE, NULL),
         OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_MANDATORY_DIGEST, NULL, 0),
+        /* Component extraction (item 13): each component's standalone SPKI
+         * (public) and PKCS#8 (private) DER. */
+        OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_CLASSIC_PUB, NULL, 0),
+        OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_PQ_PUB, NULL, 0),
+        OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_CLASSIC_PRIV, NULL, 0),
+        OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_PQ_PRIV, NULL, 0),
         OSSL_PARAM_END
     };
     return tbl;
@@ -129,6 +135,24 @@ static int composite_get_params(void *vkey, OSSL_PARAM params[])
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_MANDATORY_DIGEST);
     if (p != NULL && !OSSL_PARAM_set_utf8_string(p, ""))
         return 0;
+    /* Component extraction (item 13): each component's standalone SPKI (public)
+     * and PKCS#8 (private) DER. trad_key = classical, pq_key = PQ. */
+    if (k->state >= COMPOSITE_HAVE_PUBKEY) {
+        p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_CLASSIC_PUB);
+        if (p != NULL && !hybrid_component_spki_param(p, k->trad_key))
+            return 0;
+        p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_PQ_PUB);
+        if (p != NULL && !hybrid_component_spki_param(p, k->pq_key))
+            return 0;
+    }
+    if (k->state >= COMPOSITE_HAVE_PRVKEY) {
+        p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_CLASSIC_PRIV);
+        if (p != NULL && !hybrid_component_pkcs8_param(p, k->trad_key))
+            return 0;
+        p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_PQ_PRIV);
+        if (p != NULL && !hybrid_component_pkcs8_param(p, k->pq_key))
+            return 0;
+    }
     return 1;
 }
 

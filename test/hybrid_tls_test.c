@@ -567,7 +567,7 @@ int main(void)
      */
     {
         static const struct { const char *name; int codepoint; } OQS_GROUPS[] = {
-            { "x25519_mlkem512", 0x2FB6 }, { "p256_mlkem512", 0x2F4B },
+            { "x25519_mlkem512", 0x11EA }, { "SecP256r1MLKEM512", 0x11E9 },
             { "bp256_mlkem512",  0xFE20 }, { "p384_mlkem768", 0x2F4C },
             { "x448_mlkem768",   0x2FB7 }, { "bp384_mlkem768", 0xFE21 },
             { "p521_mlkem1024",  0x2F4D }, { "bp512_mlkem1024", 0xFE22 },

@@ -44,6 +44,37 @@ correct, keep the test suite green, and keep the docs in step with the code.
 - Keep quirks documented with short inline comments and a source reference,
   rather than long prose elsewhere.
 
+## Security conventions
+
+This is cryptographic code that parses untrusted key material, so contributions
+follow the secure-coding principles in the OpenSSF [Security-Focused Guide for AI
+Code Assistant Instructions](https://best.openssf.org/Security-Focused-Guide-for-AI-Code-Assistant-Instructions).
+The guide is the reference; the concrete expectations that already hold here are:
+
+- **Validate untrusted input.** Bounds-check every wire length before splitting a
+  DER/SPKI/PKCS#8 blob or copying from it; never trust a length field blindly.
+- **Wipe secrets.** Zero private-key and shared-secret buffers on *every* exit
+  path (`OPENSSL_cleanse` / `OPENSSL_clear_free` / `OPENSSL_secure_clear_free`).
+- **No secrets in diagnostics.** `ERR_raise*` strings and logs carry algorithm
+  names and public lengths only — never key or secret bytes.
+- **Constant-time secret comparison** (e.g. via `EVP_PKEY_eq`), never `memcmp`.
+- **Test the failure paths**, not just the happy path — negative decode tests and
+  the decoder fuzz harness (`-DHYBRID_FUZZ`) are part of that contract.
+- Dynamic analysis (ASan/UBSan/TSan, libFuzzer) is the primary safety net; CI also
+  builds hardened (`-DHYBRID_HARDEN=ON`) as a static complement.
+
+**Deliberately out of scope.** The guide's production supply-chain and
+release-integrity controls — SBOM generation (SPDX/CycloneDX), SLSA/in-toto
+provenance, SHA-pinning of CI actions and dependencies, and a SAST gate
+(CodeQL/Semgrep) — are *not* adopted here on purpose. This provider carries
+pre-standardization algorithms for interoperability experiments and is explicitly
+not production-destined (see [README.md](README.md) / [design.md](design.md));
+development velocity and the freedom to track fast-moving upstreams (OpenSSL,
+liboqs, oqsprovider — some legs deliberately float to `main`) matter more than
+those checkbox controls, and the dynamic-analysis suite above is the chosen
+primary assurance. Revisit this decision if the provider is ever hardened toward
+production use.
+
 ## Project layout
 
 The source is a flat set of dispatch files, one per provider operation.

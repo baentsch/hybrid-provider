@@ -2,16 +2,16 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Benchmark X25519MLKEM768 across three configurations:
- *   1. default provider's native MLX hybrid          (OpenSSL 3.5+)
- *   2. hybrid provider, both components from default  (OpenSSL 3.5+)
- *   3. hybrid provider, X25519 from default and
- *      ML-KEM from oqsprovider                        (OpenSSL 3.4.x + oqs)
+ * Benchmark the hybrid provider against the native implementations, in two parts:
+ *   Part 1 (informational): for every hybrid the provider serves, a side-by-side
+ *     of the provider vs its native peer -- the default provider's own group where
+ *     it has one (native MLX from OpenSSL 3.5+), else oqsprovider's own hybrid.
+ *     The set of rows and each row's peer are discovered at runtime from the
+ *     provider tables, so nothing is hardcoded and rows with no peer are skipped.
+ *   Part 2 (asserted): the sum-of-components composition-overhead guard.
  *
- * Configurations that the running OpenSSL/provider mix cannot satisfy are
- * skipped rather than treated as failures, so the same binary can be run
- * against both a 3.5+ build (configs 1 and 2) and a 3.4.x build with
- * oqsprovider (config 3).
+ * Configurations the running OpenSSL/provider mix cannot satisfy are skipped, not
+ * failed, so the same binary runs against a 3.5+ build and a 3.4.x + oqs build.
  */
 
 #include <stdio.h>
@@ -23,8 +23,42 @@
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 #include <openssl/err.h>
+#include "../hybrid_prov.h"     /* hybrid_{kem,sig}_table for the guard */
+#include "bench_util.h"
 
 #define ITERATIONS 1000
+
+/*
+ * This file has two parts:
+ *
+ *   1. An informational report (bench_kem/bench_sig via compare_*): for each
+ *      hybrid it prints the hybrid provider's keygen/encaps/decaps (or sign/verify)
+ *      timings side-by-side with the NATIVE peer -- the default provider's built-in
+ *      MLX for the standardized groups, oqsprovider's own hybrid otherwise. This is
+ *      a showcase ("our EVP composition is as fast as the built-in"), NOT asserted.
+ *
+ *   2. The composition-overhead regression guard (work-items item 20), which is the
+ *      SAME sum-of-components model as the composite benches (see bench_util.h): a
+ *      hybrid IS its two constituent components plus a small combiner glue, so the
+ *      guard asserts each hybrid's steady-state ops stay within HYBRID_OVERHEAD_CEIL
+ *      of the sum of its components measured standalone. Iterating the provider's
+ *      own hybrid_{kem,sig}_table means the peer fetches each component by the exact
+ *      name the provider composes with -> same implementation by construction, so
+ *      any per-component cost (incl. oqsprovider's no_cache tax) cancels: no native
+ *      peer, no FAIR/UNFAIR matching, no version gating. Keygen is excluded
+ *      (randomised, heavy-tailed) and timings are the minimum per-op latency.
+ */
+/* Combiner glue is small: ~1.0x for sigs, up to ~1.25x for the fastest KEMs; at
+ * parity with oqsprovider's own hybrids. The ceiling is 1.4x (not 1.25x): a few
+ * standardized composite signatures sit at ~1.3x on >=3.5, and the short ctest
+ * smoke budget adds scheduler jitter to the sub-0.1ms primitives, so the extra
+ * headroom keeps the guard from flaking. See bench_util.h for the model. */
+#define HYBRID_OVERHEAD_CEIL 1.4
+
+typedef struct {
+    double op[3];   /* KEM: keygen, encaps, decaps.  SIG: keygen, sign, verify. */
+    int valid;      /* 1 once measured; 0 on skip/error */
+} BENCH_TIMES;
 
 static double time_diff_ms(struct timespec *start, struct timespec *end)
 {
@@ -43,7 +77,7 @@ static double time_diff_ms(struct timespec *start, struct timespec *end)
  */
 static int bench_kem(OSSL_LIB_CTX *libctx, const char *algname,
                      const char *select_propq, const char *comp_propq,
-                     const char *label, int iterations)
+                     const char *label, int iterations, BENCH_TIMES *out)
 {
     EVP_PKEY_CTX *gctx = NULL, *ectx = NULL, *dctx = NULL;
     EVP_PKEY *key = NULL;
@@ -168,6 +202,12 @@ static int bench_kem(OSSL_LIB_CTX *libctx, const char *algname,
     printf("  %-46s  keygen: %7.3f ms  encaps: %7.3f ms  decaps: %7.3f ms\n",
            label, keygen_ms, encaps_ms, decaps_ms);
 
+    if (out != NULL) {
+        out->op[0] = keygen_ms;
+        out->op[1] = encaps_ms;
+        out->op[2] = decaps_ms;
+        out->valid = 1;
+    }
     ret = 1;
 
 err:
@@ -181,36 +221,6 @@ err:
     return ret;
 }
 
-/* Does the named provider expose a standalone ML-KEM-768 KEM? */
-static int provider_has_mlkem(OSSL_LIB_CTX *libctx, const char *provname)
-{
-    char propq[128];
-    EVP_KEM *kem;
-    int ok;
-
-    snprintf(propq, sizeof(propq), "provider=%s", provname);
-    kem = EVP_KEM_fetch(libctx, "MLKEM768", propq);
-    ok = (kem != NULL);
-    EVP_KEM_free(kem);
-    ERR_clear_error();
-    return ok;
-}
-
-/* Does the named provider expose a standalone ML-DSA-65 signature? */
-static int provider_has_mldsa(OSSL_LIB_CTX *libctx, const char *provname)
-{
-    char propq[128];
-    EVP_SIGNATURE *sig;
-    int ok;
-
-    snprintf(propq, sizeof(propq), "provider=%s", provname);
-    sig = EVP_SIGNATURE_fetch(libctx, "MLDSA65", propq);
-    ok = (sig != NULL);
-    EVP_SIGNATURE_free(sig);
-    ERR_clear_error();
-    return ok;
-}
-
 /*
  * Benchmark a hybrid signature (keygen, sign, verify). select_propq picks the
  * hybrid algorithm; comp_propq (may be NULL) steers the component
@@ -219,7 +229,7 @@ static int provider_has_mldsa(OSSL_LIB_CTX *libctx, const char *provname)
  */
 static int bench_sig(OSSL_LIB_CTX *libctx, const char *algname,
                      const char *select_propq, const char *comp_propq,
-                     const char *label, int iterations)
+                     const char *label, int iterations, BENCH_TIMES *out)
 {
     EVP_PKEY_CTX *gctx = NULL;
     EVP_PKEY *key = NULL;
@@ -341,6 +351,12 @@ static int bench_sig(OSSL_LIB_CTX *libctx, const char *algname,
 
     printf("  %-40s  keygen: %7.3f ms  sign: %7.3f ms  verify: %7.3f ms\n",
            label, keygen_ms, sign_ms, verify_ms);
+    if (out != NULL) {
+        out->op[0] = keygen_ms;
+        out->op[1] = sign_ms;
+        out->op[2] = verify_ms;
+        out->valid = 1;
+    }
     ret = 1;
 
 err:
@@ -353,77 +369,67 @@ err:
 }
 
 /*
- * A hybrid-vs-native comparison is only apples-to-apples ("fair") when both
- * sides end up exercising the SAME PQ implementation. That holds iff the PQ
- * component is served by the same provider the native peer uses internally:
- *   - MLX groups: native is the default provider and the hybrid also sources
- *     ML-KEM from default -> always fair.
- *   - OQS-legacy: native is oqsprovider (liboqs). The hybrid's
- *     "?provider=oqsprovider" only reaches liboqs if oqsprovider actually
- *     exposes that PQ primitive STANDALONE; otherwise it silently falls through
- *     to default's portable-C impl (e.g. ML-KEM/ML-DSA are ceded to default
- *     under OpenSSL 3.5), making the row UNFAIR (different implementations).
- * These probes decide the tag empirically so the numbers can't be misread.
+ * Does `prov` (e.g. "default"/"oqsprovider") serve algorithm `name`? Probed via the
+ * keymgmt path that the benches actually use, so the informational report discovers
+ * its native peer dynamically instead of naming algorithms -- it adapts to whatever
+ * each provider serves on the running OpenSSL (native MLX only from 3.5, oqs naming
+ * for the legacy hybrids, etc.). Returns the provider string on success, else NULL.
  */
-static int pq_from_oqs_kem(OSSL_LIB_CTX *libctx, const char *pqname)
+static const char *served_by(OSSL_LIB_CTX *libctx, const char *name,
+                             const char *prov)
 {
-    EVP_KEM *k = EVP_KEM_fetch(libctx, pqname, "provider=oqsprovider");
-    int ok = (k != NULL);
-    EVP_KEM_free(k);
-    ERR_clear_error();
-    return ok;
+    char propq[64];
+    EVP_PKEY_CTX *c;
+    int ok;
+
+    snprintf(propq, sizeof(propq), "provider=%s", prov);
+    c = EVP_PKEY_CTX_new_from_name(libctx, name, propq);
+    ok = c != NULL && EVP_PKEY_keygen_init(c) > 0;
+    EVP_PKEY_CTX_free(c);
+    if (!ok)
+        ERR_clear_error();
+    return ok ? prov : NULL;
 }
 
-static int pq_from_oqs_sig(OSSL_LIB_CTX *libctx, const char *pqname)
+/* The native peer for a KEM: default's built-in group if it has one, else
+ * oqsprovider's own hybrid, else NULL (no peer -> row skipped in the report). */
+static const char *kem_native_peer(OSSL_LIB_CTX *libctx, const char *name)
 {
-    EVP_SIGNATURE *s = EVP_SIGNATURE_fetch(libctx, pqname, "provider=oqsprovider");
-    int ok = (s != NULL);
-    EVP_SIGNATURE_free(s);
-    ERR_clear_error();
-    return ok;
-}
+    const char *p = served_by(libctx, name, "default");
 
-#define FAIR_TAG(fair) \
-    ((fair) ? "[FAIR: same PQ impl both sides]" \
-            : "[UNFAIR: hybrid PQ=default portable-C vs native liboqs]")
+    return p != NULL ? p : served_by(libctx, name, "oqsprovider");
+}
 
 /*
- * Compare one KEM hybrid across the providers that implement it: the native
- * implementation (default for MLX names, oqsprovider for OQS-legacy names) and
- * the hybrid provider. For the hybrid provider we source the PQ base from the
- * same place the native peer uses (comp_propq), so the delta is the hybrid
- * provider's composition overhead, not a different PQ implementation -- but only
- * when the row is FAIR (see pq_from_oqs_kem).
+ * Informational side-by-side print (NOT asserted -- the guard is the separate
+ * sum-of-components pass): the native peer (default's built-in MLX for the
+ * standardized groups, else oqsprovider's own hybrid) next to the hybrid provider.
  */
 static void compare_kem(OSSL_LIB_CTX *libctx, const char *alg,
-                        const char *native, const char *pq, int it)
+                        const char *native, int it)
 {
     char lbl[80];
-    int fair = (native[0] == 'd') ? 1 : pq_from_oqs_kem(libctx, pq);
+    int from_default = (strcmp(native, "default") == 0);
 
-    printf("%s:  %s\n", alg, FAIR_TAG(fair));
+    printf("%s:\n", alg);
     snprintf(lbl, sizeof(lbl), "  %s (native)", native);
-    bench_kem(libctx, alg, native[0] == 'd' ? "provider=default"
-                                            : "provider=oqsprovider",
-              NULL, lbl, it);
+    bench_kem(libctx, alg, from_default ? "provider=default"
+                                        : "provider=oqsprovider",
+              NULL, lbl, it, NULL);
     snprintf(lbl, sizeof(lbl), "  hybrid (PQ from %s)", native);
     bench_kem(libctx, alg, "provider=hybrid",
-              native[0] == 'd' ? "provider=default" : "?provider=oqsprovider",
-              lbl, it);
+              from_default ? "provider=default" : "?provider=oqsprovider",
+              lbl, it, NULL);
 }
 
 /* Same, for a signature hybrid (native peer is always oqsprovider). */
-static void compare_sig(OSSL_LIB_CTX *libctx, const char *alg,
-                        const char *pq, int it)
+static void compare_sig(OSSL_LIB_CTX *libctx, const char *alg, int it)
 {
-    char lbl[80];
-    int fair = pq_from_oqs_sig(libctx, pq);
-
-    printf("%s:  %s\n", alg, FAIR_TAG(fair));
-    snprintf(lbl, sizeof(lbl), "  oqsprovider (native)");
-    bench_sig(libctx, alg, "provider=oqsprovider", NULL, lbl, it);
-    snprintf(lbl, sizeof(lbl), "  hybrid");
-    bench_sig(libctx, alg, "provider=hybrid", "?provider=oqsprovider", lbl, it);
+    printf("%s:\n", alg);
+    bench_sig(libctx, alg, "provider=oqsprovider", NULL, "  oqsprovider (native)",
+              it, NULL);
+    bench_sig(libctx, alg, "provider=hybrid", "?provider=oqsprovider", "  hybrid",
+              it, NULL);
 }
 
 int main(int argc, char **argv)
@@ -431,33 +437,21 @@ int main(int argc, char **argv)
     OSSL_LIB_CTX *libctx = NULL;
     OSSL_PROVIDER *hybrid_prov = NULL, *dflt_prov = NULL, *oqs_prov = NULL;
     const char *modulepath;
-    int it = ITERATIONS, has_oqs;
+    int it = ITERATIONS, has_oqs, guard_failures = 0;
     size_t i;
-    /* Each row carries its standalone PQ component name so the fair/unfair tag
-     * can be decided empirically (does oqsprovider expose that PQ primitive?). */
-    static const struct { const char *alg, *pq; } mlx_kems[] = {
-        { "X25519MLKEM768", "MLKEM768" },
-        { "SecP256r1MLKEM768", "MLKEM768" },
-        { "SecP384r1MLKEM1024", "MLKEM1024" },
-    };
-    static const struct { const char *alg, *pq; } oqs_kems[] = {
-        { "p256_mlkem512", "MLKEM512" },
-        { "x25519_mlkem512", "MLKEM512" },
-        { "p384_mlkem768", "MLKEM768" },
-        { "p256_frodo640aes", "frodo640aes" },
-        { "p256_hqc1", "hqc1" },
-    };
-    static const struct { const char *alg, *pq; } sig_algs[] = {
-        { "p256_mldsa44", "MLDSA44" },
-        { "p384_mldsa65", "MLDSA65" },
-        { "p256_falcon512", "falcon512" },
-        { "p256_mayo1", "mayo1" },
-        { "p256_snova2454", "snova2454" },
-    };
 
     if (argc > 1 && atoi(argv[1]) > 0)
         it = atoi(argv[1]);
+    /* The info report uses `it` iterations; the guard reuses the number as a ms
+     * budget (floored so the short ctest smoke run still samples enough). */
+    bench_set_budget_ms(it < 50 ? 50.0 : (double)it);
     modulepath = getenv("OPENSSL_MODULES");
+
+    /* Measure the HYBRID provider's own MLX implementation, not the default's:
+     * without this the cede-to-default lever withdraws the MLX groups from the
+     * hybrid provider and its rows would be skipped (and the tight default-
+     * component ceiling never exercised). */
+    setenv("HYBRID_CEDE_TO_DEFAULT", "0", 1);
 
     libctx = OSSL_LIB_CTX_new();
     if (libctx == NULL || (dflt_prov = OSSL_PROVIDER_load(libctx, "default"))
@@ -468,16 +462,7 @@ int main(int argc, char **argv)
     if (modulepath != NULL)
         OSSL_PROVIDER_set_default_search_path(libctx, modulepath);
     oqs_prov = OSSL_PROVIDER_load(libctx, "oqsprovider");
-    if (oqs_prov != NULL) {
-        /* Under OpenSSL 3.5 oqsprovider cedes standalone ML-KEM to default, so
-         * probe a hybrid it actually owns. */
-        EVP_KEM *k = EVP_KEM_fetch(libctx, "p256_mlkem512",
-                                   "provider=oqsprovider");
-        has_oqs = k != NULL;
-        EVP_KEM_free(k);
-    } else {
-        has_oqs = 0;
-    }
+    has_oqs = oqs_prov != NULL;   /* per-alg availability is discovered below */
     ERR_clear_error();
     hybrid_prov = OSSL_PROVIDER_load(libctx, "hybrid");
     if (hybrid_prov == NULL) {
@@ -490,33 +475,83 @@ int main(int argc, char **argv)
     printf("OpenSSL %s; oqsprovider %s\n", OpenSSL_version(OPENSSL_VERSION),
            has_oqs ? "loaded" : "not available");
     printf("=====================================================\n");
-    printf("FAIR   = hybrid and native use the same PQ implementation; the delta\n"
-           "         is pure composition overhead.\n"
-           "UNFAIR = the PQ primitive is ceded to default (portable C), so the\n"
-           "         hybrid runs a DIFFERENT impl than native's liboqs; the delta\n"
-           "         reflects implementation choice, not composition (may be\n"
-           "         faster or slower per operation).\n");
+    printf("Part 1 (informational): hybrid provider vs the native peer, per op.\n"
+           "Part 2 (asserted): the sum-of-components guard.\n");
 
-    printf("\n[KEM: MLX groups — hybrid vs default provider]\n");
-    for (i = 0; i < sizeof(mlx_kems) / sizeof(mlx_kems[0]); i++)
-        compare_kem(libctx, mlx_kems[i].alg, "default", mlx_kems[i].pq, it);
+    /* Part 1 iterates the provider's OWN hybrid tables and discovers each row's
+     * native peer at runtime (see kem_native_peer) -- no algorithm is named here;
+     * rows with no peer on this OpenSSL are simply not printed. It is purely
+     * informational (nothing here is asserted), and re-running the whole inventory
+     * -- native peer AND hybrid, incl. the slow keygen loops -- for both sides is
+     * the bulk of this bench's wall-clock. The ctest smoke run only cares about the
+     * asserted guard below, so it sets HYBRID_BENCH_GUARD_ONLY to skip Part 1. */
+    if (bench_guard_only()) {
+        printf("\n[informational report skipped: HYBRID_BENCH_GUARD_ONLY]\n");
+    } else {
+        printf("\n[KEM: hybrid vs native peer]\n");
+        for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+            const char *name = hybrid_kem_table[i].hybrid_name;
+            const char *peer = kem_native_peer(libctx, name);
 
-    if (has_oqs) {
-        printf("\n[KEM: OQS-legacy hybrids — hybrid vs oqsprovider]\n");
-        for (i = 0; i < sizeof(oqs_kems) / sizeof(oqs_kems[0]); i++)
-            compare_kem(libctx, oqs_kems[i].alg, "oqsprovider",
-                        oqs_kems[i].pq, it);
+            if (peer != NULL)
+                compare_kem(libctx, name, peer, it);
+        }
 
-        printf("\n[SIG: hybrids — hybrid vs oqsprovider]\n");
-        for (i = 0; i < sizeof(sig_algs) / sizeof(sig_algs[0]); i++)
-            compare_sig(libctx, sig_algs[i].alg, sig_algs[i].pq, it);
+        if (has_oqs) {
+            /* The default provider has no hybrid signatures, so oqsprovider is the
+             * only possible native peer; discover which sigs it actually serves. */
+            printf("\n[SIG: hybrid vs oqsprovider]\n");
+            for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+                const char *name = hybrid_sig_table[i].hybrid_name;
+
+                if (served_by(libctx, name, "oqsprovider") != NULL)
+                    compare_sig(libctx, name, it);
+            }
+        }
     }
-    printf("\n");
+
+    /*
+     * Composition-overhead guard: each hybrid's steady-state ops vs the sum of its
+     * two components, iterating the provider's OWN tables so the peer fetches each
+     * component by the exact name the provider composes with (same impl -> tax
+     * cancels; see bench_util.h). Unlike Part 1 this needs no native peer -- only
+     * the two components -- so it covers every hybrid, including those Part 1 skips.
+     */
+    if (bench_timing_unreliable()) {
+        printf("\ncomposition-overhead guard — SKIPPED "
+               "(timing unreliable under a sanitizer)\n");
+    } else {
+        printf("\ncomposition-overhead guard — hybrid vs sum-of-components "
+               "(ceiling %.1fx, keygen excluded)\n", HYBRID_OVERHEAD_CEIL);
+        for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+            const HYBRID_KEM_INFO *r = &hybrid_kem_table[i];
+
+            bench_guard_kem(libctx, r->hybrid_name, "provider=hybrid",
+                            r->alg2_name, r->alg1_name, r->alg1_group, 0,
+                            HYBRID_OVERHEAD_CEIL, &guard_failures);
+        }
+        for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+            const HYBRID_SIG_INFO *r = &hybrid_sig_table[i];
+            /* classical component's own digest, per its PQ NIST level */
+            const char *md = r->nist_level <= 1 ? "SHA256"
+                           : r->nist_level <= 3 ? "SHA384" : "SHA512";
+            int rsa_bits = (strcmp(r->alg1_name, "RSA") == 0) ? 3072 : 0;
+
+            bench_guard_sig(libctx, r->hybrid_name, "provider=hybrid",
+                            r->alg2_name, r->alg1_name, r->alg1_group, rsa_bits,
+                            md, HYBRID_OVERHEAD_CEIL, &guard_failures);
+        }
+        if (guard_failures == 0)
+            printf("  guard: PASS (all measured hybrids within ceiling)\n");
+        else
+            printf("  guard: FAIL (%d operation(s) over ceiling)\n",
+                   guard_failures);
+    }
 
     OSSL_PROVIDER_unload(hybrid_prov);
     if (oqs_prov != NULL)
         OSSL_PROVIDER_unload(oqs_prov);
     OSSL_PROVIDER_unload(dflt_prov);
     OSSL_LIB_CTX_free(libctx);
-    return 0;
+    return guard_failures == 0 ? 0 : 1;
 }

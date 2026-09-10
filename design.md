@@ -270,7 +270,8 @@ Both families combine a classical and a PQ algorithm for the same reason —
 defense-in-depth that is deployable now (if either component is later broken, the
 other still holds). They are **not redundant**: they sit at different layers and
 interoperate with different ecosystems, and neither is faster (both are
-primitive-bound; composition glue ≈ 0 — see *Performance*).
+primitive-bound; composition glue is small — ~1.0×, up to ~1.2× for the fastest
+KEMs, and the hybrid is at parity with oqsprovider's own hybrid — see *Performance*).
 
 | | Hybrid (concatenation) | Composite (LAMPS) |
 | --- | --- | --- |
@@ -279,7 +280,7 @@ primitive-bound; composition glue ≈ 0 — see *Performance*).
 | **Binding** | two independent signatures with a length prefix (separable) | joint message representative `M'` — **non-separable** |
 | **Interop peer** | default provider + oqsprovider (TLS wire, OQS ecosystem) | LAMPS implementations (BouncyCastle, future OpenSSL-native) in certificates |
 | **Standardization** | MLX KEM is IETF-standard; concat sigs follow the oqsprovider convention | IETF/LAMPS standards-track (composite-sigs draft-19, composite-kem draft-18) |
-| **Performance** | primitive-bound | primitive-bound + one SHA3-256 combiner pass (negligible) |
+| **Performance** | primitive-bound; ~1.0× glue (up to ~1.2× fastest KEMs), at parity with oqsprovider's own hybrid | primitive-bound; ~1.0× glue incl. one SHA3-256 combiner pass (up to ~1.2× fastest KEM) |
 
 **Can the hybrids be dropped in favour of composites only? No.**
 
@@ -355,6 +356,59 @@ EVP_PKEY_fromdata(ctx, &pkey, selection, params);
 
 Extracts raw bytes from each component via `EVP_PKEY_export()`, concatenates
 in slot order, and delivers via the export callback.
+
+### Component extraction and composition
+
+`keymgmt_export` and the SPKI/PKCS8 encoders emit the *combined* key. For callers
+that need an individual component as a first-class, usable `EVP_PKEY` — not an
+opaque slice of the concatenated blob — the key also exposes gettable,
+provider-specific params (shared by the hybrid and composite families), for both
+the public and the private half:
+
+- `HYBRID_PKEY_PARAM_CLASSIC_PUB`  (`"hybrid-classic-pub-spki"`)  — SPKI DER
+- `HYBRID_PKEY_PARAM_PQ_PUB`       (`"hybrid-pq-pub-spki"`)       — SPKI DER
+- `HYBRID_PKEY_PARAM_CLASSIC_PRIV` (`"hybrid-classic-priv-pkcs8"`) — PKCS#8 DER
+- `HYBRID_PKEY_PARAM_PQ_PRIV`      (`"hybrid-pq-priv-pkcs8"`)      — PKCS#8 DER
+
+Each returns the component's own standalone encoding — the public half as a
+`SubjectPublicKeyInfo` (`i2d_PUBKEY`), the private half as a PKCS#8
+`PrivateKeyInfo` (`EVP_PKEY2PKCS8`) — produced by the underlying component's own
+provider encoder, so this stays EVP-only and provider-agnostic. A caller
+reconstructs a standalone key it can use directly:
+
+```c
+size_t n = 0;
+EVP_PKEY_get_octet_string_param(hybrid, "hybrid-pq-pub-spki", NULL, 0, &n);
+unsigned char *der = OPENSSL_malloc(n);
+EVP_PKEY_get_octet_string_param(hybrid, "hybrid-pq-pub-spki", der, n, &n);
+const unsigned char *p = der;
+EVP_PKEY *pq = d2i_PUBKEY_ex(NULL, &p, n, libctx, NULL);   /* standalone ML-DSA/ML-KEM */
+```
+
+The private (PKCS#8) blobs carry key material; a caller must cleanse them after
+use, as the provider does internally. Extraction requires the component's provider
+to actually produce a standalone encoding for that algorithm: ML-KEM/ML-DSA
+(default) and the oqs *signature* families do, but the oqs research *KEMs*
+(FrodoKEM/BIKE/HQC) do not — no standalone `SubjectPublicKeyInfo`/PKCS#8 encoding
+is available for them even with oqsprovider's `OQS_KEM_ENCODERS` build option
+enabled (those algorithms carry no OID for the encode path), so those components
+are not individually serializable and the combined PKCS8/SPKI encoders remain the
+only way to serialize them. None of this is hardcoded: the extraction params
+return whatever the component's provider encodes, and `hybrid_extract_test`
+decides at runtime — a row skips only after proving a *standalone* key of that PQ
+algorithm cannot itself be encoded, so a component that is serializable but fails
+to extract is a hard failure, never a silent skip.
+
+**Inner == standalone.** The bytes a component contributes to the container equal
+that component's standalone encoding. For the hybrid family the concatenated
+`OSSL_PKEY_PARAM_PUB_KEY` is exactly `raw(comp_a) || raw(comp_b)`; for the
+composite family the SPKI `BIT STRING` is exactly `pqPub || tradPub` (draft-19).
+`hybrid_extract_test` asserts this across every row of the master tables: it
+extracts both halves (public and private) as standalone keys, checks the extracted
+private and public agree (`EVP_PKEY_eq`), and **recomposes** the container by
+concatenating the two components' raw public keys and re-importing them through
+`EVP_PKEY_fromdata()`, then checks the result compares equal to the original — the
+inverse of extraction.
 
 ### Other keymgmt functions
 
@@ -675,6 +729,27 @@ expensive or dependent on upstream drift runs weekly.**
   only (a runtime undefined-symbol at provider load stays green there), and the
   drift check is a buildless algorithm-set diff.
 
+The pinned tier caches its toolchain as **three independent `actions/cache`
+entries**, not one bundle, so a pin that did not change is never rebuilt: OpenSSL
+keyed on its resolved commit (which moves on every patch release), the pinned
+liboqs keyed on its ref *alone*, and oqs-provider keyed on both. liboqs *does*
+link libcrypto (for its AES/SHA symmetric primitives), but only through the
+soname-stable public EVP API — its imports are all `@OPENSSL_3.0.0` and it
+carries no RUNPATH — so a single liboqs build resolves `libcrypto.so.3` at
+runtime against whichever OpenSSL 3.x is staged beside it (via
+`LD_LIBRARY_PATH`), and can be reused across OpenSSL patch bumps *and* across the
+3.4 / latest legs without rebuilding. (This was already true implicitly: the
+liboqs build is never pointed at the pinned `$PREFIX` OpenSSL, so the split only
+stops rebuilding an artifact that never depended on the specific OpenSSL patch.)
+Each leg builds OpenSSL and liboqs into separate staging prefixes, then merges
+both into the single runtime prefix the build and tests expect. The earlier
+single-bundle cache keyed on the OpenSSL SHA rebuilt the pinned liboqs on every
+OpenSSL bump — pure waste, since liboqs had not moved. `setup_oqs_interop.sh`
+grows an `ONLY_LIBOQS` / `LIBOQS_PREFIX` mode to populate the standalone liboqs
+cache; its local-dev default (one shared prefix) is unchanged. The weekly tier
+deliberately does the opposite — it caches only OpenSSL and rebuilds liboqs +
+oqs-provider `main` fresh, which is its whole point.
+
 On top of the two behavioural tiers, a **sanitize** leg guards the hand-written
 EVP glue for memory safety (issue #42): it builds the provider and every
 in-process test with AddressSanitizer + UndefinedBehaviorSanitizer (LeakSanitizer
@@ -792,12 +867,26 @@ fork-then-operate leg proving this.
 
 ## Performance
 
-The provider is a **near-zero-cost EVP composition layer**: its own glue adds
-essentially nothing, and a hybrid runs only as fast as each component's EVP path.
-The composition double-dispatch is negligible against both slow and fast PQ
-primitives (a hybrid's sign time equals a hand-written inline composite doing the
-identical EVP calls). Keygen is competitive; KEM encaps/decaps is at parity with
-the default provider and oqsprovider.
+The provider is a **low-cost EVP composition layer**: the glue it adds over the
+two component operations is small. Measured by the machine-checked guard
+(sum-of-components; see *Testing* and `test/bench_util.c`) across the full
+algorithm table on the OpenSSL versions CI covers (a pre-3.5 release, a current
+&ge;3.5 release, and `master`), a composed operation stays within
+**~1.0× for signatures** and **up to ~1.2× for the fastest KEMs** of the sum of its
+standalone components. The ~1.2× is the SHA3-256 combiner pass / provider dispatch
+as a *fixed* cost on a tiny (~0.07 ms) base — negligible for anything ≳ 1 ms. A
+hybrid is at **parity with oqsprovider's own hybrid** of the same name (identical
+components, so comparing the composed times directly measures glue-vs-glue): e.g.
+`p256_OV_Is_pkc` sign 0.048 ms ours vs 0.049 ms oqsprovider, tax-free on 3.4.
+Keygen is competitive; KEM encaps/decaps is at parity with the default provider
+and oqsprovider.
+
+(An earlier internal measurement suggested a much larger, hybrid-specific glue —
+including a ~13–18× RSA-verify figure — but that was a **benchmark artifact**:
+signing/verifying a provider-native key with a NULL property query forced a per-op
+cross-provider algorithm resolution that dwarfed the crypto for the fastest
+primitives, RSA worst. With the explicit property query real callers use, every
+hybrid, RSA included, sits at ~1.0×. No provider issue remains.)
 
 The one non-obvious effect is a ~1.9× tax on *fast* PQ signatures (Falcon/MAYO/
 SNOVA) when the PQ component is sourced from oqsprovider on OpenSSL ≥ 3.5. This is

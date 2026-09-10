@@ -335,7 +335,12 @@ done:
  * it exercises the provider's new entry points regardless of whether the base
  * library's CMS layer is new enough to use them (so it gives real coverage on
  * 3.5.x too).
+ *
+ * The message-signature EVP API (EVP_PKEY_sign_message_*, the
+ * OSSL_SIGNATURE_PARAM_SIGNATURE ctx-param) is 3.4+, so this round-trip is
+ * compiled out on 3.0–3.3 — where the provider itself omits the entry points.
  */
+#ifdef OSSL_SIGNATURE_PARAM_SIGNATURE
 static void check_message_api(OSSL_LIB_CTX *libctx, const char *alg)
 {
     EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, alg, "provider=hybrid");
@@ -417,6 +422,7 @@ done:
     EVP_PKEY_free(pkey);
     EVP_PKEY_CTX_free(g);
 }
+#endif /* OSSL_SIGNATURE_PARAM_SIGNATURE */
 
 int main(void)
 {
@@ -450,7 +456,9 @@ int main(void)
         if (is_standardized_pq_sig(info->alg2_name) || have_oqs) {
             check(ctx, info->hybrid_name, 0, noattr_supported);   /* signed attrs */
             check(ctx, info->hybrid_name, 1, noattr_supported);   /* CMS_NOATTR */
+#ifdef OSSL_SIGNATURE_PARAM_SIGNATURE
             check_message_api(ctx, info->hybrid_name);            /* item 14 API */
+#endif
         }
     }
     if (!have_oqs)

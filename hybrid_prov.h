@@ -248,10 +248,14 @@ typedef struct hybrid_key_st {
   X(secp384r1mlkem1024,"SecP384r1MLKEM1024", "EC",     "P-384",         0,    \
       "MLKEM1024", 1, 0x11ed, 256, "P-384+ML-KEM-1024", "1.3.6.1.4.1.42235.6")\
   /* --- oqsprovider OQS-legacy ML-KEM hybrids --- */                         \
+  /* mlkem512 P-256/X25519 code points follow                                 \
+   * draft-rosomakho-tls-ecdhe-mlkem512-00 (0x11e9/0x11ea, adopted by          \
+   * oqsprovider #802); the P-256 row also takes the draft's SecP256r1MLKEM512 \
+   * name. OIDs are retained (oqsprovider's, per its generate.yml). */         \
   X(x25519_mlkem512,   "x25519_mlkem512",    "X25519", NULL,            0,    \
-      "MLKEM512",  0, 0x2fb6, 128, "X25519+ML-KEM-512", "1.3.6.1.4.1.22554.5.8.1")\
-  X(p256_mlkem512,     "p256_mlkem512",      "EC",     "P-256",         0,    \
-      "MLKEM512",  1, 0x2f4b, 128, "P-256+ML-KEM-512", "1.3.6.1.4.1.22554.5.7.1")\
+      "MLKEM512",  0, 0x11ea, 128, "X25519+ML-KEM-512", "1.3.6.1.4.1.22554.5.8.1")\
+  X(secp256r1mlkem512, "SecP256r1MLKEM512",  "EC",     "P-256",         0,    \
+      "MLKEM512",  1, 0x11e9, 128, "P-256+ML-KEM-512", "1.3.6.1.4.1.22554.5.7.1")\
   X(bp256_mlkem512,    "bp256_mlkem512",     "EC",   "brainpoolP256r1", 0,    \
       "MLKEM512",  0, 0xfe20, 128, "brainpoolP256r1+ML-KEM-512", NULL)\
   X(p384_mlkem768,     "p384_mlkem768",      "EC",     "P-384",         0,    \
@@ -363,7 +367,7 @@ static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
     { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* SecP256r1MLKEM768 */
     { 97,48,48,97, 1568,3168,32,1568, 0,0 },        /* SecP384r1MLKEM1024 */
     { 32,32,32,32, 800,1632,32,768, 0,0 },          /* x25519_mlkem512 */
-    { 65,32,32,65, 800,1632,32,768, 0,0 },          /* p256_mlkem512 */
+    { 65,32,32,65, 800,1632,32,768, 0,0 },          /* SecP256r1MLKEM512 */
     { 65,32,32,65, 800,1632,32,768, 0,0 },          /* bp256_mlkem512 */
     { 97,48,48,97, 1184,2400,32,1088, 0,0 },        /* p384_mlkem768 */
     { 56,56,56,56, 1184,2400,32,1088, 0,0 },        /* x448_mlkem768 */
@@ -639,6 +643,33 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
 void hybrid_log(const char *fmt, ...);
 
 /*
+ * Component extraction (work-items item 13). A hybrid/composite key composes a
+ * classical component and a PQ component, each a real EVP_PKEY. These gettable,
+ * provider-specific params expose each component as a standalone, self-describing
+ * DER blob — the public half as a SubjectPublicKeyInfo (d2i_PUBKEY) and, when the
+ * private key is present, the private half as a PKCS#8 PrivateKeyInfo
+ * (d2i_PKCS8_PRIV_KEY_INFO -> EVP_PKCS82PKEY) — rather than only the opaque
+ * concatenated blobs of OSSL_PKEY_PARAM_PUB_KEY / _PRIV_KEY. Each is the
+ * component's own standalone encoding, so a caller reconstructs a usable
+ * component key with no knowledge of the hybrid layout. Names are role-based and
+ * shared by both families. The PKCS#8 blobs carry key material: a caller must
+ * cleanse them after use.
+ */
+#define HYBRID_PKEY_PARAM_CLASSIC_PUB  "hybrid-classic-pub-spki"
+#define HYBRID_PKEY_PARAM_PQ_PUB       "hybrid-pq-pub-spki"
+#define HYBRID_PKEY_PARAM_CLASSIC_PRIV "hybrid-classic-priv-pkcs8"
+#define HYBRID_PKEY_PARAM_PQ_PRIV      "hybrid-pq-priv-pkcs8"
+
+/*
+ * Set OSSL_PARAM *p to the SubjectPublicKeyInfo (spki) or PKCS#8 PrivateKeyInfo
+ * (pkcs8) DER of component |comp|, honouring a size query (p->data == NULL).
+ * Returns 1 on success. Shared by the hybrid and composite keymgmt get_params
+ * (hybrid_prov.c). The pkcs8 form emits private key material.
+ */
+int hybrid_component_spki_param(OSSL_PARAM *p, EVP_PKEY *comp);
+int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
+
+/*
  * TLS code-point hygiene (issue #45).
  *
  * A provisional code point must never sit in IANA standards-track space, where
@@ -648,9 +679,11 @@ void hybrid_log(const char *fmt, ...);
  * point this provider uses must fall into one of the ranges below, classified by
  * VALUE alone (not by algorithm name), and hybrid_capability_test asserts that
  * for every table entry:
- *   - IANA-assigned span: the draft-ietf-tls-ecdhe-mlkem ML-KEM-hybrid
- *     NamedGroups, registered as the contiguous span 0x11EB..0x11ED. The only
- *     standards-track values we use; taken verbatim from the assignment.
+ *   - IANA-assigned span: the ML-KEM-hybrid NamedGroups, registered as the
+ *     contiguous span 0x11E9..0x11ED. 0x11EB..0x11ED are draft-ietf-tls-ecdhe-mlkem
+ *     (ML-KEM 768/1024); 0x11E9..0x11EA are the ML-KEM-512 tier added by
+ *     draft-rosomakho-tls-ecdhe-mlkem512-00 (adopted by oqsprovider #802). The
+ *     only standards-track values we use; taken verbatim from the assignments.
  *   - Provisional: everything else, inherited from oqsprovider for on-the-wire
  *     interop — either oqsprovider's experimental ML-KEM-hybrid block
  *     (0x2F00..0x2FFF) or the TLS private-use range (0xFE00..0xFFFF, which
@@ -662,8 +695,8 @@ void hybrid_log(const char *fmt, ...);
 #define HYBRID_TLS_PRIVATE_USE_MAX      0xFFFFu
 #define HYBRID_TLS_OQS_EXPERIMENTAL_MIN 0x2F00u
 #define HYBRID_TLS_OQS_EXPERIMENTAL_MAX 0x2FFFu
-#define HYBRID_TLS_IANA_ASSIGNED_MIN    0x11EBu   /* draft-ietf-tls-ecdhe-mlkem */
-#define HYBRID_TLS_IANA_ASSIGNED_MAX    0x11EDu
+#define HYBRID_TLS_IANA_ASSIGNED_MIN    0x11E9u   /* 0x11E9..0x11EA: draft-rosomakho */
+#define HYBRID_TLS_IANA_ASSIGNED_MAX    0x11EDu   /* 0x11EB..0x11ED: draft-ietf-tls-ecdhe-mlkem */
 
 static inline int hybrid_codepoint_is_provisional(unsigned int cp)
 {

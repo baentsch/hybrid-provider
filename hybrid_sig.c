@@ -20,6 +20,30 @@
 #include <openssl/proverr.h>
 
 /*
+ * OSSL_SIGNATURE_PARAM_CONTEXT_STRING ("context-string") was added to
+ * core_names.h in OpenSSL 3.2. On 3.0/3.1 the provider builds KEM-only and no
+ * hybrid signature is operable (they need a 3.2+ component provider), so the
+ * per-op context-string plumbing is compiled out where the param name is absent
+ * — guarding on presence of the specific define rather than assuming the name.
+ */
+#ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+# define HYBRID_HAVE_CTX_STR 1
+#endif
+
+/*
+ * The message-signature API (sign_message_init/update/final, verify_message_*,
+ * and the OSSL_SIGNATURE_PARAM_SIGNATURE ctx-param) landed in OpenSSL 3.4 — the
+ * dispatch numbers below are absent on 3.0–3.3. Guard on presence of the
+ * specific dispatch define rather than a version test, so the block compiles out
+ * cleanly where the API does not exist (KEM-only 3.0/3.1, or 3.2/3.3). Presence
+ * of SIGN_MESSAGE_INIT implies OSSL_SIGNATURE_PARAM_SIGNATURE and hence
+ * HYBRID_HAVE_CTX_STR (all shipped together in 3.4).
+ */
+#ifdef OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT
+# define HYBRID_HAVE_MSG_SIG 1
+#endif
+
+/*
  * The operation context carries no libctx of its own: the component sign/verify
  * below source their library context and property queries from the key
  * (key->libctx / HYBRID_KEY_*_PROPQ), captured from the provider's component
@@ -114,11 +138,12 @@ err:
 static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
                                     const OSSL_PARAM params[])
 {
-    const OSSL_PARAM *p;
-
     if (params == NULL)
         return 1;
-    p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
+#ifdef HYBRID_HAVE_CTX_STR
+    const OSSL_PARAM *p =
+        OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
+
     if (p != NULL) {
         void *buf = NULL;
         size_t len = 0;
@@ -137,6 +162,7 @@ static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
         ctx->ctxstr = buf;
         ctx->ctxstrlen = len;
     }
+# ifdef HYBRID_HAVE_MSG_SIG
     /*
      * The signature to check for the streaming verify-message path (item 14):
      * verify_message_final() takes only the ctx, so libcrypto delivers the
@@ -161,6 +187,10 @@ static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
         ctx->sigbuf = buf;
         ctx->sigbuflen = len;
     }
+# endif
+#else
+    (void)ctx;
+#endif
     return 1;
 }
 
@@ -196,6 +226,25 @@ hybrid_sig_digest_verify_init(void *vctx, const char *mdname,
     ctx->key = key;
     ctx->op = EVP_PKEY_OP_VERIFY;
     return hybrid_sig_apply_params(ctx, params);
+}
+
+/*
+ * Raw (non-digest) signature init. EVP_PKEY_sign_init()/EVP_PKEY_verify_init()
+ * dispatch here; without these entries the raw one-shot SIGN/VERIFY below are
+ * unreachable via the public EVP API. The digest is chosen internally by NIST
+ * level, so there is no mdname to honour — defer to the digest-init helpers,
+ * exactly as the message-signature init wrappers do.
+ */
+static int
+hybrid_sig_sign_init(void *vctx, void *vkey, const OSSL_PARAM params[])
+{
+    return hybrid_sig_digest_sign_init(vctx, NULL, vkey, params);
+}
+
+static int
+hybrid_sig_verify_init(void *vctx, void *vkey, const OSSL_PARAM params[])
+{
+    return hybrid_sig_digest_verify_init(vctx, NULL, vkey, params);
 }
 
 /*
@@ -268,11 +317,16 @@ static OSSL_PARAM *pq_ctx_params(HYBRID_SIG_CTX *ctx, OSSL_PARAM store[2])
 {
     if (ctx->ctxstr == NULL)
         return NULL;
+#ifdef HYBRID_HAVE_CTX_STR
     store[0] = OSSL_PARAM_construct_octet_string(
                    OSSL_SIGNATURE_PARAM_CONTEXT_STRING,
                    ctx->ctxstr, ctx->ctxstrlen);
     store[1] = OSSL_PARAM_construct_end();
     return store;
+#else
+    (void)store;                 /* ctxstr is never set without the param name */
+    return NULL;
+#endif
 }
 
 /*
@@ -427,6 +481,7 @@ err:
     return ret;
 }
 
+#ifdef HYBRID_HAVE_MSG_SIG
 /*
  * Message-signature API (item 14). Unlike digest-sign, these entry points sign
  * the *message* itself — which is exactly what the hybrid does — and are what
@@ -515,13 +570,18 @@ hybrid_sig_verify_message_final(void *vctx)
     return hybrid_sig_digest_verify(vctx, ctx->sigbuf, ctx->sigbuflen,
                                     ctx->msg, ctx->msglen);
 }
+#endif /* HYBRID_HAVE_MSG_SIG */
 
 static const OSSL_PARAM *hybrid_sig_settable_ctx_params(void *vctx,
                                                           void *provctx)
 {
     static const OSSL_PARAM params[] = {
+#ifdef HYBRID_HAVE_CTX_STR
         OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING, NULL, 0),
+# ifdef HYBRID_HAVE_MSG_SIG
         OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_SIGNATURE, NULL, 0),
+# endif
+#endif
         OSSL_PARAM_END
     };
     return params;
@@ -597,6 +657,20 @@ const OSSL_DISPATCH hybrid_sig_functions[] = {
       (void (*)(void))hybrid_sig_digest_verify_init },
     { OSSL_FUNC_SIGNATURE_DIGEST_VERIFY,
       (void (*)(void))hybrid_sig_digest_verify },
+    /*
+     * Raw one-shot API (EVP_PKEY_sign/verify). sign/verify reuse the digest-sign
+     * one-shot, which already signs the raw message; their *_INIT entries make
+     * that path reachable via EVP_PKEY_sign_init/verify_init (issue #79).
+     */
+    { OSSL_FUNC_SIGNATURE_SIGN_INIT,
+      (void (*)(void))hybrid_sig_sign_init },
+    { OSSL_FUNC_SIGNATURE_SIGN,
+      (void (*)(void))hybrid_sig_digest_sign },
+    { OSSL_FUNC_SIGNATURE_VERIFY_INIT,
+      (void (*)(void))hybrid_sig_verify_init },
+    { OSSL_FUNC_SIGNATURE_VERIFY,
+      (void (*)(void))hybrid_sig_digest_verify },
+#ifdef HYBRID_HAVE_MSG_SIG
     /* Message-signature API (item 14): one-shot + streaming. sign/verify reuse
      * the digest-sign one-shot, which already signs the raw message. */
     { OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT,
@@ -605,16 +679,13 @@ const OSSL_DISPATCH hybrid_sig_functions[] = {
       (void (*)(void))hybrid_sig_signverify_message_update },
     { OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_FINAL,
       (void (*)(void))hybrid_sig_sign_message_final },
-    { OSSL_FUNC_SIGNATURE_SIGN,
-      (void (*)(void))hybrid_sig_digest_sign },
     { OSSL_FUNC_SIGNATURE_VERIFY_MESSAGE_INIT,
       (void (*)(void))hybrid_sig_verify_message_init },
     { OSSL_FUNC_SIGNATURE_VERIFY_MESSAGE_UPDATE,
       (void (*)(void))hybrid_sig_signverify_message_update },
     { OSSL_FUNC_SIGNATURE_VERIFY_MESSAGE_FINAL,
       (void (*)(void))hybrid_sig_verify_message_final },
-    { OSSL_FUNC_SIGNATURE_VERIFY,
-      (void (*)(void))hybrid_sig_digest_verify },
+#endif
     { OSSL_FUNC_SIGNATURE_SET_CTX_PARAMS,
       (void (*)(void))hybrid_sig_set_ctx_params },
     { OSSL_FUNC_SIGNATURE_SETTABLE_CTX_PARAMS,

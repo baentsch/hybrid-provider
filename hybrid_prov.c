@@ -5,11 +5,59 @@
 
 #include "hybrid_prov.h"
 #include <openssl/provider.h>
+#include <openssl/x509.h>
 #include <stdlib.h>
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"       /* composite (LAMPS) signatures, folded in here */
 # include "composite_kem_prov.h"   /* composite (LAMPS) ML-KEM, folded in here */
 #endif
+
+/*
+ * Component extraction (work-items item 13). Emit component |comp|'s
+ * SubjectPublicKeyInfo as DER into the OSSL_PARAM, so a caller can d2i_PUBKEY it
+ * into a standalone, usable EVP_PKEY. Shared by the hybrid and composite keymgmt
+ * get_params. i2d_PUBKEY drives the component's own provider encoder, so this
+ * stays EVP-only and provider-agnostic.
+ */
+int hybrid_component_spki_param(OSSL_PARAM *p, EVP_PKEY *comp)
+{
+    unsigned char *der = NULL;
+    int dlen;
+    int ret = 0;
+
+    if (p == NULL || comp == NULL)
+        return 0;
+    if ((dlen = i2d_PUBKEY(comp, &der)) <= 0)
+        return 0;
+    ret = OSSL_PARAM_set_octet_string(p, der, (size_t)dlen);
+    OPENSSL_free(der);
+    return ret;
+}
+
+/*
+ * As above, but the PKCS#8 PrivateKeyInfo DER of component |comp|. The component
+ * carries the actual private key of a real algorithm, so this serializes it the
+ * same way any single-algorithm PKCS8 export would (via EVP_PKEY2PKCS8); the
+ * private material is cleansed before the buffer is freed.
+ */
+int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp)
+{
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    unsigned char *der = NULL;
+    int dlen;
+    int ret = 0;
+
+    if (p == NULL || comp == NULL)
+        return 0;
+    if ((p8 = EVP_PKEY2PKCS8(comp)) == NULL)
+        return 0;
+    if ((dlen = i2d_PKCS8_PRIV_KEY_INFO(p8, &der)) > 0) {
+        ret = OSSL_PARAM_set_octet_string(p, der, (size_t)dlen);
+        OPENSSL_clear_free(der, (size_t)dlen);
+    }
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    return ret;
+}
 
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;
 static OSSL_FUNC_provider_gettable_params_fn hybrid_gettable_params;
@@ -453,7 +501,12 @@ static int hybrid_cede_group_cb(const OSSL_PARAM params[], void *arg)
 }
 
 /* Cede any hybrid/composite signature the default provider advertises as a TLS
- * sigalg under the same name, code point or OID (arg is the set). */
+ * sigalg under the same name, code point or OID (arg is the set).
+ *
+ * The TLS-SIGALG capability params are 3.2+ (see hybrid_caps.c); the whole
+ * callback — and its registration below — is compiled out on 3.0/3.1, where the
+ * default provider advertises no TLS sigalgs and the KEM-only build must link. */
+#ifdef OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT
 static int hybrid_cede_sigalg_cb(const OSSL_PARAM params[], void *arg)
 {
     HYBRID_CEDE_SET *set = arg;
@@ -494,6 +547,7 @@ static int hybrid_cede_sigalg_cb(const OSSL_PARAM params[], void *arg)
 #endif
     return 1;
 }
+#endif /* OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT */
 
 /* Cede every algorithm the default provider resolves by a direct fetch (KEM by
  * name; signature by name, else by OID) — catching those it serves without a
@@ -627,8 +681,10 @@ static void hybrid_probe_cede(OSSL_LIB_CTX *libctx, int cede,
             hybrid_cede_by_fetch(libctx, set);
             (void)OSSL_PROVIDER_get_capabilities(def, "TLS-GROUP",
                                                  hybrid_cede_group_cb, set);
+#ifdef OSSL_CAPABILITY_TLS_SIGALG_CODE_POINT
             (void)OSSL_PROVIDER_get_capabilities(def, "TLS-SIGALG",
                                                  hybrid_cede_sigalg_cb, set);
+#endif
             ERR_pop_to_mark();
         }
     }

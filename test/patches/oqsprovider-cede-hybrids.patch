@@ -1,8 +1,8 @@
 diff --git a/oqsprov/oqsprov.c b/oqsprov/oqsprov.c
-index 6d7598e..58d421f 100644
+index 2ddfcd7..b4c5cfc 100644
 --- a/oqsprov/oqsprov.c
 +++ b/oqsprov/oqsprov.c
-@@ -1442,6 +1442,66 @@ int OQS_PROVIDER_ENTRYPOINT_NAME(const OSSL_CORE_HANDLE *handle,
+@@ -1511,6 +1511,65 @@ int OQS_PROVIDER_ENTRYPOINT_NAME(const OSSL_CORE_HANDLE *handle,
  
      ///// OQS_TEMPLATE_FRAGMENT_DISABLE_OSSL_ALGS_END
  
@@ -23,17 +23,16 @@ index 6d7598e..58d421f 100644
 +     * registration in the loop below -- i.e. a complete withdrawal.
 +     *
 +     * Hybrids are recognised structurally: an oqsprovider hybrid is registered
-+     * as <classical>_<pq> (e.g. p256_mldsa44, x25519_frodo640aes) or under one
-+     * of the IETF-standardised MLX KEM names. No standalone algorithm carries a
-+     * classical prefix, so matching the prefix set below is exact.
++     * as <classical>_<pq> (e.g. p256_mldsa44, x25519_frodo640aes) or as a
++     * standardised MLX name carrying the upper-case token "MLKEM"
++     * (X25519MLKEM768, SecP256r1MLKEM512, ...). No standalone algorithm carries
++     * a classical prefix, and standalone ML-KEM registers lower-case
++     * ("mlkem512"), so neither test matches a non-hybrid.
 +     */
 +    if (getenv("OQS_CEDE_HYBRIDS") != NULL) {
 +        static const char *const hybrid_prefixes[] = {
 +            "p256_", "p384_", "p521_",  "x25519_",
 +            "x448_", "bp256_", "bp384_", "bp512_", "rsa3072_"};
-+        static const char *const hybrid_standard_names[] = {
-+            "X25519MLKEM768", "SecP256r1MLKEM768", "X448MLKEM1024",
-+            "SecP384r1MLKEM1024"};
 +        const OSSL_ALGORITHM *const hybrid_alg_lists[] = {
 +            oqsprovider_signatures, oqsprovider_asym_kems};
 +        size_t li, pi;
@@ -52,10 +51,10 @@ index 6d7598e..58d421f 100644
 +                        is_hybrid = 1;
 +                        break;
 +                    }
-+                for (pi = 0;
-+                     !is_hybrid && pi < OSSL_NELEM(hybrid_standard_names); pi++)
-+                    if (strcmp(name, hybrid_standard_names[pi]) == 0)
-+                        is_hybrid = 1;
++                /* standardised MLX-style hybrids: no classical prefix, but the
++                 * upper-case "MLKEM" token no standalone algorithm uses. */
++                if (!is_hybrid && strstr(name, "MLKEM") != NULL)
++                    is_hybrid = 1;
 +
 +                if (is_hybrid &&
 +                    sk_OPENSSL_STRING_find(rt_disabled_algs, (char *)name) < 0) {

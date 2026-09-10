@@ -90,8 +90,11 @@ jobs:
           - { name: "latest", series: "",    pre35: "false" }   # highest stable tag
     env:
       PREFIX: ${{ github.workspace }}/.local
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
+      OQS_INSTALL: ${{ github.workspace }}/oqs-install
       LIBOQS_REF: "0.16.0"
-      OQSPROV_REF: "00fde3373e466043ee30ed31e32c56f6964ee5f4"
+      # incl. oqsprovider #802: mlkem512 rename (SecP256r1MLKEM512) + code points
+      OQSPROV_REF: "72e7dae5aab022167aa7ae8f5afdb9667d848104"
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -109,36 +112,69 @@ jobs:
           echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "OpenSSL: $REF ($SHA)"
 
-      # One cache holds the pinned toolchain: OpenSSL + liboqs install (.local)
-      # and the oqs-provider build. Everything is a fixed ref, so it reuses across
-      # runs until a pin changes.
-      - name: Cache toolchain
-        id: cache
+      # Three independent caches so a pinned dep survives churn in the others.
+      # OpenSSL is keyed on its resolved commit (moves on each patch release);
+      # liboqs is keyed ONLY on its ref — it links libcrypto only via the
+      # soname-stable @OPENSSL_3.0.0 EVP API (and carries no RUNPATH), so one
+      # build resolves the staged libcrypto.so.3 at runtime and is reused across
+      # OpenSSL bumps and versions; oqs-provider is keyed on both (it too links
+      # libcrypto, but is small to rebuild).  See setup_oqs_interop.sh.
+      - name: Cache OpenSSL
+        id: cache-ossl
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.PREFIX }}
-            ${{ github.workspace }}/.interop/oqs-provider
-          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
 
       - name: Build OpenSSL
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
             https://github.com/openssl/openssl ossl-src
           cd ossl-src
-          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
           make -j"$(nproc)"
           make install_sw
 
-      - name: Configure hybrid provider
-        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON
+      - name: Cache liboqs (pinned)
+        id: cache-liboqs
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OQS_INSTALL }}
+          key: liboqs-${{ runner.os }}-${{ env.LIBOQS_REF }}
 
-      # Builds/installs pinned liboqs + oqs-provider (skips liboqs if already in
-      # $PREFIX from cache; ninja no-ops the cached oqs-provider build) and
-      # symlinks oqsprovider.so into build/.
-      - name: Build liboqs + oqs-provider (pinned)
+      - name: Build liboqs (pinned)
+        if: steps.cache-liboqs.outputs.cache-hit != 'true'
+        run: ONLY_LIBOQS=1 LIBOQS_PREFIX="$OQS_INSTALL" ./test/setup_oqs_interop.sh
+
+      # Merge the two cached installs into the single runtime prefix the build and
+      # tests expect (headers, libs, oqsprovider all discoverable under $PREFIX).
+      - name: Stage OpenSSL + liboqs into .local
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX"
+          cp -a "$OSSL_INSTALL"/. "$PREFIX"/
+          cp -a "$OQS_INSTALL"/. "$PREFIX"/
+
+      # Push/PR fast tier also builds the shipped provider + tests hardened
+      # (-DHYBRID_HARDEN=ON: stack canaries, FORTIFY_SOURCE, full RELRO, non-exec
+      # stack, CET) so the OpenSSF-guide compiler defenses are proven to compile
+      # clean and pass here. Local dev builds leave it OFF. The sanitizer/TSan/fuzz
+      # legs stay the primary dynamic defence; this is a cheap static complement.
+      - name: Configure hybrid provider
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_HARDEN=ON
+
+      - name: Cache oqs-provider (pinned)
+        id: cache-oqsp
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.interop/oqs-provider
+          key: oqsp-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+
+      # liboqs is already staged in $PREFIX (so the script skips it); this builds
+      # oqs-provider (ninja no-ops the cached build) and symlinks oqsprovider.so.
+      - name: Build oqs-provider (pinned)
         run: OPENSSL_PREFIX="$PREFIX" BUILD_DIR="$PWD/build" ./test/setup_oqs_interop.sh
 
       - name: Build hybrid provider
@@ -147,7 +183,7 @@ jobs:
       - name: Test — full suite (OpenSSL >= 3.5)
         if: matrix.openssl.pre35 != 'true'
         working-directory: build
-        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
+        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)"
 
       # Pre-3.5 the default provider has no native ML-KEM/ML-DSA (and no seed
       # API), so MLX-vs-default checks and the STANDARDIZED composite tiers
@@ -161,7 +197,7 @@ jobs:
         if: matrix.openssl.pre35 == 'true'
         working-directory: build
         run: |
-          LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
+          LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" \
             -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
 
   # --------------------------------------------------------------- sanitize ---
@@ -189,8 +225,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PREFIX: ${{ github.workspace }}/.local
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
+      OQS_INSTALL: ${{ github.workspace }}/oqs-install
       LIBOQS_REF: "0.16.0"
-      OQSPROV_REF: "00fde3373e466043ee30ed31e32c56f6964ee5f4"
+      # incl. oqsprovider #802: mlkem512 rename (SecP256r1MLKEM512) + code points
+      OQSPROV_REF: "72e7dae5aab022167aa7ae8f5afdb9667d848104"
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -206,30 +245,56 @@ jobs:
           echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "OpenSSL: $REF ($SHA)"
 
-      - name: Cache toolchain
-        id: cache
+      # Split caches (see the regular job): OpenSSL keyed on its commit, pinned
+      # liboqs keyed on its ref alone (reused across OpenSSL bumps and shared with
+      # the regular leg), oqs-provider keyed on both.
+      - name: Cache OpenSSL
+        id: cache-ossl
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.PREFIX }}
-            ${{ github.workspace }}/.interop/oqs-provider
-          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
 
       - name: Build OpenSSL
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
             https://github.com/openssl/openssl ossl-src
           cd ossl-src
-          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
           make -j"$(nproc)"
           make install_sw
+
+      - name: Cache liboqs (pinned)
+        id: cache-liboqs
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OQS_INSTALL }}
+          key: liboqs-${{ runner.os }}-${{ env.LIBOQS_REF }}
+
+      - name: Build liboqs (pinned)
+        if: steps.cache-liboqs.outputs.cache-hit != 'true'
+        run: ONLY_LIBOQS=1 LIBOQS_PREFIX="$OQS_INSTALL" ./test/setup_oqs_interop.sh
+
+      - name: Stage OpenSSL + liboqs into .local
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX"
+          cp -a "$OSSL_INSTALL"/. "$PREFIX"/
+          cp -a "$OQS_INSTALL"/. "$PREFIX"/
 
       - name: Configure hybrid provider (sanitizers)
         run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_SANITIZE=ON
 
-      - name: Build liboqs + oqs-provider (pinned)
+      - name: Cache oqs-provider (pinned)
+        id: cache-oqsp
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.interop/oqs-provider
+          key: oqsp-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+
+      - name: Build oqs-provider (pinned)
         run: OPENSSL_PREFIX="$PREFIX" BUILD_DIR="$PWD/build" ./test/setup_oqs_interop.sh
 
       - name: Build hybrid provider
@@ -243,7 +308,7 @@ jobs:
           export ASAN_OPTIONS="abort_on_error=1:detect_leaks=1:strict_string_checks=1"
           export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/test/lsan.supp"
           export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
-          ctest --output-on-failure -E 'hybrid_scenarios_'
+          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -E 'hybrid_scenarios_'
 
   # -------------------------------------------------------------------- tsan ---
   # Thread-safety audit automation (issue #43): build the provider + tests with
@@ -265,6 +330,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PREFIX: ${{ github.workspace }}/.local
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -280,27 +346,31 @@ jobs:
           echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "OpenSSL: $REF ($SHA)"
 
-      # Reuse the regular/sanitize leg's toolchain cache (same key) — only the
-      # OpenSSL install under $PREFIX is needed here.
-      - name: Cache toolchain
-        id: cache
+      # Only OpenSSL is needed here (the threads test's algorithms resolve from the
+      # default provider). Share the regular/sanitize leg's OpenSSL cache (same key).
+      - name: Cache OpenSSL
+        id: cache-ossl
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.PREFIX }}
-            ${{ github.workspace }}/.interop/oqs-provider
-          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-0.16.0-oqsp-00fde3373e466043ee30ed31e32c56f6964ee5f4
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
 
       - name: Build OpenSSL
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
             https://github.com/openssl/openssl ossl-src
           cd ossl-src
-          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
           make -j"$(nproc)"
           make install_sw
+
+      - name: Stage OpenSSL into .local
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX"
+          cp -a "$OSSL_INSTALL"/. "$PREFIX"/
 
       - name: Configure hybrid provider (ThreadSanitizer)
         run: cmake -S . -B build -G Ninja -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_TSAN=ON
@@ -333,8 +403,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PREFIX: ${{ github.workspace }}/.local
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
+      OQS_INSTALL: ${{ github.workspace }}/oqs-install
       LIBOQS_REF: "0.16.0"
-      OQSPROV_REF: "00fde3373e466043ee30ed31e32c56f6964ee5f4"
+      # incl. oqsprovider #802: mlkem512 rename (SecP256r1MLKEM512) + code points
+      OQSPROV_REF: "72e7dae5aab022167aa7ae8f5afdb9667d848104"
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -350,30 +423,56 @@ jobs:
           echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "OpenSSL: $REF ($SHA)"
 
-      - name: Cache toolchain
-        id: cache
+      # Split caches (see the regular job). The pinned-liboqs cache is keyed on the
+      # ref alone, so this 3.4 leg reuses the very same liboqs build as the >=3.5
+      # legs — the OpenSSL and oqs-provider caches differ by OpenSSL commit.
+      - name: Cache OpenSSL
+        id: cache-ossl
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.PREFIX }}
-            ${{ github.workspace }}/.interop/oqs-provider
-          key: san34-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
 
       - name: Build OpenSSL
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
             https://github.com/openssl/openssl ossl-src
           cd ossl-src
-          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
           make -j"$(nproc)"
           make install_sw
+
+      - name: Cache liboqs (pinned)
+        id: cache-liboqs
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OQS_INSTALL }}
+          key: liboqs-${{ runner.os }}-${{ env.LIBOQS_REF }}
+
+      - name: Build liboqs (pinned)
+        if: steps.cache-liboqs.outputs.cache-hit != 'true'
+        run: ONLY_LIBOQS=1 LIBOQS_PREFIX="$OQS_INSTALL" ./test/setup_oqs_interop.sh
+
+      - name: Stage OpenSSL + liboqs into .local
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX"
+          cp -a "$OSSL_INSTALL"/. "$PREFIX"/
+          cp -a "$OQS_INSTALL"/. "$PREFIX"/
 
       - name: Configure hybrid provider (sanitizers)
         run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_SANITIZE=ON
 
-      - name: Build liboqs + oqs-provider (pinned)
+      - name: Cache oqs-provider (pinned)
+        id: cache-oqsp
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.interop/oqs-provider
+          key: oqsp-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+
+      - name: Build oqs-provider (pinned)
         run: OPENSSL_PREFIX="$PREFIX" BUILD_DIR="$PWD/build" ./test/setup_oqs_interop.sh
 
       - name: Build hybrid provider
@@ -387,7 +486,7 @@ jobs:
           export ASAN_OPTIONS="abort_on_error=1:detect_leaks=1:strict_string_checks=1"
           export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/test/lsan.supp"
           export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
-          ctest --output-on-failure \
+          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" \
             -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|hybrid_leakcheck_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
 
   # ----------------------------------------------------------------- weekly ---
@@ -489,13 +588,13 @@ jobs:
       - name: Test — full suite (OpenSSL >= 3.5)
         if: matrix.openssl.pre35 != 'true'
         working-directory: build
-        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure
+        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)"
 
       - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
         if: matrix.openssl.pre35 == 'true'
         working-directory: build
         run: |
-          LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure \
+          LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" \
             -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|composite_kem_prov_test'
 
       # One tracking issue PER OpenSSL leg (the legs fail for different reasons — a
@@ -588,6 +687,7 @@ jobs:
       issues: write
     env:
       PREFIX: ${{ github.workspace }}/.local
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -604,28 +704,32 @@ jobs:
           echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "OpenSSL: $REF ($SHA)"
 
-      # Reuse the regular/sanitize/tsan toolchain cache (same key): only the
-      # OpenSSL install under $PREFIX is needed here — this >=3.5 leg sources its
-      # PQ from the default provider, so no liboqs/oqsprovider is built.
-      - name: Cache toolchain
-        id: cache
+      # Only OpenSSL is needed here — this >=3.5 leg sources its PQ from the
+      # default provider, so no liboqs/oqsprovider is built. Shares the OpenSSL
+      # cache (same key) with the regular/sanitize/tsan legs.
+      - name: Cache OpenSSL
+        id: cache-ossl
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.PREFIX }}
-            ${{ github.workspace }}/.interop/oqs-provider
-          key: reg-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-0.16.0-oqsp-00fde3373e466043ee30ed31e32c56f6964ee5f4
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
 
       - name: Build OpenSSL
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
             https://github.com/openssl/openssl ossl-src
           cd ossl-src
-          ./Configure --prefix="$PREFIX" --libdir=lib64 no-docs
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
           make -j"$(nproc)"
           make install_sw
+
+      - name: Stage OpenSSL into .local
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX"
+          cp -a "$OSSL_INSTALL"/. "$PREFIX"/
 
       - name: Configure hybrid provider (clang, libFuzzer)
         run: CC=clang cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_FUZZ=ON

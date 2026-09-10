@@ -110,3 +110,8 @@ hybrid-provider/
 - OpenSSL coding style (4-space indent, K&R braces)
 - All public symbols prefixed with `hybrid_`
 - Error handling via `ERR_raise` / `ERR_raise_data`
+- Secure-coding principles: follow the OpenSSF [Security-Focused Guide for AI
+  Code Assistant Instructions](https://best.openssf.org/Security-Focused-Guide-for-AI-Code-Assistant-Instructions).
+  See CONTRIBUTING.md "Security conventions" for the concrete rules (validate
+  untrusted wire lengths, wipe secret buffers on every path, no secrets in error
+  strings, constant-time secret compares, negative/fuzz tests).

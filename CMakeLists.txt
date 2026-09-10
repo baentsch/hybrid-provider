@@ -54,6 +54,42 @@ if(HYBRID_TSAN)
     add_link_options(-fsanitize=thread)
 endif()
 
+# Compiler/linker hardening. Enables the "compiler defenses" the OpenSSF
+# Security-Focused Guide for AI Code Assistant Instructions calls for in its
+# C/C++ guidance (stack canaries, FORTIFY_SOURCE, DEP/NX) — see CONTRIBUTING.md
+# "Security conventions". OFF by default so local dev builds stay fast and unhardened;
+# CI's push/PR leg turns it ON (-DHYBRID_HARDEN=ON) so the shipped provider AND
+# the test binaries are proven to build clean and pass with hardening on. The
+# dynamic analysis legs (ASan/UBSan/TSan/libFuzzer) remain the primary defence;
+# this is a cheap belt-and-suspenders check, not a replacement. Each flag is
+# feature-tested rather than assumed, so an older or non-x86 toolchain skips the
+# ones it lacks instead of failing to configure.
+option(HYBRID_HARDEN "Build with compiler/linker hardening flags (CI leg)" OFF)
+if(HYBRID_HARDEN)
+    if(MSVC)
+        message(FATAL_ERROR "HYBRID_HARDEN is GCC/Clang only")
+    endif()
+    include(CheckCCompilerFlag)
+    # FORTIFY_SOURCE is a no-op without optimization, so force -O2 for this build.
+    add_compile_options(-O2)
+    # -U first: Ubuntu's gcc predefines _FORTIFY_SOURCE under -O; redefining it
+    # warns, and -Werror=format-security (below) would turn that warning fatal.
+    add_compile_options(-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
+    foreach(_hp_flag
+            -fstack-protector-strong    # stack canaries
+            -fstack-clash-protection    # large-stack-probe guard
+            -fcf-protection=full        # Intel CET (DEP/NX-class CFI)
+            -Wformat -Wformat-security -Werror=format-security)
+        string(MAKE_C_IDENTIFIER "HAVE_HP${_hp_flag}" _hp_var)
+        check_c_compiler_flag("${_hp_flag}" ${_hp_var})
+        if(${_hp_var})
+            add_compile_options("${_hp_flag}")
+        endif()
+    endforeach()
+    # Link-time hardening: full RELRO (GOT read-only) + non-executable stack.
+    add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
+endif()
+
 # Allow pointing to a local OpenSSL build:
 #   cmake .. -DOPENSSL_ROOT_DIR=../.local
 if(DEFINED OPENSSL_ROOT_DIR)
@@ -68,7 +104,7 @@ find_package(OpenSSL 3.0 REQUIRED)
 message(STATUS "Using OpenSSL ${OPENSSL_VERSION} from ${OPENSSL_INCLUDE_DIR}")
 
 # OpenSSL 4.1 deprecated the int-typed ASN1_STRING_set()/ASN1_STRING_length() in
-# favour of the size_t ASN1_STRING_set_data()/ASN1_STRING_length_ex(). Detect the
+# favour of the size_t ASN1_STRING_set1_data()/ASN1_STRING_get_length(). Detect the
 # new API by feature test, NOT by version: 4.1.0-dev reports the same version both
 # before and after the symbols landed, so OPENSSL_VERSION_NUMBER cannot tell them
 # apart. hybrid_asn1_compat.h selects on the resulting define.
@@ -86,13 +122,13 @@ if(NOT MSVC)
 endif()
 check_c_source_compiles("
 #include <openssl/asn1.h>
-size_t hp_probe(const ASN1_STRING *s) { return ASN1_STRING_length_ex(s); }
-" HAVE_ASN1_STRING_LENGTH_EX)
+size_t hp_probe(const ASN1_STRING *s) { return ASN1_STRING_get_length(s); }
+" HAVE_ASN1_STRING_GET_LENGTH)
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_FLAGS)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE "${_hp_saved_ttype}")
-if(HAVE_ASN1_STRING_LENGTH_EX)
-    add_compile_definitions(HAVE_ASN1_STRING_LENGTH_EX)
+if(HAVE_ASN1_STRING_GET_LENGTH)
+    add_compile_definitions(HAVE_ASN1_STRING_GET_LENGTH)
 endif()
 
 # Locate the matching `openssl` CLI (next to the OpenSSL we build against), used
@@ -210,6 +246,22 @@ set_tests_properties(hybrid_config_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Cross-provider test-methodology (work-items item 15): unpinned (store)
+# property-query resolution runs alongside the pinned runs, and the provider's
+# config keys are settable programmatically via OSSL_PROVIDER_load_ex() with no
+# .cnf. OSSL_PROVIDER_load_ex() is a 3.5+ API (and the test uses only
+# default-provider components, also >= 3.5), so gate the target on 3.5 — on
+# 3.0/3.1 it would otherwise fail to link (undefined reference).
+if(OPENSSL_VERSION VERSION_GREATER_EQUAL 3.5)
+    add_executable(hybrid_methodology_test test/hybrid_methodology_test.c)
+    target_include_directories(hybrid_methodology_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(hybrid_methodology_test PRIVATE OpenSSL::Crypto)
+    add_test(NAME hybrid_methodology_test COMMAND hybrid_methodology_test)
+    set_tests_properties(hybrid_methodology_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+endif()
+
 # Cross-provider interop test against oqsprovider (built from GitHub main via
 # test/setup_oqs_interop.sh, which symlinks oqsprovider.so into the build dir).
 # Self-skips when oqsprovider is not on the module path.
@@ -253,6 +305,22 @@ target_include_directories(hybrid_encode_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${C
 target_link_libraries(hybrid_encode_test PRIVATE OpenSSL::Crypto)
 add_test(NAME hybrid_encode_test COMMAND hybrid_encode_test)
 set_tests_properties(hybrid_encode_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# Component extraction / composition test (work-items item 13): for every row of
+# the master tables, pull each component (public AND private) out of a
+# hybrid/composite key as a standalone EVP_PKEY, assert the inner encoding matches
+# the standalone component, and recompose. Standardized rows use default-provider
+# components (>= 3.5); the experimental/oqs rows self-skip without oqsprovider.
+add_executable(hybrid_extract_test test/hybrid_extract_test.c)
+target_include_directories(hybrid_extract_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_extract_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_extract_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_extract_test COMMAND hybrid_extract_test)
+set_tests_properties(hybrid_extract_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
@@ -320,6 +388,35 @@ set_tests_properties(hybrid_param_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# "pkey -text" (TEXT) encoder coverage (item 8): every key type prints a named,
+# two-component, non-truncated text form. Always built (covers the hybrid sig
+# family); iterates the composite families too when built with -DHYBRID_COMPOSITE.
+add_executable(hybrid_text_test test/hybrid_text_test.c)
+target_include_directories(hybrid_text_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_text_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_text_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_text_test COMMAND hybrid_text_test)
+set_tests_properties(hybrid_text_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
+# Decoder robustness vs external/malformed inputs (item 7): multi-object PEM with
+# the target key not first (generic PEM routing), and malformed/truncated/garbage
+# SPKI failing cleanly without a crash (meaningful under the ASan leg). Composite
+# families additionally iterated with -DHYBRID_COMPOSITE.
+add_executable(hybrid_decode_neg_test test/hybrid_decode_neg_test.c)
+target_include_directories(hybrid_decode_neg_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_decode_neg_test PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_decode_neg_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_decode_neg_test COMMAND hybrid_decode_neg_test)
+set_tests_properties(hybrid_decode_neg_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # CMS SignedData with hybrid signatures (in-process analog of oqsprovider's CMS
 # scripts). ML-DSA hybrids need only the default provider; Falcon/MAYO/… self-
 # skip without oqsprovider, and each algorithm self-skips if unavailable.
@@ -360,13 +457,17 @@ if(HYBRID_TSAN)
     else()
         add_test(NAME hybrid_threads_test COMMAND hybrid_threads_test)
     endif()
+    # PROCESSORS 2: this test spawns its own worker threads, so tell ctest's -j
+    # load balancer it is not a single-core job (avoids oversubscription).
     set_tests_properties(hybrid_threads_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/test/tsan.supp:halt_on_error=1"
+        PROCESSORS 2
     )
 else()
     add_test(NAME hybrid_threads_test COMMAND hybrid_threads_test)
     set_tests_properties(hybrid_threads_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+        PROCESSORS 2
     )
 endif()
 endif()
@@ -487,26 +588,36 @@ if(HYBRID_COMPOSITE)
     # Certificate benchmark: self-signed X.509 cert size + cert-gen/verify time
     # for every composite (standardized ML-DSA + experimental OQS families). Runs
     # a short per-op budget under ctest (smoke); pass a larger budget in ms for
-    # real numbers, e.g. `composite_sig_bench 2000`.
-    add_executable(composite_sig_bench test/composite_sig_bench.c)
+    # real numbers, e.g. `composite_sig_bench 2000`. The 100 ms smoke budget (vs a
+    # tighter value) gives the guard's per-op minimum enough clean samples on shared
+    # CI runners: the fastest standardized composites are sub-0.4 ms, and the ratio
+    # of two such small minimums flakes if a whole short window is descheduled.
+    add_executable(composite_sig_bench test/composite_sig_bench.c test/bench_util.c)
     target_include_directories(composite_sig_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
     target_link_libraries(composite_sig_bench PRIVATE OpenSSL::Crypto)
     add_dependencies(composite_sig_bench hybrid-provider)
-    add_test(NAME composite_sig_bench COMMAND composite_sig_bench 20)
+    add_test(NAME composite_sig_bench COMMAND composite_sig_bench 100)
+    # Guard-only smoke + RUN_SERIAL so its min-latency guard is not skewed by
+    # concurrent load (see hybrid_bench).
     set_tests_properties(composite_sig_bench PROPERTIES
-        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
+        RUN_SERIAL TRUE
     )
 
     # KEM benchmark: keygen/encaps/decaps time + pk/ct/sk sizes for every composite
     # ML-KEM (standardized + experimental Frodo/BIKE/HQC). The KEM analogue of
-    # composite_sig_bench; same short smoke budget under ctest, larger via argv[1].
-    add_executable(composite_kem_bench test/composite_kem_bench.c)
+    # composite_sig_bench; same 100 ms smoke budget under ctest (see above), larger
+    # via argv[1].
+    add_executable(composite_kem_bench test/composite_kem_bench.c test/bench_util.c)
     target_include_directories(composite_kem_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
     target_link_libraries(composite_kem_bench PRIVATE OpenSSL::Crypto)
     add_dependencies(composite_kem_bench hybrid-provider)
-    add_test(NAME composite_kem_bench COMMAND composite_kem_bench 20)
+    add_test(NAME composite_kem_bench COMMAND composite_kem_bench 100)
+    # Guard-only smoke + RUN_SERIAL so its min-latency guard is not skewed by
+    # concurrent load (see hybrid_bench).
     set_tests_properties(composite_kem_bench PROPERTIES
-        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
+        RUN_SERIAL TRUE
     )
 
     # Guard the README "Algorithms served:" headline against silent drift:
@@ -531,11 +642,16 @@ if(OPENSSL_CLI AND NOT WIN32)
     # component context, against a pure-oqsprovider peer (both directions). The
     # multi-process complement to in-process hybrid_compctx_test. Self-skips
     # (exit 0) when oqsprovider.so is not on the module path.
+    # Each harness invocation gets its OWN base TCP port (the script bumps from
+    # there per handshake, a handful at most), 1000 apart so the blocks never
+    # overlap -- that lets all three run concurrently under `ctest -j` with no
+    # RESOURCE_LOCK. Keep the bases distinct if a fourth scenario is added.
     add_test(NAME hybrid_scenarios_tls_compctx
         COMMAND ${CMAKE_SOURCE_DIR}/test/hybrid_scenarios.sh
                 --openssl ${OPENSSL_CLI}
                 --libpath ${_ossl_libdir}
                 --module-dir ${CMAKE_BINARY_DIR}
+                --port 14433
                 tls-compctx)
 
     # CLI end-to-end coverage for the hybrid + composite SIGNATURE algorithms:
@@ -549,6 +665,7 @@ if(OPENSSL_CLI AND NOT WIN32)
                 --openssl ${OPENSSL_CLI}
                 --libpath ${_ossl_libdir}
                 --module-dir ${CMAKE_BINARY_DIR}
+                --port 15433
                 sig-certs)
 
     # Cross-provider private-key file interop for the hybrid signatures: a key
@@ -560,6 +677,7 @@ if(OPENSSL_CLI AND NOT WIN32)
                 --openssl ${OPENSSL_CLI}
                 --libpath ${_ossl_libdir}
                 --module-dir ${CMAKE_BINARY_DIR}
+                --port 16433
                 sig-interop)
 endif()
 
@@ -621,10 +739,19 @@ set_tests_properties(hybrid_leakcheck_test PROPERTIES
 # Benchmark: hybrid provider vs native (default / oqsprovider). Run manually
 # with an iteration count for real numbers (e.g. `hybrid_bench 1000`); wired
 # into ctest as a low-iteration smoke test that it runs and completes.
-add_executable(hybrid_bench test/hybrid_bench.c)
+add_executable(hybrid_bench test/hybrid_bench.c test/bench_util.c)
 add_test(NAME hybrid_bench COMMAND hybrid_bench 10)
+# HYBRID_BENCH_GUARD_ONLY: under ctest only the asserted composition-overhead
+# guard matters, so skip the (unread) informational report -- see test/bench_util.h.
+# RUN_SERIAL: the guard asserts a MINIMUM-latency ratio (composed op vs sum of its
+# components); it must run with no other test competing for cores, or CPU
+# contention inflates one side of the ratio and the guard flakes (observed:
+# x448_frodo976shake decaps read 1.81x on a 2-core runner when three benches timed
+# concurrently). Serial keeps the timing clean; the functional tests still
+# parallelize around it.
 set_tests_properties(hybrid_bench PROPERTIES
-    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
+    RUN_SERIAL TRUE
 )
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_bench PRIVATE OpenSSL::Crypto)
