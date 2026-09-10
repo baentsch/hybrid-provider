@@ -172,13 +172,22 @@ int main(int argc, char **argv)
     }
     OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier */
 
-    printf("composite KEM benchmark — keygen / encaps / decaps + sizes\n");
-    printf("  %-30s %-4s  %9s %9s %9s   %7s %7s %7s\n",
-           "algorithm", "tier", "keygen", "encaps", "decaps", "pk", "ct", "sk");
-    printf("  %-30s %-4s  %9s %9s %9s   %7s %7s %7s\n",
-           "", "", "(ms)", "(ms)", "(ms)", "(bytes)", "(bytes)", "(bytes)");
+    /*
+     * Part 1 (informational, not asserted): the per-algorithm timing + size
+     * report over the whole composite-KEM inventory plus references -- the bulk of
+     * this bench's wall-clock. The ctest smoke run sets HYBRID_BENCH_GUARD_ONLY to
+     * skip it and run only the asserted guard below.
+     */
+    if (bench_guard_only()) {
+        printf("composite KEM benchmark — report skipped "
+               "(HYBRID_BENCH_GUARD_ONLY)\n");
+    } else {
+        printf("composite KEM benchmark — keygen / encaps / decaps + sizes\n");
+        printf("  %-30s %-4s  %9s %9s %9s   %7s %7s %7s\n",
+               "algorithm", "tier", "keygen", "encaps", "decaps", "pk", "ct", "sk");
+        printf("  %-30s %-4s  %9s %9s %9s   %7s %7s %7s\n",
+               "", "", "(ms)", "(ms)", "(ms)", "(bytes)", "(bytes)", "(bytes)");
 
-    {
         static const struct { int sb; const char *title; } levels[] = {
             { 128, "--- NIST level 1 (128-bit): experimental only ---" },
             { 192, "--- NIST level 3 (192-bit): ML-KEM-768 vs experimental ---" },
@@ -203,11 +212,11 @@ int main(int argc, char **argv)
                 }
             }
         }
-    }
 
-    printf("  --- reference (single algorithm, default provider) ---\n");
-    for (i = 0; i < sizeof(refs) / sizeof(refs[0]); i++)
-        bench_one(ctx, refs[i].name, "ref", "provider=default");
+        printf("  --- reference (single algorithm, default provider) ---\n");
+        for (i = 0; i < sizeof(refs) / sizeof(refs[0]); i++)
+            bench_one(ctx, refs[i].name, "ref", "provider=default");
+    }
 
     /*
      * Composition-overhead guard: composite encaps/decaps vs the sum of its two

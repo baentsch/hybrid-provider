@@ -7,6 +7,7 @@
 #include "bench_util.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <openssl/core_names.h>
@@ -66,6 +67,13 @@ int bench_timing_unreliable(void)
 #else
     return 0;
 #endif
+}
+
+int bench_guard_only(void)
+{
+    const char *v = getenv("HYBRID_BENCH_GUARD_ONLY");
+
+    return v != NULL && v[0] != '\0' && v[0] != '0';
 }
 
 double bench_now_ms(void)

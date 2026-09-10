@@ -480,25 +480,33 @@ int main(int argc, char **argv)
 
     /* Part 1 iterates the provider's OWN hybrid tables and discovers each row's
      * native peer at runtime (see kem_native_peer) -- no algorithm is named here;
-     * rows with no peer on this OpenSSL are simply not printed. */
-    printf("\n[KEM: hybrid vs native peer]\n");
-    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
-        const char *name = hybrid_kem_table[i].hybrid_name;
-        const char *peer = kem_native_peer(libctx, name);
+     * rows with no peer on this OpenSSL are simply not printed. It is purely
+     * informational (nothing here is asserted), and re-running the whole inventory
+     * -- native peer AND hybrid, incl. the slow keygen loops -- for both sides is
+     * the bulk of this bench's wall-clock. The ctest smoke run only cares about the
+     * asserted guard below, so it sets HYBRID_BENCH_GUARD_ONLY to skip Part 1. */
+    if (bench_guard_only()) {
+        printf("\n[informational report skipped: HYBRID_BENCH_GUARD_ONLY]\n");
+    } else {
+        printf("\n[KEM: hybrid vs native peer]\n");
+        for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+            const char *name = hybrid_kem_table[i].hybrid_name;
+            const char *peer = kem_native_peer(libctx, name);
 
-        if (peer != NULL)
-            compare_kem(libctx, name, peer, it);
-    }
+            if (peer != NULL)
+                compare_kem(libctx, name, peer, it);
+        }
 
-    if (has_oqs) {
-        /* The default provider has no hybrid signatures, so oqsprovider is the
-         * only possible native peer; discover which sigs it actually serves. */
-        printf("\n[SIG: hybrid vs oqsprovider]\n");
-        for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
-            const char *name = hybrid_sig_table[i].hybrid_name;
+        if (has_oqs) {
+            /* The default provider has no hybrid signatures, so oqsprovider is the
+             * only possible native peer; discover which sigs it actually serves. */
+            printf("\n[SIG: hybrid vs oqsprovider]\n");
+            for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+                const char *name = hybrid_sig_table[i].hybrid_name;
 
-            if (served_by(libctx, name, "oqsprovider") != NULL)
-                compare_sig(libctx, name, it);
+                if (served_by(libctx, name, "oqsprovider") != NULL)
+                    compare_sig(libctx, name, it);
+            }
         }
     }
 

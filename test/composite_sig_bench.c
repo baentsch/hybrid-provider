@@ -174,19 +174,28 @@ int main(int argc, char **argv)
     }
     OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier */
 
-    printf("composite certificate benchmark — self-signed X.509 (DER)\n");
-    printf("  %-34s %-4s  %9s %9s %9s   %7s %7s\n",
-           "algorithm", "tier", "keygen", "sign", "verify", "cert", "sk");
-    printf("  %-34s %-4s  %9s %9s %9s   %7s %7s\n",
-           "", "", "(ms)", "(ms)", "(ms)", "(bytes)", "(bytes)");
-
     /*
-     * Grouped by NIST security level so the standardized ML-DSA composites sit
-     * side-by-side with the experimental OQS-family composites at the same level
-     * (security_bits: 128 -> L1, 192 -> L3, 256 -> L5). Within a level the std
-     * ML-DSA rows print first, then the experimental rows.
+     * Part 1 (informational, not asserted): the per-algorithm cert-size / timing
+     * report. It re-runs the whole composite inventory plus references and is the
+     * bulk of this bench's wall-clock, so the ctest smoke run sets
+     * HYBRID_BENCH_GUARD_ONLY to skip straight to the asserted guard below.
      */
-    {
+    if (bench_guard_only()) {
+        printf("composite certificate benchmark — report skipped "
+               "(HYBRID_BENCH_GUARD_ONLY)\n");
+    } else {
+        printf("composite certificate benchmark — self-signed X.509 (DER)\n");
+        printf("  %-34s %-4s  %9s %9s %9s   %7s %7s\n",
+               "algorithm", "tier", "keygen", "sign", "verify", "cert", "sk");
+        printf("  %-34s %-4s  %9s %9s %9s   %7s %7s\n",
+               "", "", "(ms)", "(ms)", "(ms)", "(bytes)", "(bytes)");
+
+        /*
+         * Grouped by NIST security level so the standardized ML-DSA composites sit
+         * side-by-side with the experimental OQS-family composites at the same level
+         * (security_bits: 128 -> L1, 192 -> L3, 256 -> L5). Within a level the std
+         * ML-DSA rows print first, then the experimental rows.
+         */
         static const struct { int sb; const char *title; } levels[] = {
             { 128, "--- NIST level 1 (128-bit): ML-DSA-44 vs experimental ---" },
             { 192, "--- NIST level 3 (192-bit): ML-DSA-65 vs experimental ---" },
@@ -211,11 +220,11 @@ int main(int argc, char **argv)
                 }
             }
         }
-    }
 
-    printf("  --- reference (single algorithm, default provider) ---\n");
-    for (i = 0; i < sizeof(refs) / sizeof(refs[0]); i++)
-        bench_one(ctx, refs[i].name, "ref", "provider=default");
+        printf("  --- reference (single algorithm, default provider) ---\n");
+        for (i = 0; i < sizeof(refs) / sizeof(refs[0]); i++)
+            bench_one(ctx, refs[i].name, "ref", "provider=default");
+    }
 
     /*
      * Composition-overhead guard: composite sign/verify vs the sum of its two
