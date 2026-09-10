@@ -52,6 +52,16 @@
  */
 int bench_timing_unreliable(void);
 
+/*
+ * 1 when HYBRID_BENCH_GUARD_ONLY is set to a non-empty, non-"0" value. In that
+ * mode a bench skips its informational Part 1 report (the non-asserted native /
+ * component side-by-side, which re-runs the whole inventory incl. slow keygen
+ * loops) and runs only the asserted composition-overhead guard. The ctest smoke
+ * registrations set it so the CI wall-clock reflects just the regression check;
+ * a manual run (no env) still prints the full report.
+ */
+int bench_guard_only(void);
+
 /* Per-op wall-clock budget shared by every timing loop (default 1000 ms). */
 void   bench_set_budget_ms(double ms);
 double bench_now_ms(void);

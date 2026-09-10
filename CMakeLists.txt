@@ -457,13 +457,17 @@ if(HYBRID_TSAN)
     else()
         add_test(NAME hybrid_threads_test COMMAND hybrid_threads_test)
     endif()
+    # PROCESSORS 2: this test spawns its own worker threads, so tell ctest's -j
+    # load balancer it is not a single-core job (avoids oversubscription).
     set_tests_properties(hybrid_threads_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/test/tsan.supp:halt_on_error=1"
+        PROCESSORS 2
     )
 else()
     add_test(NAME hybrid_threads_test COMMAND hybrid_threads_test)
     set_tests_properties(hybrid_threads_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+        PROCESSORS 2
     )
 endif()
 endif()
@@ -593,8 +597,11 @@ if(HYBRID_COMPOSITE)
     target_link_libraries(composite_sig_bench PRIVATE OpenSSL::Crypto)
     add_dependencies(composite_sig_bench hybrid-provider)
     add_test(NAME composite_sig_bench COMMAND composite_sig_bench 100)
+    # Guard-only smoke + RUN_SERIAL so its min-latency guard is not skewed by
+    # concurrent load (see hybrid_bench).
     set_tests_properties(composite_sig_bench PROPERTIES
-        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
+        RUN_SERIAL TRUE
     )
 
     # KEM benchmark: keygen/encaps/decaps time + pk/ct/sk sizes for every composite
@@ -606,8 +613,11 @@ if(HYBRID_COMPOSITE)
     target_link_libraries(composite_kem_bench PRIVATE OpenSSL::Crypto)
     add_dependencies(composite_kem_bench hybrid-provider)
     add_test(NAME composite_kem_bench COMMAND composite_kem_bench 100)
+    # Guard-only smoke + RUN_SERIAL so its min-latency guard is not skewed by
+    # concurrent load (see hybrid_bench).
     set_tests_properties(composite_kem_bench PROPERTIES
-        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
+        RUN_SERIAL TRUE
     )
 
     # Guard the README "Algorithms served:" headline against silent drift:
@@ -632,11 +642,16 @@ if(OPENSSL_CLI AND NOT WIN32)
     # component context, against a pure-oqsprovider peer (both directions). The
     # multi-process complement to in-process hybrid_compctx_test. Self-skips
     # (exit 0) when oqsprovider.so is not on the module path.
+    # Each harness invocation gets its OWN base TCP port (the script bumps from
+    # there per handshake, a handful at most), 1000 apart so the blocks never
+    # overlap -- that lets all three run concurrently under `ctest -j` with no
+    # RESOURCE_LOCK. Keep the bases distinct if a fourth scenario is added.
     add_test(NAME hybrid_scenarios_tls_compctx
         COMMAND ${CMAKE_SOURCE_DIR}/test/hybrid_scenarios.sh
                 --openssl ${OPENSSL_CLI}
                 --libpath ${_ossl_libdir}
                 --module-dir ${CMAKE_BINARY_DIR}
+                --port 14433
                 tls-compctx)
 
     # CLI end-to-end coverage for the hybrid + composite SIGNATURE algorithms:
@@ -650,6 +665,7 @@ if(OPENSSL_CLI AND NOT WIN32)
                 --openssl ${OPENSSL_CLI}
                 --libpath ${_ossl_libdir}
                 --module-dir ${CMAKE_BINARY_DIR}
+                --port 15433
                 sig-certs)
 
     # Cross-provider private-key file interop for the hybrid signatures: a key
@@ -661,6 +677,7 @@ if(OPENSSL_CLI AND NOT WIN32)
                 --openssl ${OPENSSL_CLI}
                 --libpath ${_ossl_libdir}
                 --module-dir ${CMAKE_BINARY_DIR}
+                --port 16433
                 sig-interop)
 endif()
 
@@ -724,8 +741,17 @@ set_tests_properties(hybrid_leakcheck_test PROPERTIES
 # into ctest as a low-iteration smoke test that it runs and completes.
 add_executable(hybrid_bench test/hybrid_bench.c test/bench_util.c)
 add_test(NAME hybrid_bench COMMAND hybrid_bench 10)
+# HYBRID_BENCH_GUARD_ONLY: under ctest only the asserted composition-overhead
+# guard matters, so skip the (unread) informational report -- see test/bench_util.h.
+# RUN_SERIAL: the guard asserts a MINIMUM-latency ratio (composed op vs sum of its
+# components); it must run with no other test competing for cores, or CPU
+# contention inflates one side of the ratio and the guard flakes (observed:
+# x448_frodo976shake decaps read 1.81x on a 2-core runner when three benches timed
+# concurrently). Serial keeps the timing clean; the functional tests still
+# parallelize around it.
 set_tests_properties(hybrid_bench PROPERTIES
-    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
+    RUN_SERIAL TRUE
 )
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_bench PRIVATE OpenSSL::Crypto)
