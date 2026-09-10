@@ -489,19 +489,11 @@ err:
  * callers drive for no-digest algorithms. sign/verify are one-shot; the streaming
  * update/final variants buffer the message and defer to the one-shot in final.
  */
-static int
-hybrid_sig_sign_message_init(void *vctx, void *vkey, const OSSL_PARAM params[])
-{
-    HYBRID_SIG_CTX *ctx = vctx;
-
-    OPENSSL_free(ctx->msg);             /* reset any prior streamed message */
-    ctx->msg = NULL;
-    ctx->msglen = 0;
-    return hybrid_sig_digest_sign_init(vctx, NULL, vkey, params);
-}
-
-static int
-hybrid_sig_reset_verify_stream(HYBRID_SIG_CTX *ctx)
+/* Drop any buffers left from a prior streaming op so a reused (or dup'd) ctx
+ * starts each message-signature operation clean — both the accumulated message
+ * and any signature delivered for a previous verify. */
+static void
+hybrid_sig_reset_stream(HYBRID_SIG_CTX *ctx)
 {
     OPENSSL_free(ctx->msg);
     ctx->msg = NULL;
@@ -509,7 +501,15 @@ hybrid_sig_reset_verify_stream(HYBRID_SIG_CTX *ctx)
     OPENSSL_free(ctx->sigbuf);
     ctx->sigbuf = NULL;
     ctx->sigbuflen = 0;
-    return 1;
+}
+
+static int
+hybrid_sig_sign_message_init(void *vctx, void *vkey, const OSSL_PARAM params[])
+{
+    HYBRID_SIG_CTX *ctx = vctx;
+
+    hybrid_sig_reset_stream(ctx);
+    return hybrid_sig_digest_sign_init(vctx, NULL, vkey, params);
 }
 
 static int
@@ -517,7 +517,7 @@ hybrid_sig_verify_message_init(void *vctx, void *vkey, const OSSL_PARAM params[]
 {
     HYBRID_SIG_CTX *ctx = vctx;
 
-    hybrid_sig_reset_verify_stream(ctx);
+    hybrid_sig_reset_stream(ctx);
     return hybrid_sig_digest_verify_init(vctx, NULL, vkey, params);
 }
 
@@ -531,6 +531,13 @@ hybrid_sig_signverify_message_update(void *vctx, const unsigned char *data,
 
     if (datalen == 0)
         return 1;
+    /* Guard the running total against size_t wrap before it sizes the realloc:
+     * a wrapped (small) allocation would be overflowed by the memcpy below. */
+    if (datalen > SIZE_MAX - ctx->msglen) {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                       "streamed message length overflow");
+        return 0;
+    }
     if ((grown = OPENSSL_realloc(ctx->msg, ctx->msglen + datalen)) == NULL) {
         ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
         return 0;
