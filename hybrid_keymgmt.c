@@ -418,13 +418,15 @@ static int hybrid_import(void *vkey, int selection,
     p = OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_PUB_KEY);
     if (p == NULL)
         p = OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY);
-    if (p != NULL)
-        OSSL_PARAM_get_octet_string_ptr(p, &pubenc, &publen);
+    if (p != NULL
+            && OSSL_PARAM_get_octet_string_ptr(p, &pubenc, &publen) != 1)
+        return 0;
 
     if (include_private) {
         p = OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_PRIV_KEY);
-        if (p != NULL)
-            OSSL_PARAM_get_octet_string_ptr(p, &prvenc, &prvlen);
+        if (p != NULL
+                && OSSL_PARAM_get_octet_string_ptr(p, &prvenc, &prvlen) != 1)
+            return 0;
     }
 
     if (publen == 0 && prvlen == 0)

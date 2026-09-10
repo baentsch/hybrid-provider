@@ -123,8 +123,11 @@ hybrid_sig_digest_sign_init(void *vctx, const char *mdname,
     HYBRID_SIG_CTX *ctx = vctx;
     HYBRID_KEY *key = vkey;
 
-    if (key == NULL || !hybrid_have_prvkey(key))
+    if (key == NULL || !hybrid_have_prvkey(key)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid sign init: missing private key");
         return 0;
+    }
     ctx->key = key;
     ctx->op = EVP_PKEY_OP_SIGN;
     return hybrid_sig_apply_params(ctx, params);
@@ -137,8 +140,11 @@ hybrid_sig_digest_verify_init(void *vctx, const char *mdname,
     HYBRID_SIG_CTX *ctx = vctx;
     HYBRID_KEY *key = vkey;
 
-    if (key == NULL || !hybrid_have_pubkey(key))
+    if (key == NULL || !hybrid_have_pubkey(key)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid verify init: missing public key");
         return 0;
+    }
     ctx->key = key;
     ctx->op = EVP_PKEY_OP_VERIFY;
     return hybrid_sig_apply_params(ctx, params);
@@ -270,8 +276,17 @@ hybrid_sig_digest_sign(void *vctx,
         *siglen = maxsig;
         return 1;
     }
-    if (sigsize < maxsig || !hybrid_have_prvkey(key))
+    if (!hybrid_have_prvkey(key)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid sign: missing private key");
         return 0;
+    }
+    if (sigsize < maxsig) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid sign: output buffer too small (%zu < %zu)",
+                       sigsize, maxsig);
+        return 0;
+    }
 
     /* classical signature, written after the 4-byte length prefix */
     if (!classical_op(key, 1, is_rsa, classical_md(info->nist_level),
@@ -320,18 +335,29 @@ hybrid_sig_digest_verify(void *vctx,
     int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
     int ret = 0;
 
-    if (!hybrid_have_pubkey(key))
+    if (!hybrid_have_pubkey(key)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid verify: missing public key");
         return 0;
+    }
     /* Bounds guards: the signature must hold the 4-byte classical-length prefix
      * before we read sig[0..3], and that length must fit within siglen before we
      * split off the classical and PQ parts (else a malformed signature would
      * cause an out-of-bounds read). */
-    if (siglen < sizeof(uint32_t))
+    if (siglen < sizeof(uint32_t)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid verify: signature too short for length prefix (%zu)",
+                       siglen);
         return 0;
+    }
     clen = ((size_t)sig[0] << 24) | ((size_t)sig[1] << 16)
          | ((size_t)sig[2] << 8) | (size_t)sig[3];
-    if (sizeof(uint32_t) + clen > siglen)
+    if (sizeof(uint32_t) + clen > siglen) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "hybrid verify: classical length %zu exceeds signature %zu",
+                       clen, siglen);
         return 0;
+    }
     plen = siglen - sizeof(uint32_t) - clen;
 
     /* verify classical over the digest */
