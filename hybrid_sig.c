@@ -36,8 +36,9 @@
  * dispatch numbers below are absent on 3.0–3.3. Guard on presence of the
  * specific dispatch define rather than a version test, so the block compiles out
  * cleanly where the API does not exist (KEM-only 3.0/3.1, or 3.2/3.3). Presence
- * of SIGN_MESSAGE_INIT implies OSSL_SIGNATURE_PARAM_SIGNATURE and hence
- * HYBRID_HAVE_CTX_STR (all shipped together in 3.4).
+ * of SIGN_MESSAGE_INIT (3.4) implies OSSL_SIGNATURE_PARAM_SIGNATURE (also 3.4),
+ * and hence HYBRID_HAVE_CTX_STR, whose OSSL_SIGNATURE_PARAM_CONTEXT_STRING is
+ * older still (3.2, see above) — so the nested guard below is always satisfiable.
  */
 #ifdef OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT
 # define HYBRID_HAVE_MSG_SIG 1

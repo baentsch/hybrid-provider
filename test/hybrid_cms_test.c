@@ -20,12 +20,14 @@
  *    path had no coverage; a provider that only handled attribute-wrapped signing
  *    would pass the first and fail the second.
  *
- * The -noattr case is best-effort: md-less CMS content-signing only exists after
- * OpenSSL 3.5 and its handling of VARIABLE-length (hybrid/composite) signatures is
- * still settling upstream, so when the base library's CMS layer cannot drive it we
- * SKIP rather than fail (see the libskip path). The provider's own contract — the
- * message-signature API that -noattr relies on — is proven unconditionally by the
- * direct round-trip in check_message_api(), which hard-fails on any regression.
+ * md-less CMS content-signing runs through the message-signature EVP API
+ * (EVP_PKEY_sign_message_*, present since OpenSSL 3.4); the CMS-layer wiring that
+ * uses it for attribute-free signing is newer (~3.6 — on 3.5.x even native ML-DSA
+ * `cms -sign -noattr` fails "provider signature not supported"). We probe that
+ * capability at runtime (mdless_cms_noattr_supported) and skip the -noattr cases
+ * only where the running library lacks it; where it is present they run strictly,
+ * including the variable-length ECDSA hybrids (verified end to end on 4.2.0-dev
+ * master). The message-signature API is also proven directly in check_message_api().
  *
  * The set of algorithms is driven off the master HYBRID_SIG_LIST, split by PQ
  * half: the standardized (ML-DSA) hybrids use the default provider's ML-DSA
@@ -97,8 +99,9 @@ end:
  * signature algorithm — one with no default digest, like ML-DSA and our hybrids?
  *
  * OpenSSL routes attribute-free CMS signing for such algorithms through the
- * message-signature API (EVP_PKEY_sign_message_*), which only landed after 3.5:
- * on 3.5.x even *native* ML-DSA `cms -sign -noattr` fails with "provider
+ * message-signature EVP API (EVP_PKEY_sign_message_*), which exists since 3.4 —
+ * but the CMS-layer wiring that drives it for md-less content-signing is newer
+ * (~3.6): on 3.5.x even *native* ML-DSA `cms -sign -noattr` fails with "provider
  * signature not supported". We probe the capability at runtime with native
  * ML-DSA-44 (always present with the default provider on 3.5+) rather than
  * hard-coding a version, so the hybrid `-noattr` expectation tracks whatever the
@@ -250,11 +253,8 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
     if (cms == NULL
             || CMS_add1_signer(cms, cert, pkey, EVP_sha512(),
                                signer_flags) == NULL
-            || CMS_final(cms, in, NULL, flags) <= 0) {
-        if (noattr)
-            goto libskip;   /* upstream md-less CMS path (see libskip) */
+            || CMS_final(cms, in, NULL, flags) <= 0)
         goto fail;
-    }
     /* Round-trip through DER (exercises the CMS encode/decode path too). */
     if (!cms_to_der(cms, &der, &derlen))
         goto fail;
@@ -273,11 +273,8 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
     cms = cms_from_der(libctx, der, derlen);
     good = BIO_new_mem_buf(content, sizeof(content) - 1);
     if (cms == NULL || good == NULL
-            || CMS_verify(cms, certs, store, good, NULL, CMS_BINARY) <= 0) {
-        if (noattr && cms != NULL && good != NULL)
-            goto libskip;   /* upstream md-less CMS path (see libskip) */
+            || CMS_verify(cms, certs, store, good, NULL, CMS_BINARY) <= 0)
         goto fail;
-    }
 
     /* Tamper: verify the same signature against different content -> must fail
      * (messageDigest mismatch, or content-signature mismatch under -noattr). */
@@ -295,21 +292,6 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
 
     printf("PASS\n");
     passed++;
-    goto done;
-libskip:
-    /*
-     * -noattr only. The base library's md-less CMS content-signing path could not
-     * drive our signature end to end on this OpenSSL. That path is new and still
-     * evolving upstream, and — unlike native ML-DSA — a hybrid/composite signature
-     * is VARIABLE length (the classical half varies), which some OpenSSL master
-     * snapshots mishandle in the CMS layer. This is not a provider defect: the
-     * provider's message-signature API (what -noattr drives) is proven directly by
-     * check_message_api() below, which hard-fails on any regression. So treat a
-     * library-side -noattr failure as skipped, not failed.
-     */
-    printf("SKIP (OpenSSL md-less CMS content-signing did not accept the "
-           "variable-length hybrid signature; provider API proven separately)\n");
-    skipped++; tests--; ERR_clear_error();
     goto done;
 fail:
     printf("FAIL\n");
