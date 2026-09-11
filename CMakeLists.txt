@@ -424,8 +424,14 @@ add_executable(hybrid_cms_test test/hybrid_cms_test.c)
 target_include_directories(hybrid_cms_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_cms_test PRIVATE OpenSSL::Crypto)
 add_test(NAME hybrid_cms_test COMMAND hybrid_cms_test)
+# CMS resolves the signer's algorithm by name from the libctx (no property query),
+# so a co-loaded oqsprovider advertising the same hybrid names would shadow ours on
+# the -noattr path and fail at CMS_final. OQS_CEDE_HYBRIDS=1 makes oqsprovider cede
+# those names to us (it still provides the standalone PQ pieces we compose over), so
+# our provider unambiguously serves them and -noattr runs strictly. Harmless when
+# oqsprovider is absent.
 set_tests_properties(hybrid_cms_test PROPERTIES
-    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};OQS_CEDE_HYBRIDS=1"
 )
 
 # Concurrency / fork / teardown stress test (issue #43): many threads doing

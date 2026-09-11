@@ -22,12 +22,21 @@
  *
  * md-less CMS content-signing runs through the message-signature EVP API
  * (EVP_PKEY_sign_message_*, present since OpenSSL 3.4); the CMS-layer wiring that
- * uses it for attribute-free signing is newer (~3.6 — on 3.5.x even native ML-DSA
- * `cms -sign -noattr` fails "provider signature not supported"). We probe that
- * capability at runtime (mdless_cms_noattr_supported) and skip the -noattr cases
- * only where the running library lacks it; where it is present they run strictly,
- * including the variable-length ECDSA hybrids (verified end to end on 4.2.0-dev
- * master). The message-signature API is also proven directly in check_message_api().
+ * drives it for attribute-free signing is newer — on 3.5.x even native ML-DSA
+ * `cms -sign -noattr` fails "provider signature not supported". We probe that
+ * capability at runtime (mdless_cms_noattr_supported), not by version, and skip
+ * the -noattr cases only where the running library lacks it; where present they
+ * run strictly.
+ *
+ * One co-load caveat drives the test setup: CMS resolves the signer's algorithm
+ * BY NAME from the library context, with no property query. oqsprovider ships the
+ * same hybrid names we do (p256_mldsa44, ...), so when it is co-loaded -noattr can
+ * bind to its hybrid instead of ours and fail at CMS_final. This test therefore
+ * runs with OQS_CEDE_HYBRIDS=1 (set in CMakeLists): oqsprovider cedes the shared
+ * hybrid names to us while still providing the standalone PQ pieces we compose
+ * over — so our provider unambiguously serves the names and -noattr is strict.
+ * (The message-signature API is also proven directly, provider=hybrid, in
+ * check_message_api(), which is robust to the co-load regardless.)
  *
  * The set of algorithms is driven off the master HYBRID_SIG_LIST, split by PQ
  * half: the standardized (ML-DSA) hybrids use the default provider's ML-DSA
@@ -100,9 +109,10 @@ end:
  *
  * OpenSSL routes attribute-free CMS signing for such algorithms through the
  * message-signature EVP API (EVP_PKEY_sign_message_*), which exists since 3.4 —
- * but the CMS-layer wiring that drives it for md-less content-signing is newer
- * (~3.6): on 3.5.x even *native* ML-DSA `cms -sign -noattr` fails with "provider
- * signature not supported". We probe the capability at runtime with native
+ * but the CMS-layer wiring that drives it for md-less content-signing landed
+ * later (the no-signed-attributes case for hashless algorithms was fixed after
+ * 3.5; on 3.5.x even *native* ML-DSA `cms -sign -noattr` fails with "provider
+ * signature not supported"). We probe the capability at runtime with native
  * ML-DSA-44 (always present with the default provider on 3.5+) rather than
  * hard-coding a version, so the hybrid `-noattr` expectation tracks whatever the
  * running library actually supports. The hybrid provider implements the
