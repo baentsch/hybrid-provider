@@ -74,17 +74,18 @@ private component context that sources Frodo/BIKE/HQC (below) never gets built.
 Application code selects the provider by property query (`?provider=hybrid`) once
 the cnf has activated it.
 
-Two distinct limitations sit behind this, with different lifespans:
+Two coexistence constraints sit behind this, with different lifespans:
 
 - **The private component context** (`component-providers` / `component-path`,
-  below) is cnf-only and is what forces the Frodo/BIKE/HQC tests through a cnf.
-  It exists solely because
-  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) advertises the
-  *same* TLS group names as this provider, so the two can't coexist in one
-  application context. **Once
-  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) drops its
+  below) is cnf-only and is what routes the Frodo/BIKE/HQC tests through a cnf. It
+  is needed because two providers cannot both advertise the *same* TLS group name
+  in one application context, and both this provider and
+  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) expose the
+  Frodo/BIKE/HQC group names; we source the PQ base through a private context so
+  the two can coexist. **Once
+  [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) cedes its
   hybrid combinations (see design.md "Future work"), leaving it to supply only
-  the base FrodoKEM/BIKE/HQC KEMs, that collision — and this requirement —
+  the base FrodoKEM/BIKE/HQC KEMs, the name overlap — and this requirement —
   disappears:** all three providers can then be loaded on the command line and
   those groups become ordinary CLI-usable groups.
 - **Independent per-component steering** (`pq-propquery` / `classic-propquery`,

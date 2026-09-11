@@ -29,9 +29,11 @@ Interoperability is the entire point of this work, split by algorithm family:
 - **Composite family (LAMPS) → interop with external software** such as Bouncy
   Castle, out-of-process, validated via serialized DER/PEM artifacts and the
   draft's KAT vectors.
-- **No self-contained / private OID formats, ever.** Matching an existing peer's
-  assigned OIDs (oqsprovider's, or the LAMPS drafts') is interop, not a violation
-  of this rule.
+- **No newly-invented OID formats.** Every OID either matches an existing peer's
+  assigned OID (oqsprovider's, or the LAMPS drafts') or reuses a private arc a peer
+  already uses (the experimental composites live under `1.3.9999.99.*`, a leaf of
+  the arc OQS uses for its own hybrids). Reusing an assigned or already-in-use
+  private OID is interop; we never mint an OID no other implementation shares.
 
 ### Architecture constraint (both families)
 
@@ -258,7 +260,7 @@ can ever be mistaken for a standards-track OID.
 
 **Packaged as a capability, not a separate provider.** Composite ships inside
 this provider behind a build flag rather than as its own `composite.so`, because
-the spec is stabilizing (draft-19, past IETF Last Call), the matrix is bounded,
+the spec is at draft-19, the matrix is bounded,
 and deployment-surface isolation needs only a build flag (the `HYBRID_KEM_ENCODERS`
 precedent) — a separate provider would just duplicate the shared two-`EVP_PKEY`
 core. It is validated against the draft's published KAT vectors
@@ -875,11 +877,13 @@ algorithm table on the OpenSSL versions CI covers (a pre-3.5 release, a current
 **~1.0× for signatures** and **up to ~1.2× for the fastest KEMs** of the sum of its
 standalone components. The ~1.2× is the SHA3-256 combiner pass / provider dispatch
 as a *fixed* cost on a tiny (~0.07 ms) base — negligible for anything ≳ 1 ms. A
-hybrid is at **parity with oqsprovider's own hybrid** of the same name (identical
-components, so comparing the composed times directly measures glue-vs-glue): e.g.
-`p256_OV_Is_pkc` sign 0.048 ms ours vs 0.049 ms oqsprovider, tax-free on 3.4.
-Keygen is competitive; KEM encaps/decaps is at parity with the default provider
-and oqsprovider.
+hybrid runs at essentially the same cost as oqsprovider's own hybrid of the same
+name (identical components, so comparing the composed times measures glue-vs-glue);
+in one run, for example, `p256_OV_Is_pkc` signed at ~0.048 ms versus ~0.049 ms for
+oqsprovider's hybrid on 3.4. Numbers are hardware-specific — regenerate with
+`test/hybrid_bench.c`. KEM encaps/decaps sit in the same ~1.0–1.2× band as their
+standalone components; keygen is randomised and is not covered by the overhead
+guard.
 
 (An earlier internal measurement suggested a much larger, hybrid-specific glue —
 including a ~13–18× RSA-verify figure — but that was a **benchmark artifact**:
@@ -888,17 +892,15 @@ cross-provider algorithm resolution that dwarfed the crypto for the fastest
 primitives, RSA worst. With the explicit property query real callers use, every
 hybrid, RSA included, sits at ~1.0×. No provider issue remains.)
 
-The one non-obvious effect is a ~1.9× tax on *fast* PQ signatures (Falcon/MAYO/
-SNOVA) when the PQ component is sourced from oqsprovider on OpenSSL ≥ 3.5. This is
-**oqsprovider's, not OpenSSL's and not this provider's**: on ≥ 3.5 oqsprovider
-returns `*no_cache = 1` for the whole provider (a side effect of its runtime
-algorithm filter), so OpenSSL reconstructs the full method table on every
-`EVP_DigestSignInit` instead of caching it. The delegated M8 path reproduces the
-same number oqsprovider's own native hybrids already pay, so M8 introduces no new
-regression; fixing the `no_cache` policy in oqsprovider speeds up both equally
-(see `docs/oqsprovider-no-cache-issue.md`). The performance lever available here
-is primitive sourcing: `pq-propquery` / `classic-propquery` steer each component
-to the fastest provider exposing the standalone EVP algorithm. Run
+The one non-obvious effect is a ~1.9× cost on *fast* PQ signatures (Falcon/MAYO/
+SNOVA) when their PQ half is fetched from oqsprovider on OpenSSL ≥ 3.5, where the
+method table is reconstructed per `EVP_DigestSignInit` rather than cached. This is
+not composition overhead: our delegated M8 path pays exactly what an oqsprovider
+native hybrid of the same name already pays, so M8 adds nothing here, and sourcing
+the PQ half from a provider that caches its method table avoids it. The measured
+breakdown is in `docs/oqsprovider-no-cache-issue.md`. The lever available here is
+primitive sourcing: `pq-propquery` / `classic-propquery` steer each component to
+the fastest provider exposing the standalone EVP algorithm. Run
 `test/hybrid_bench.c` in your own environment for numbers.
 
 ## Future work
