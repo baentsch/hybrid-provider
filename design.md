@@ -964,7 +964,11 @@ the fastest provider exposing the standalone EVP algorithm. Run
   with oqsprovider (`hybrid_encoder.c` / `hybrid_decoder.c`). KEM key files are
   supported behind the `HYBRID_KEM_ENCODERS` build option (off by default,
   mirroring oqsprovider's `OQS_KEM_ENCODERS`); only the few hybrid KEMs with an
-  assigned OID are encodable. Keys can still be imported/exported via raw
+  assigned OID are encodable. The human-readable `pkey -text` dump is *not* gated
+  by that option (it is a diagnostic, needs no OID, and matches the signature
+  hybrids): the provider always registers its own KEM text encoder, so a hybrid
+  KEM key prints via the hybrid provider even when oqsprovider — which registers
+  same-named encoders — is co-loaded. Keys can still be imported/exported via raw
   `OSSL_PARAM` octet strings for the runtime KEM/TLS paths.
 - **Library context**: By default the provider uses the caller's `OSSL_LIB_CTX`,
   so sub-algorithm providers must be loaded there. Optionally, the

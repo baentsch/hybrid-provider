@@ -265,10 +265,25 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
       hybrid_text_encoder_functions, ds " text encoder" },
 
 /*
- * KEM encoders. Gated by HYBRID_KEM_ENCODERS (off by default), mirroring
- * oqsprovider's OQS_KEM_ENCODERS build option: KEM key files are rarely used
- * and only a few hybrid KEMs have an assigned OID. The shared encoder code
- * handles both families; NULL-OID KEMs registered here simply decline to encode.
+ * KEM text encoder. Always registered (not gated by HYBRID_KEM_ENCODERS): the
+ * "pkey -text" human-readable dump is a diagnostic, not a key file, so it needs
+ * no OID and carries none of the key-file caveats the gate exists for. Keeping
+ * it unconditional matches the signature hybrids (which always offer -text) and
+ * ensures the hybrid provider serves its OWN text encoder for a hybrid KEM key.
+ * That matters under co-load: oqsprovider registers a same-named text encoder,
+ * and without a hybrid one the encoder machinery routes a hybrid key to oqs's,
+ * which cannot encode a foreign key and yields no output (issue #84).
+ */
+#define HYBRID_KEM_TEXT_ENC_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid) \
+    { nm, "provider=hybrid,output=text",                                     \
+      hybrid_text_encoder_functions, ds " text encoder" },
+
+/*
+ * KEM key-file encoders (SPKI/PKCS8). Gated by HYBRID_KEM_ENCODERS (off by
+ * default), mirroring oqsprovider's OQS_KEM_ENCODERS build option: KEM key files
+ * are rarely used and only a few hybrid KEMs have an assigned OID. The shared
+ * encoder code handles both families; NULL-OID KEMs registered here simply
+ * decline to encode.
  */
 #ifdef HYBRID_KEM_ENCODERS
 # define HYBRID_KEM_ENC_REG(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)  \
@@ -279,9 +294,7 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
     { nm, "provider=hybrid,output=der,structure=PrivateKeyInfo",             \
       hybrid_pkcs8_der_encoder_functions, ds " PKCS8 DER encoder" },         \
     { nm, "provider=hybrid,output=pem,structure=PrivateKeyInfo",             \
-      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },         \
-    { nm, "provider=hybrid,output=text",                                     \
-      hybrid_text_encoder_functions, ds " text encoder" },
+      hybrid_pkcs8_pem_encoder_functions, ds " PKCS8 PEM encoder" },
 #endif
 
 #ifdef HYBRID_COMPOSITE
@@ -314,6 +327,7 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
 #endif
 static const OSSL_ALGORITHM hybrid_encoders[] = {
     HYBRID_SIG_LIST(HYBRID_SIG_ENC_REG)
+    HYBRID_KEM_LIST(HYBRID_KEM_TEXT_ENC_REG)   /* -text: always available */
 #ifdef HYBRID_KEM_ENCODERS
     HYBRID_KEM_LIST(HYBRID_KEM_ENC_REG)
 #endif
@@ -328,6 +342,7 @@ static const OSSL_ALGORITHM hybrid_encoders[] = {
 # undef COMPOSITE_KEM_ENC_REG
 #endif
 #undef HYBRID_SIG_ENC_REG
+#undef HYBRID_KEM_TEXT_ENC_REG
 #ifdef HYBRID_KEM_ENCODERS
 # undef HYBRID_KEM_ENC_REG
 #endif
