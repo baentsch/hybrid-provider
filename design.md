@@ -520,9 +520,43 @@ hybrids always use alg1-first ordering (no slot swapping).
 ### One-shot vs streaming
 
 The provider implements the one-shot `digest_sign` / `digest_verify` dispatch
-functions. For algorithms that require streaming (multi-part digest), the
-provider would need to buffer the data and call the one-shot EVP functions at
-final. Initial implementation uses one-shot only.
+functions and, on OpenSSL builds that expose it (3.5+), the message-signature
+API (`sign_message_init` / `verify_message_init`, one-shot `sign` / `verify`,
+and streaming `*_message_update` / `*_message_final`). The message-signature
+path is what OpenSSL routes attribute-free CMS content-signing through for
+md-less algorithms (ML-DSA, and thus our hybrids); without it, `cms -sign
+-noattr` fails at `sign_init`.
+
+**The streaming path buffers the message and runs the one-shot at `final`,**
+rather than driving the two component contexts fragment-by-fragment. This is a
+deliberate tradeoff, not an algorithmic necessity: for the signature hybrids
+both components *can* in fact stream — the classical half is always ECDSA or
+RSA (never pure EdDSA; see the sig info table), both of which stream via
+`EVP_DigestSignUpdate`, and the PQ half is ML-DSA, whose default-provider
+implementation absorbs the message incrementally into `mu` (a SHAKE sponge) via
+`EVP_PKEY_sign_message_update` rather than buffering internally. A true
+end-to-end streaming design is therefore possible. Buffer-then-one-shot was
+chosen because it:
+
+- reuses the identical, already-tested one-shot assembly (the 4-byte
+  classical-length prefix + concatenation, and the `sig == NULL` size query),
+  instead of a second code path that reassembles the wire format from two
+  separately-finalized halves;
+- keeps `dupctx` / `freectx` managing a single owned byte buffer (a trivial
+  `OPENSSL_memdup`), rather than duplicating two live crypto sub-contexts
+  mid-stream (`EVP_MD_CTX_copy` plus an ML-DSA message-context dup);
+- costs little in practice: the path is cold (CMS `-noattr` on ≥ 3.6, or a
+  direct message-API caller), so the memory saving from true streaming is
+  marginal for realistic message sizes; and
+- a one-shot path must exist regardless (the size query, and to remain correct
+  if a one-shot-only component such as pure EdDSA is ever composed), so
+  buffering is the common denominator that always works.
+
+The one real cost is memory: the accumulator holds the whole message. The
+`update()` path guards the running length against `size_t` overflow but imposes
+no size cap, so this design assumes bounded content-signing inputs (as CMS
+content-signing is); large-message streaming would be the reason to revisit and
+drive the component contexts directly.
 
 ## Provider Registration
 
