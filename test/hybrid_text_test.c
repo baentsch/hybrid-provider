@@ -14,9 +14,11 @@
  *
  * Driven through OSSL_ENCODER by name (provider=hybrid). Each algorithm self-
  * skips when its components are unavailable, and when the family's TEXT encoder
- * is not built into this provider (hybrid KEM text needs -DHYBRID_KEM_ENCODERS;
- * the composite families need -DHYBRID_COMPOSITE) -- detected at runtime via the
- * encoder count, so the test is correct for every build configuration.
+ * is not built into this provider (the composite families need -DHYBRID_COMPOSITE;
+ * the sig and KEM hybrid -text encoders are always built) -- detected at runtime
+ * via a provider-strict OSSL_ENCODER_fetch, so the test is correct for every
+ * build configuration AND when oqsprovider is co-loaded (which registers
+ * same-named encoders; see hybrid_text_encoder_present).
  */
 #include <stdio.h>
 #include <string.h>
@@ -44,13 +46,29 @@ static EVP_PKEY *keygen(OSSL_LIB_CTX *ctx, const char *alg)
 }
 
 /*
- * TEXT-encode `selection` of `k`. Returns a malloc'd NUL-terminated string (its
- * byte length in *outlen). *had_encoder tells the caller whether a TEXT encoder
- * for this key even exists (0 => the family's text encoder was not built, so the
- * caller should SKIP rather than FAIL).
+ * Did the HYBRID provider build a TEXT encoder for `alg`? Probe with a
+ * provider-strict OSSL_ENCODER_fetch rather than counting new_for_pkey encoders:
+ * when oqsprovider is co-loaded it registers same-named encoders that OpenSSL 4.x
+ * counts even under a "provider=hybrid" query, so a count-based probe reports
+ * "present" and the test would FAIL (routing to oqs's encoder, which cannot
+ * encode a foreign hybrid key) instead of SKIP (issue #84). Fetch honours the
+ * "provider=hybrid" query strictly.
  */
-static char *text_encode(EVP_PKEY *k, int selection, size_t *outlen,
-                         int *had_encoder)
+static int hybrid_text_encoder_present(OSSL_LIB_CTX *ctx, const char *alg)
+{
+    OSSL_ENCODER *e = OSSL_ENCODER_fetch(ctx, alg, "provider=hybrid,output=text");
+    int present = e != NULL;
+
+    ERR_clear_error();
+    OSSL_ENCODER_free(e);
+    return present;
+}
+
+/*
+ * TEXT-encode `selection` of `k`. Returns a malloc'd NUL-terminated string (its
+ * byte length in *outlen), or NULL on failure.
+ */
+static char *text_encode(EVP_PKEY *k, int selection, size_t *outlen)
 {
     OSSL_ENCODER_CTX *e = OSSL_ENCODER_CTX_new_for_pkey(k, selection, "TEXT",
                                                         NULL, "provider=hybrid");
@@ -58,8 +76,7 @@ static char *text_encode(EVP_PKEY *k, int selection, size_t *outlen,
     size_t len = 0;
     char *out = NULL;
 
-    *had_encoder = (e != NULL && OSSL_ENCODER_CTX_get_num_encoders(e) > 0);
-    if (*had_encoder && OSSL_ENCODER_to_data(e, &data, &len) > 0
+    if (e != NULL && OSSL_ENCODER_to_data(e, &data, &len) > 0
             && data != NULL && (out = OPENSSL_malloc(len + 1)) != NULL) {
         memcpy(out, data, len);
         out[len] = '\0';
@@ -108,7 +125,6 @@ static void check_text(OSSL_LIB_CTX *ctx, const char *alg)
     EVP_PKEY *k = NULL;
     char *pub = NULL, *priv = NULL;
     size_t publen = 0, privlen = 0;
-    int have_pub = 0, have_priv = 0;
 
     printf("  %-28s pkey -text ... ", alg);
     fflush(stdout);
@@ -120,14 +136,15 @@ static void check_text(OSSL_LIB_CTX *ctx, const char *alg)
         return;
     }
 
-    pub = text_encode(k, EVP_PKEY_PUBLIC_KEY, &publen, &have_pub);
-    priv = text_encode(k, EVP_PKEY_KEYPAIR, &privlen, &have_priv);
-
-    if (!have_pub && !have_priv) {
+    if (!hybrid_text_encoder_present(ctx, alg)) {
         printf("SKIP (no TEXT encoder in this build)\n");
         skipped++; tests--;
         goto end;
     }
+
+    pub = text_encode(k, EVP_PKEY_PUBLIC_KEY, &publen);
+    priv = text_encode(k, EVP_PKEY_KEYPAIR, &privlen);
+
     if (pub == NULL || priv == NULL) {
         printf("FAIL: TEXT encode returned no data\n");
         ERR_print_errors_fp(stdout); failed++;

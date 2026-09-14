@@ -62,24 +62,23 @@ static int encode(EVP_PKEY *pk, int sel, const char *structure, const char *prop
     return ok;
 }
 
-/* Does the hybrid provider expose a KEM encoder for `alg`? (feature gate) */
+/*
+ * Did the HYBRID provider build its KEM key-file (SPKI) encoders? Probe with a
+ * provider-strict OSSL_ENCODER_fetch: a plain OSSL_ENCODER_CTX_new_for_pkey +
+ * get_num_encoders count is fooled when oqsprovider is co-loaded, because oqs
+ * registers same-named KEM encoders and OpenSSL 4.x includes them in the count
+ * even under a "provider=hybrid" query -- so the test would try to encode and
+ * FAIL instead of SKIP (issue #84). Fetch honours "provider=hybrid" strictly, so
+ * a non-NULL result means the hybrid provider itself owns the encoder.
+ */
 static int hybrid_kem_encoders_present(OSSL_LIB_CTX *ctx, const char *alg)
 {
-    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(ctx, alg, "provider=hybrid");
-    EVP_PKEY *k = NULL;
-    OSSL_ENCODER_CTX *e = NULL;
-    int present = 0;
+    OSSL_ENCODER *e = OSSL_ENCODER_fetch(
+        ctx, alg, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo");
+    int present = e != NULL;
 
-    if (g != NULL && EVP_PKEY_keygen_init(g) > 0 && EVP_PKEY_keygen(g, &k) > 0) {
-        e = OSSL_ENCODER_CTX_new_for_pkey(k, EVP_PKEY_PUBLIC_KEY, "DER",
-                                          "SubjectPublicKeyInfo",
-                                          "provider=hybrid");
-        present = e != NULL && OSSL_ENCODER_CTX_get_num_encoders(e) > 0;
-    }
     ERR_clear_error();
-    OSSL_ENCODER_CTX_free(e);
-    EVP_PKEY_free(k);
-    EVP_PKEY_CTX_free(g);
+    OSSL_ENCODER_free(e);
     return present;
 }
 
