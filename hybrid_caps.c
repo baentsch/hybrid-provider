@@ -130,9 +130,10 @@ typedef struct {
 /*
  * Per-group constants, generated in master-list order. min_tls = TLS1_3_VERSION
  * enables every group for TLS 1.3 — including the BIKE-L1 groups, which
- * oqsprovider disables (enable_tls:false -> min_tls=-1). Per oqsprovider PR #711
- * that disablement is an arbitrary test artifact, not a security decision, so we
- * keep BIKE-L1 enabled here.
+ * oqsprovider does not advertise for TLS (enable_tls:false -> min_tls=-1). We
+ * deliberately enable them here: the components are standard BIKE-L1 + classical
+ * and we treat the group as usable for TLS 1.3. (oqsprovider PR #711 later
+ * re-enabled them there too.)
  */
 #define HYBRID_CAPS_CONST_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid) \
     { (cp), (sb), TLS1_3_VERSION, 0, -1, -1, 1 },

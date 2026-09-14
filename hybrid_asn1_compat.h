@@ -17,10 +17,10 @@
  * apart. Because each branch calls only the API current for the build it targets,
  * neither path trips -Wdeprecated-declarations and no #pragma suppression is needed.
  *
- * (An earlier 4.1.0-dev spelled these ASN1_STRING_set_data()/_length_ex() before
- * upstream renamed them; that spelling never shipped in a release or in master, so
- * it is not carried here — a stale local dev checkout built against it simply needs
- * rebuilding to current master.)
+ * (An earlier 4.1.0-dev iteration reportedly spelled these
+ * ASN1_STRING_set_data()/_length_ex(); we target only the released names above and
+ * do not carry that transient dev spelling. A dev checkout built against it just
+ * needs rebuilding to current master.)
  */
 #ifndef HYBRID_ASN1_COMPAT_H
 #define HYBRID_ASN1_COMPAT_H
