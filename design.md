@@ -786,6 +786,43 @@ cache; its local-dev default (one shared prefix) is unchanged. The weekly tier
 deliberately does the opposite — it caches only OpenSSL and rebuilds liboqs +
 oqs-provider `main` fresh, which is its whole point.
 
+#### Triaging a weekly failure (runbook)
+
+A red weekly leg or an open `oqs-hybrid-drift` issue is a *leading indicator*,
+not automatically a bug in this provider. The auto-filed issue asks the reader to
+"triage whether it is our drift to fix or transient upstream breakage" — this is
+that triage. The recurring case is liboqs / oqs-provider `main` churning the NIST
+additional-signature onramp families (MAYO, UOV/OV, SNOVA, MQOM) ahead of any
+liboqs release. It arrives in two shapes, with **different** correct responses:
+
+- **Resize under the same algorithm name** (seen for MAYO, UOV/OV): `main`
+  changes a parameter set, so the *same* hybrid name now emits a
+  different-sized key/signature than the pinned liboqs release does.
+  `hybrid_sizes_test` (and the capability / matrix tests) go red on the weekly
+  legs. This is **not ours to fix in the size tables**: the constants in
+  `hybrid_prov.h` are compile-time and single-valued, and they track the *pinned
+  release*, so a value cannot satisfy both the pinned release and `main` at once.
+  Editing them to `main`'s numbers would turn the green, release-gated **regular**
+  tier red. **Hold.** The leg auto-closes when `main` settles or when the pinned
+  `LIBOQS_REF` is bumped to a release that ships the new sizes — at which point
+  the constants are regenerated in that same PR via `hybrid_sizes_test emit`.
+
+- **Rename / re-parameterization** (seen for SNOVA, MQOM): `main` renames a
+  hybrid family (e.g. SNOVA `snova2454…` → `snova{1,3,5}{b,k,s}`, MQOM
+  `mqom2…r5` → `mqom3…ct`), which trips the buildless drift check. Following a
+  rename is standard here (cf. the mlkem512 rename), **but only once it ships in a
+  tagged liboqs release** — we followed mlkem512 *together with* the pinned-ref
+  bump that shipped it. A `main`-only rename is held: adopting it early would
+  advertise hybrids whose components do not exist in the pinned release and would
+  need component sizes that are themselves still in flux. **Fold the table update
+  (new names + OIDs + TLS code points, and regenerated sizes) into the PR that
+  bumps `LIBOQS_REF` / `OQSPROV_REF`.** Capture the new OIDs/code points on the
+  drift issue meanwhile so the follow-up is mechanical.
+
+Rule of thumb: the committed tables and size constants track the **pinned
+release**, never `main`. The weekly tier is the signal that a future pin bump has
+work waiting — it is not a request to chase `main` into `main`-independent code.
+
 On top of the two behavioural tiers, a **sanitize** leg guards the hand-written
 EVP glue for memory safety (issue #42): it builds the provider and every
 in-process test with AddressSanitizer + UndefinedBehaviorSanitizer (LeakSanitizer

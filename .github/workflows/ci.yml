@@ -615,6 +615,11 @@ jobs:
           oqs-provider \`main\`, failed. This tier tracks bleeding-edge upstream, so
           triage whether it is our drift to fix or transient upstream breakage.
 
+          Triage runbook: design.md "Triaging a weekly failure (runbook)" — the
+          recurring case (liboqs-main resize/rename of the MAYO/UOV/SNOVA/MQOM
+          onramp families) is transient upstream churn, not our drift; the
+          committed tables/size constants track the pinned release, never \`main\`.
+
           - Run: ${RUN_URL}
           - Commit: ${GITHUB_SHA}
           - OpenSSL: ${{ steps.ossl.outputs.ref }} (${{ steps.ossl.outputs.sha }})

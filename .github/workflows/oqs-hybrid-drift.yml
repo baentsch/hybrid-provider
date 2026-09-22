@@ -67,6 +67,13 @@ jobs:
             echo "\`HYBRID_SIG_LIST\` in \`hybrid_prov.h\` (see #25 for the"
             echo "eFrodoKEM precedent), then re-run the test suite."
             echo
+            echo "**First triage:** see design.md \"Triaging a weekly failure"
+            echo "(runbook)\". A \`main\`-only rename/re-parameterization (e.g. the"
+            echo "SNOVA/MQOM onramp churn) is followed *together with* the pinned"
+            echo "\`LIBOQS_REF\`/\`OQSPROV_REF\` bump that ships it, not chased ahead"
+            echo "of a liboqs release; capture the new OIDs/code points here"
+            echo "meanwhile so that follow-up is mechanical."
+            echo
             echo "_This check runs weekly and will not re-notify while this issue"
             echo "is open; it auto-closes once the sets match again._"
             echo "_Source: .github/workflows/oqs-hybrid-drift.yml · run ${{ github.run_id }}_"
