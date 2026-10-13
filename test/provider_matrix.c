@@ -66,16 +66,21 @@ typedef struct {
                         /* libwolfprov.so), so the two genuinely differ.         */
     const char *disp;   /* human label for the report                           */
     const char *module; /* module file (NULL for the built-in default)          */
+    int         native_mlx; /* implements the standardized IETF MLX groups as    */
+                        /* first-class native groups (default, wolfProvider) --  */
+                        /* the peers B3 compares the hybrid composition against.  */
+                        /* NOT oqsprovider: its hybrids are its own construction  */
+                        /* and hybrid<->oqs interop is covered by hybrid_oqs_test.*/
     int         serves_kem;
     int         serves_sig;
     int         loaded;
 } PROV;
 
 static PROV provs[] = {
-    { "default",     "default",     "default (OpenSSL master)", NULL,             0, 0, 0 },
-    { "libwolfprov", "wolfprov",    "wolfProvider",             "libwolfprov.so", 0, 0, 0 },
-    { "mldsanative", "mldsanative", "mldsa-native-provider",    "mldsanative.so", 0, 0, 0 },
-    { "oqsprovider", "oqsprovider", "oqsprovider",              "oqsprovider.so", 0, 0, 0 },
+    { "default",     "default",     "default (OpenSSL master)", NULL,             1, 0, 0, 0 },
+    { "libwolfprov", "wolfprov",    "wolfProvider",             "libwolfprov.so", 1, 0, 0, 0 },
+    { "mldsanative", "mldsanative", "mldsa-native-provider",    "mldsanative.so", 0, 0, 0, 0 },
+    { "oqsprovider", "oqsprovider", "oqsprovider",              "oqsprovider.so", 0, 0, 0, 0 },
 };
 #define NPROV (sizeof(provs) / sizeof(provs[0]))
 
@@ -217,6 +222,33 @@ static void collect_pq_inventory(void)
     add_uniq(sig_pq, &n_sig_pq, 8, "ML-DSA-87");
 }
 
+/*
+ * The name a provider actually registers a canonical variant under can differ:
+ * oqsprovider below OpenSSL 3.5 serves ML-KEM as "mlkem512/768/1024" with no
+ * canonical "ML-KEM-*" alias (its ML-DSA does carry the "ML-DSA-*" alias, so
+ * signatures need no mapping). Return the name `query`'s provider serves this
+ * canonical variant under -- the canonical name, else the oqs-style alias --
+ * or NULL if it serves neither.
+ */
+static const char *kem_served_name(OSSL_LIB_CTX *libctx, const char *canon,
+                                   const char *query)
+{
+    static const struct { const char *canon, *alt; } alias[] = {
+        { "ML-KEM-512", "mlkem512" },
+        { "ML-KEM-768", "mlkem768" },
+        { "ML-KEM-1024", "mlkem1024" },
+    };
+    size_t i;
+
+    if (serves(libctx, canon, query))
+        return canon;
+    for (i = 0; i < sizeof(alias) / sizeof(alias[0]); i++)
+        if (strcmp(alias[i].canon, canon) == 0
+                && serves(libctx, alias[i].alt, query))
+            return alias[i].alt;
+    return NULL;
+}
+
 /* =========================== B. interoperability =========================== */
 
 static int interop_failures;
@@ -320,7 +352,8 @@ static void interop_mlkem(OSSL_LIB_CTX *libctx)
         printf("  %s\n", kem_pq[v]);
         printf("    %-26s", "encaps \\ decaps");
         for (d = 0; d < NPROV; d++)
-            if (provs[d].loaded && serves(libctx, kem_pq[v], provs[d].query))
+            if (provs[d].loaded
+                    && kem_served_name(libctx, kem_pq[v], provs[d].query) != NULL)
                 printf(" %-13s", provs[d].query);
         printf("\n");
         for (s = 0; s < NPROV; s++) {
@@ -329,12 +362,15 @@ static void interop_mlkem(OSSL_LIB_CTX *libctx)
             unsigned char *ct = NULL, *ss_e = NULL;
             size_t ctlen = 0, sslen = 0;
             char propq[64];
+            const char *sn;
 
-            if (!provs[s].loaded || !serves(libctx, kem_pq[v], provs[s].query))
+            if (!provs[s].loaded
+                    || (sn = kem_served_name(libctx, kem_pq[v], provs[s].query))
+                           == NULL)
                 continue;
             any = 1;
             snprintf(propq, sizeof(propq), "provider=%s", provs[s].query);
-            key = bench_gen_key(libctx, kem_pq[v], propq);
+            key = bench_gen_key(libctx, sn, propq);
             ectx = key ? EVP_PKEY_CTX_new_from_pkey(libctx, key, propq) : NULL;
             if (ectx == NULL || EVP_PKEY_encapsulate_init(ectx, NULL) <= 0
                     || EVP_PKEY_encapsulate(ectx, NULL, &ctlen, NULL, &sslen) <= 0
@@ -353,7 +389,9 @@ static void interop_mlkem(OSSL_LIB_CTX *libctx)
                 char dpropq[64];
                 int ok = 0;
 
-                if (!provs[d].loaded || !serves(libctx, kem_pq[v], provs[d].query))
+                if (!provs[d].loaded
+                        || kem_served_name(libctx, kem_pq[v], provs[d].query)
+                               == NULL)
                     continue;
                 snprintf(dpropq, sizeof(dpropq), "provider=%s", provs[d].query);
                 dctx = EVP_PKEY_CTX_new_from_pkey(libctx, key, dpropq);
@@ -537,13 +575,13 @@ static void interop_hybrid_kem(OSSL_LIB_CTX *libctx)
 
             /*
              * Only compare against providers that implement the SAME
-             * standardized MLX wire format natively -- i.e. those that also
-             * serve the standalone ML-KEM primitive (default, wolfProvider).
-             * oqsprovider's hybrids are its own non-standardized constructions;
-             * hybrid<->oqs interop is covered by hybrid_oqs_test, and its
-             * timings appear in C3.
+             * standardized IETF MLX groups natively (default, wolfProvider).
+             * oqsprovider's hybrids are its own construction (and it serves
+             * standalone ML-KEM only below 3.5, so serves_kem is not a stable
+             * discriminator across versions); hybrid<->oqs interop is covered
+             * by hybrid_oqs_test, and its timings appear in C3.
              */
-            if (!provs[p].loaded || !provs[p].serves_kem
+            if (!provs[p].loaded || !provs[p].native_mlx
                     || !serves(libctx, name, provs[p].query))
                 continue;
             snprintf(npropq, sizeof(npropq), "provider=%s", provs[p].query);
@@ -614,12 +652,13 @@ static void perf_naked(OSSL_LIB_CTX *libctx)
             char propq[64];
             EVP_PKEY *key;
             double kg, en, de;
+            const char *fn = kem_served_name(libctx, kem_pq[v], provs[p].query);
 
-            if (!provs[p].loaded || !serves(libctx, kem_pq[v], provs[p].query))
+            if (!provs[p].loaded || fn == NULL)
                 continue;
             snprintf(propq, sizeof(propq), "provider=%s", provs[p].query);
-            kg = time_keygen(libctx, kem_pq[v], propq);
-            key = bench_gen_key(libctx, kem_pq[v], propq);
+            kg = time_keygen(libctx, fn, propq);
+            key = bench_gen_key(libctx, fn, propq);
             en = key ? bench_time_kem_encaps(libctx, key, propq) : -1.0;
             de = key ? bench_time_kem_decaps(libctx, key, propq) : -1.0;
             printf("    %-26s keygen %8.4f  encaps %8.4f  decaps %8.4f\n",
@@ -905,7 +944,8 @@ int main(int argc, char **argv)
         if (!avail)
             continue;
         for (v = 0; v < n_kem_pq && !provs[i].serves_kem; v++)
-            provs[i].serves_kem = serves(base, kem_pq[v], provs[i].query);
+            provs[i].serves_kem =
+                kem_served_name(base, kem_pq[v], provs[i].query) != NULL;
         for (v = 0; v < n_sig_pq && !provs[i].serves_sig; v++)
             provs[i].serves_sig = serves(base, sig_pq[v], provs[i].query);
         printf("  %-26s loaded  [%s%s%s]\n", provs[i].disp,

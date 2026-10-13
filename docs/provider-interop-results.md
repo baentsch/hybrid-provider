@@ -235,6 +235,56 @@ for the names they share.
 
 ---
 
+## Cross-version comparison: OpenSSL 3.4.2 vs master
+
+The same tool, run against an OpenSSL **3.4.2** install, shows how the provider
+landscape changes with the core version. On 3.4 the default provider has **no**
+native ML-KEM/ML-DSA (those landed in 3.5) and **wolfProvider's PQC needs
+≥3.6**, so the only PQ sources are **oqsprovider** (which *does* expose
+standalone ML-KEM/ML-DSA below 3.5, as `mlkem*`/`mldsa*`) and
+**mldsa-native-provider**. Interop is clean on both versions (all cross-provider
+checks pass); on 3.4 the hybrid-KEM wire-compat matrix (B3) is empty because
+there is no native-MLX peer to compare against.
+
+### ML-DSA sign (ms), per version × provider
+
+| Variant | 3.4: oqs | 3.4: mldsa-native | 3.4: default | master: default | master: wolfProvider | master: mldsa-native |
+|---|---|---|---|---|---|---|
+| ML-DSA-44 | 0.032 | **0.026** | — | 0.162 | 0.044 | **0.027** |
+| ML-DSA-65 | 0.049 | **0.039** | — | 0.253 | 0.059 | **0.041** |
+| ML-DSA-87 | 0.076 | **0.057** | — | 0.382 | 0.082 | **0.059** |
+
+### ML-KEM encaps / decaps (ms), per version × provider
+
+| Variant | 3.4: oqs | 3.4: default | master: default | master: wolfProvider | master: oqs |
+|---|---|---|---|---|---|
+| ML-KEM-512 | **0.008 / 0.010** | — | 0.098 / 0.150 | 0.015 / 0.016 | — (ceded) |
+| ML-KEM-768 | **0.012 / 0.015** | — | 0.145 / 0.216 | 0.021 / 0.023 | — |
+| ML-KEM-1024 | **0.017 / 0.020** | — | 0.199 / 0.290 | 0.029 / 0.032 | — |
+
+(wolfProvider has no PQC on 3.4; mldsa-native has no KEM.)
+
+**Takeaways.**
+1. **Self-contained PQ cores are version-independent.** mldsa-native and
+   oqsprovider carry their own FIPS-203/204 implementation, so their numbers are
+   essentially identical on 3.4 and master — the OpenSSL version underneath does
+   not matter to them.
+2. **Native PQ exists only from 3.5 and is the slowest.** The default provider
+   serves no PQ on 3.4; on master its native ML-DSA is 4–6× slower than the
+   external cores and its ML-KEM ~7–9× slower than wolfProvider.
+3. **The fastest PQ in the whole matrix is oqsprovider/liboqs ML-KEM on 3.4**
+   (ML-KEM-768 encaps 0.012 ms) — but only reachable standalone below 3.5, since
+   oqs cedes the standardized primitives to the default provider on ≥3.5.
+4. The hybrid provider composes PQ from whatever is present on each version, and
+   its composition-vs-native-peer behaviour (C3) is the same on both: at parity
+   on the crypto, faster on keygen/decaps than oqsprovider's own hybrids.
+
+Reproduce the 3.4 leg by pointing the three provider builds at a 3.4 install
+(`OPENSSL_ROOT_DIR=/path/to/openssl-3.4`), omitting wolfProvider (no PQC < 3.6),
+and running the tool with `LD_LIBRARY_PATH` set to that install's `lib64`.
+
+---
+
 ## Notes & caveats
 
 - **Min-latency model** (shared with the repo's other benches): each timing is
