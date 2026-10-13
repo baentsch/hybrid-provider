@@ -13,10 +13,11 @@ loaded into one process on OpenSSL master:
 | **hybrid-provider** (this repo) | composes hybrids & composites from any of the above | all hybrid KEMs/sigs + composites |
 
 On OpenSSL ≥3.5 oqsprovider stops registering the standardized ML-KEM/ML-DSA
-primitives (the default provider now owns them), so it does not appear in the
-naked-PQ table or as a PQ-component source — it contributes as a *native
-implementation of the same hybrid names* the hybrid provider composes (section
-C3).
+primitives (the default provider now owns them), so it cannot be measured
+standalone on master; its naked-PQ rows below are therefore taken on **OpenSSL
+3.4.x** (default/baseline liboqs build), footnoted accordingly. It also
+contributes as a *native implementation of the same hybrid names* the hybrid
+provider composes (section C3).
 
 The hybrid provider is **EVP-only**: it composes its PQ half from whichever
 provider the property query selects, so each of default / wolfProvider /
@@ -118,12 +119,15 @@ speed-up vs the default provider.
 | ML-DSA-44 | default | 0.113 | 0.161 | 0.089 |
 | | wolfProvider | 0.029 | 0.043 (3.7×) | 0.038 |
 | | mldsa-native | 0.020 | 0.027 (6.0×) | 0.020 |
+| | oqsprovider † | 0.024 | 0.032 | 0.024 |
 | ML-DSA-65 | default | 0.200 | 0.244 | 0.140 |
 | | wolfProvider | 0.044 | 0.059 (4.2×) | 0.052 |
 | | mldsa-native | 0.033 | 0.040 (6.1×) | 0.031 |
+| | oqsprovider † | 0.043 | 0.049 | 0.040 |
 | ML-DSA-87 | default | 0.280 | 0.371 | 0.232 |
 | | wolfProvider | 0.063 | 0.081 (4.6×) | 0.073 |
 | | mldsa-native | 0.048 | 0.058 (6.4×) | 0.046 |
+| | oqsprovider † | 0.066 | 0.076 | 0.063 |
 
 ### ML-KEM — keygen / encaps / decaps
 
@@ -131,15 +135,25 @@ speed-up vs the default provider.
 |---|---|---:|---:|---:|
 | ML-KEM-512 | default | 0.086 | 0.097 | 0.149 |
 | | wolfProvider | 0.016 | 0.016 (6.3×) | 0.017 (8.9×) |
+| | oqsprovider † | 0.008 | 0.008 | 0.010 |
 | ML-KEM-768 | default | 0.139 | 0.144 | 0.215 |
 | | wolfProvider | 0.022 | 0.021 (6.8×) | 0.023 (9.2×) |
+| | oqsprovider † | 0.012 | 0.012 | 0.015 |
 | ML-KEM-1024 | default | 0.203 | 0.197 | 0.288 |
 | | wolfProvider | 0.029 | 0.029 (6.8×) | 0.032 (8.9×) |
+| | oqsprovider † | 0.016 | 0.017 | 0.020 |
+
+**† oqsprovider rows are measured on OpenSSL 3.4.x** (default/baseline liboqs
+build); on ≥3.5 oqsprovider cedes the standardized ML-KEM/ML-DSA to the default
+provider, so they cannot be measured standalone on master. The PQ cores are
+self-contained, so on this machine the values are directly comparable;
+speed-up-vs-default ratios are omitted for these rows as they would cross OpenSSL
+versions.
 
 **Takeaway.** On this machine, for the bare FIPS-203/204 primitives,
 wolfProvider is ~4–7× and mldsa-native-provider ~6× faster than OpenSSL master's
 default provider at ML-DSA sign; wolfProvider is ~6–9× faster at ML-KEM. (These
-are implementation differences in the three independent FIPS-203/204 cores, not
+are implementation differences in the independent FIPS-203/204 cores, not
 anything the hybrid provider does.)
 
 ---
