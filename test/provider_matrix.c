@@ -20,12 +20,17 @@
  *          X25519MLKEM768/... decapsulated by the default and wolfProvider
  *          native MLX groups, and vice versa.
  *   C. performance:
- *        - "naked" PQ primitives side by side: every provider that serves a
+ *        - C1 "naked" PQ primitives side by side: every provider that serves a
  *          given ML-DSA / ML-KEM variant, keygen/sign/verify or
  *          keygen/encaps/decaps;
- *        - hybrid & composite figures, with the PQ component sourced from each
+ *        - C2 hybrid & composite figures, with the PQ component sourced from each
  *          provider in turn (config-driven pq-propquery; classical half pinned
- *          to the default provider so only the PQ source varies).
+ *          to the default provider so only the PQ source varies);
+ *        - C3 composed algorithm: the hybrid provider's composition next to any
+ *          other provider that serves the SAME name natively. On OpenSSL >=3.5
+ *          oqsprovider lands here -- it cedes the standardized ML-KEM/ML-DSA to
+ *          the default provider but still serves the exotic hybrids the hybrid
+ *          provider composes (p384_mlkem768, p256_mldsa44, ...).
  *
  * Nothing is hardcoded to a single provider: the provider set is discovered on
  * the module path, the algorithm inventory comes from the provider's own
@@ -391,25 +396,39 @@ static int export_pub(EVP_PKEY *k, unsigned char **buf, size_t *len)
                                            *buf, *len, len) == 1;
 }
 
-/* Import raw public bytes as `name` under `propq` (public-only key). */
+/*
+ * Import raw public bytes as `name` under `propq` (public-only key). Providers
+ * disagree on the fromdata key for a composed public key: the native MLX and
+ * hybrid keymgmts take OSSL_PKEY_PARAM_PUB_KEY, while oqsprovider's hybrids take
+ * OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY. Try both so the import works whichever
+ * provider owns `name`.
+ */
 static EVP_PKEY *import_pub(OSSL_LIB_CTX *ctx, const char *name,
                             const char *propq, const unsigned char *buf,
                             size_t len)
 {
-    EVP_PKEY_CTX *ic = EVP_PKEY_CTX_new_from_name(ctx, name, propq);
-    EVP_PKEY *k = NULL;
-    OSSL_PARAM params[2];
+    static const char *keys[] = { OSSL_PKEY_PARAM_PUB_KEY,
+                                  OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY };
+    size_t i;
 
-    params[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
-                                                  (void *)buf, len);
-    params[1] = OSSL_PARAM_construct_end();
-    if (ic == NULL || EVP_PKEY_fromdata_init(ic) <= 0
-            || EVP_PKEY_fromdata(ic, &k, EVP_PKEY_PUBLIC_KEY, params) <= 0)
-        k = NULL;
-    EVP_PKEY_CTX_free(ic);
-    if (k == NULL)
+    for (i = 0; i < 2; i++) {
+        EVP_PKEY_CTX *ic = EVP_PKEY_CTX_new_from_name(ctx, name, propq);
+        EVP_PKEY *k = NULL;
+        OSSL_PARAM params[2];
+
+        params[0] = OSSL_PARAM_construct_octet_string((char *)keys[i],
+                                                      (void *)buf, len);
+        params[1] = OSSL_PARAM_construct_end();
+        if (ic != NULL && EVP_PKEY_fromdata_init(ic) > 0
+                && EVP_PKEY_fromdata(ic, &k, EVP_PKEY_PUBLIC_KEY, params) > 0) {
+            EVP_PKEY_CTX_free(ic);
+            return k;
+        }
+        EVP_PKEY_CTX_free(ic);
+        EVP_PKEY_free(k);
         ERR_clear_error();
-    return k;
+    }
+    return NULL;
 }
 
 static int do_encaps(OSSL_LIB_CTX *ctx, EVP_PKEY *pub, const char *propq,
@@ -516,7 +535,16 @@ static void interop_hybrid_kem(OSSL_LIB_CTX *libctx)
             EVP_PKEY *nkey;
             int a, b;
 
-            if (!provs[p].loaded || !serves(libctx, name, provs[p].query))
+            /*
+             * Only compare against providers that implement the SAME
+             * standardized MLX wire format natively -- i.e. those that also
+             * serve the standalone ML-KEM primitive (default, wolfProvider).
+             * oqsprovider's hybrids are its own non-standardized constructions;
+             * hybrid<->oqs interop is covered by hybrid_oqs_test, and its
+             * timings appear in C3.
+             */
+            if (!provs[p].loaded || !provs[p].serves_kem
+                    || !serves(libctx, name, provs[p].query))
                 continue;
             snprintf(npropq, sizeof(npropq), "provider=%s", provs[p].query);
             /* A: native encapsulates to the hybrid-composed key; hybrid decaps */
@@ -598,6 +626,110 @@ static void perf_naked(OSSL_LIB_CTX *libctx)
                    provs[p].disp, kg, en, de);
             EVP_PKEY_free(key);
         }
+    }
+}
+
+/* One timed KEM row for `name` under provider `query`; prints if served. */
+static void perf_kem_row(OSSL_LIB_CTX *libctx, const char *name,
+                         const char *query, const char *label)
+{
+    char propq[64];
+    EVP_PKEY *key;
+    double kg, en, de;
+
+    if (!serves(libctx, name, query))
+        return;
+    snprintf(propq, sizeof(propq), "provider=%s", query);
+    kg = time_keygen(libctx, name, propq);
+    if ((key = bench_gen_key(libctx, name, propq)) == NULL) {
+        ERR_clear_error();
+        return;
+    }
+    en = bench_time_kem_encaps(libctx, key, propq);
+    de = bench_time_kem_decaps(libctx, key, propq);
+    printf("    %-34s %-26s keygen %8.4f  encaps %8.4f  decaps %8.4f\n",
+           name, label, kg, en, de);
+    EVP_PKEY_free(key);
+}
+
+/* One timed signature row for `name` under provider `query`; prints if served. */
+static void perf_sig_row(OSSL_LIB_CTX *libctx, const char *name,
+                         const char *query, const char *label)
+{
+    char propq[64];
+    EVP_PKEY *key;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    double kg, sg = -1.0, vf = -1.0;
+
+    if (!serves(libctx, name, query))
+        return;
+    snprintf(propq, sizeof(propq), "provider=%s", query);
+    kg = time_keygen(libctx, name, propq);
+    if ((key = bench_gen_key(libctx, name, propq)) == NULL) {
+        ERR_clear_error();
+        return;
+    }
+    if (bench_make_sig(libctx, key, NULL, propq, &sig, &siglen)) {
+        sg = bench_time_sign(libctx, key, NULL, propq);
+        vf = bench_time_verify(libctx, key, NULL, propq, sig, siglen);
+    }
+    printf("    %-34s %-26s keygen %8.4f  sign   %8.4f  verify %8.4f\n",
+           name, label, kg, sg, vf);
+    OPENSSL_free(sig);
+    EVP_PKEY_free(key);
+}
+
+/* Is `name` served natively by at least one non-hybrid provider here? */
+static int has_native_peer(OSSL_LIB_CTX *libctx, const char *name)
+{
+    size_t p;
+
+    for (p = 0; p < NPROV; p++)
+        if (provs[p].loaded && serves(libctx, name, provs[p].query))
+            return 1;
+    return 0;
+}
+
+/*
+ * C3: for every composed algorithm the hybrid provider serves AND at least one
+ * other provider serves natively under the same name, print the hybrid
+ * provider's composition next to each native implementation. On OpenSSL >=3.5
+ * this is where oqsprovider contributes: it cedes the standardized ML-KEM/ML-DSA
+ * to the default provider but still serves the exotic hybrids (p384_mlkem768,
+ * x448_mlkem768, p256_mldsa44, ...) that the hybrid provider also composes, so
+ * the two implementations of the same name sit side by side.
+ */
+static void perf_native_peers(OSSL_LIB_CTX *libctx)
+{
+    size_t i, p;
+
+    printf("\n[C3] Composed algorithm: hybrid-provider composition vs native "
+           "peer providers (min per-op latency, ms; budget %.0f ms)\n",
+           g_budget_ms);
+
+    printf("  -- hybrid KEMs --\n");
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+        const char *name = hybrid_kem_table[i].hybrid_name;
+
+        if (!serves(libctx, name, "hybrid") || !has_native_peer(libctx, name))
+            continue;
+        perf_kem_row(libctx, name, "hybrid", "hybrid-provider");
+        for (p = 0; p < NPROV; p++)
+            if (provs[p].loaded)
+                perf_kem_row(libctx, name, provs[p].query, provs[p].disp);
+    }
+
+    printf("  -- hybrid signatures --\n");
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+        const char *name = hybrid_sig_table[i].hybrid_name;
+
+        if (!serves(libctx, name, "hybrid") || !has_native_peer(libctx, name))
+            continue;
+        perf_sig_row(libctx, name, "hybrid", "hybrid-provider");
+        for (p = 0; p < NPROV; p++)
+            if (provs[p].loaded)
+                perf_sig_row(libctx, name, provs[p].query, provs[p].disp);
     }
 }
 
@@ -776,9 +908,11 @@ int main(int argc, char **argv)
             provs[i].serves_kem = serves(base, kem_pq[v], provs[i].query);
         for (v = 0; v < n_sig_pq && !provs[i].serves_sig; v++)
             provs[i].serves_sig = serves(base, sig_pq[v], provs[i].query);
-        printf("  %-26s loaded  [%s%s]\n", provs[i].disp,
+        printf("  %-26s loaded  [%s%s%s]\n", provs[i].disp,
                provs[i].serves_sig ? "ML-DSA " : "",
-               provs[i].serves_kem ? "ML-KEM" : "");
+               provs[i].serves_kem ? "ML-KEM" : "",
+               (!provs[i].serves_sig && !provs[i].serves_kem)
+                   ? "no standalone ML-KEM/ML-DSA; composed-only (see C3)" : "");
     }
     printf("  %-26s %s\n", "hybrid-provider",
            OSSL_PROVIDER_available(base, "hybrid") ? "loaded" : "NOT LOADED");
@@ -790,6 +924,7 @@ int main(int argc, char **argv)
 
     /* C. performance */
     perf_naked(base);
+    perf_native_peers(base);
     OSSL_LIB_CTX_free(base);
     perf_composed();
 

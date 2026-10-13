@@ -9,7 +9,14 @@ loaded into one process on OpenSSL master:
 | **default** (OpenSSL master, 4.2.0-dev, 13 Oct 2026) | native PQ + native MLX hybrids | ML-KEM-512/768/1024, ML-DSA-44/65/87, MLX hybrids |
 | **wolfProvider** (1.2.2, wolfSSL master, `--enable-mlkem --enable-mldsa`) | native PQ + native MLX hybrids | ML-KEM-512/768/1024, ML-DSA-44/65/87, X25519MLKEM768 / SecP256r1MLKEM768 / SecP384r1MLKEM1024 |
 | **mldsa-native-provider** (mldsa-native v2.0.0) | native ML-DSA only | ML-DSA-44/65/87 |
+| **oqsprovider** (0.10.0-dev, liboqs main) | native *hybrids* only on ≥3.5 | p384_mlkem768, p256_mldsa44, Falcon/MAYO/Frodo/BIKE… — **not** standalone ML-KEM/ML-DSA (ceded to default) |
 | **hybrid-provider** (this repo) | composes hybrids & composites from any of the above | all hybrid KEMs/sigs + composites |
+
+On OpenSSL ≥3.5 oqsprovider stops registering the standardized ML-KEM/ML-DSA
+primitives (the default provider now owns them), so it does not appear in the
+naked-PQ table or as a PQ-component source — it contributes as a *native
+implementation of the same hybrid names* the hybrid provider composes (section
+C3).
 
 The hybrid provider is **EVP-only**: it composes its PQ half from whichever
 provider the property query selects, so each of default / wolfProvider /
@@ -92,6 +99,10 @@ groups of default and wolfProvider:
 
 (“native-encaps/hybrid-decaps” and “hybrid-encaps/native-decaps” both pass.)
 mldsa-native-provider serves no KEM, so it does not appear in the KEM rows.
+B3 is restricted to providers that implement the same *standardized* MLX wire
+format (those that also serve standalone ML-KEM: default, wolfProvider);
+hybrid ↔ oqsprovider interop for oqs's own hybrid family is covered by the
+repo's `hybrid_oqs_test`.
 
 ---
 
@@ -195,6 +206,33 @@ roughly halve the default provider's composite verify time.
 | mlkem768_rsa2048 (enc/dec) | 0.539 / 1.095 | 0.407 / 0.900 |
 | mlkem1024_rsa3072 (enc/dec) | 0.594 / 2.131 | 0.430 / 1.881 |
 
+### C3. Composition vs oqsprovider native (same hybrid name)
+
+On OpenSSL master the natural oqsprovider comparison is **hybrid-provider's
+composition vs oqsprovider's own native implementation of the same hybrid**
+(both ultimately use liboqs for the research PQ parts). keygen / op1 / op2, ms:
+
+| Algorithm | hybrid-provider | oqsprovider |
+|---|---|---|
+| p384_mlkem768 (kg/en/de) | 1.26 / 2.34 / **1.32** | 5.64 / 2.53 / **2.21** |
+| bp384_mlkem768 (kg/en/de) | 1.28 / 2.36 / **1.33** | 7.72 / 2.57 / **2.27** |
+| p256_frodo640aes (kg/en/de) | 0.50 / 0.72 / **0.68** | 4.74 / 0.72 / **1.41** |
+| p256_bikel1 (kg/en/de) | 0.45 / 0.42 / **0.86** | 4.67 / 0.43 / **1.57** |
+| p256_mldsa44 (kg/s/v) | **0.14** / 0.19 / 0.15 | **4.54** / 0.37 / 0.41 |
+| p384_mldsa65 (kg/s/v) | **1.35** / 1.40 / 1.10 | **5.76** / 1.53 / 1.31 |
+| p256_mayo1 (kg/s/v) | **0.33** / 0.45 / 0.46 | **4.74** / 0.47 / 0.44 |
+| p521_snova2965 (kg/s/v) | **2.77** / 3.76 / 2.53 | **7.20** / 3.73 / 2.51 |
+
+**Takeaway.** The actual PQ/classical crypto (encaps, sign, verify) is at
+**parity** — expected, since both call the same liboqs/default primitives — but
+the hybrid provider is markedly faster at **keygen** and **decaps**. That gap is
+oqsprovider's blanket `no_cache=1` on OpenSSL ≥3.5, which forces a per-operation
+cross-provider method re-construction (documented in
+[oqsprovider-no-cache-issue.md](oqsprovider-no-cache-issue.md)); it is an
+oqsprovider artifact, not a hybrid-provider gain. Net: the hybrid provider's
+EVP-only composition is **at parity or faster** than oqsprovider's own hybrids
+for the names they share.
+
 ---
 
 ## Notes & caveats
@@ -209,8 +247,9 @@ roughly halve the default provider's composite verify time.
   heavy-tailed.
 - **Coverage.** wolfProvider serves ML-KEM-512/768/1024 and ML-DSA-44/65/87 and
   three MLX hybrids (X25519MLKEM768, SecP256r1MLKEM768, SecP384r1MLKEM1024);
-  mldsa-native-provider serves ML-DSA only. Rows a provider cannot serve are
-  skipped, not failed.
+  mldsa-native-provider serves ML-DSA only; oqsprovider on ≥3.5 serves only its
+  own hybrid family (no standalone ML-KEM/ML-DSA). Rows a provider cannot serve
+  are skipped, not failed.
 - The hybrid provider composes the *same* primitive the peer measures, so its
   composition overhead over the sum of components is tracked separately by
   `hybrid_bench` / `composite_*_bench`; this document is about cross-provider
@@ -226,6 +265,7 @@ Providers:
   default (OpenSSL master)   loaded  [ML-DSA ML-KEM]
   wolfProvider               loaded  [ML-DSA ML-KEM]
   mldsa-native-provider      loaded  [ML-DSA ]
+  oqsprovider                loaded  [no standalone ML-KEM/ML-DSA; composed-only (see C3)]
   hybrid-provider            loaded
 
 [B1] ML-DSA cross-provider sign x verify  -> all OK (3x3) for ML-DSA-44/65/87
@@ -313,6 +353,16 @@ Providers:
     mlkem1024_bp384     PQ=default   1.337/2.452/1.413   PQ=wolfProvider   1.139/2.233/1.131
     mlkem1024_x448      PQ=default   1.951/2.709/1.018   PQ=wolfProvider   1.773/2.538/0.760
     mlkem1024_p521      PQ=default   2.410/4.579/2.486   PQ=wolfProvider   2.230/4.411/2.223
+
+[C3] Composed algorithm: hybrid-provider composition vs native peer providers (excerpt; keygen / op1 / op2)
+    p384_mlkem768       hybrid-provider 1.262/2.335/1.321    oqsprovider 5.643/2.534/2.208
+    p256_frodo640aes    hybrid-provider 0.504/0.719/0.683    oqsprovider 4.737/0.720/1.415
+    p256_bikel1         hybrid-provider 0.448/0.420/0.863    oqsprovider 4.674/0.433/1.571
+    p256_mldsa44        hybrid-provider 0.137/0.192/0.149    oqsprovider 4.545/0.375/0.406
+    p384_mldsa65        hybrid-provider 1.347/1.400/1.099    oqsprovider 5.763/1.527/1.307
+    p256_mayo1          hybrid-provider 0.325/0.455/0.460    oqsprovider 4.742/0.472/0.443
+  (encaps/sign/verify at parity; oqsprovider keygen/decaps inflated by its
+   >=3.5 no_cache per-op method reconstruction — see oqsprovider-no-cache-issue.md)
 
 ===========================================================
 INTEROP: all cross-provider checks passed.
