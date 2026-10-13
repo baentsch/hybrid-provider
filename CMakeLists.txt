@@ -762,6 +762,21 @@ set_tests_properties(hybrid_bench PROPERTIES
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_bench PRIVATE OpenSSL::Crypto)
 
+# Cross-provider interop + performance matrix (test/provider_matrix.c): loads the
+# default provider alongside every sibling provider on the module path
+# (wolfProvider, mldsa-native-provider, oqsprovider) plus the hybrid provider,
+# proves cross-provider interop (ML-DSA/ML-KEM and hybrid-KEM wire compat), and
+# tabulates naked-PQ and hybrid/composite performance per provider. A manual
+# tool, not a ctest: it needs the sibling modules symlinked onto the module
+# path. Run e.g. `OPENSSL_MODULES=. ./provider_matrix 500` (per-op budget ms).
+add_executable(provider_matrix test/provider_matrix.c test/bench_util.c)
+target_include_directories(provider_matrix PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(provider_matrix PRIVATE OpenSSL::Crypto)
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(provider_matrix PRIVATE HYBRID_COMPOSITE)
+endif()
+add_dependencies(provider_matrix hybrid-provider)
+
 # ---------------------------------------------------------------------------
 # Decoder fuzz harness (test/hybrid_decode_fuzz.c)
 #

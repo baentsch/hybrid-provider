@@ -413,3 +413,30 @@ combiner's SHA3-256 KDF is a fixed cost on a ~0.07 ms base.
 
 An illustrative snapshot and per-axis analysis are in
 [composite-kem-bench-results.md](composite-kem-bench-results.md).
+
+### Cross-provider interop + performance matrix
+
+`provider_matrix` (CMake target `provider_matrix`) is a manual tool — not a
+ctest — that loads the default provider alongside every sibling provider found
+on the module path (wolfProvider `libwolfprov.so`, mldsa-native-provider
+`mldsanative.so`, oqsprovider) plus the hybrid provider, then:
+
+1. proves cross-provider interop — ML-DSA sign×verify and ML-KEM encaps/decaps
+   across every provider pair, and hybrid-KEM wire compatibility (the hybrid
+   provider's composed key vs the native MLX groups, both directions, via
+   public-key export/import);
+2. tabulates performance — the "naked" ML-DSA/ML-KEM primitives of each provider
+   side by side, then the hybrid/composite figures with the PQ component sourced
+   from each provider in turn (classical half pinned to default via
+   `classic-propquery`).
+
+It needs the sibling modules symlinked onto `OPENSSL_MODULES` (an absolute path,
+since the generated cnf's `module=` is relative to it). Run with a per-op budget
+in ms:
+
+```sh
+LD_LIBRARY_PATH=/path/to/openssl/lib64 OPENSSL_MODULES=$PWD ./provider_matrix 300
+```
+
+Build and run instructions for the external providers, and a captured result
+set, are in [provider-interop-results.md](provider-interop-results.md).
