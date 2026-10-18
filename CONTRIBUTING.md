@@ -13,12 +13,20 @@ with that:
   is no expectation that code here be written by hand; using an AI coding
   assistant to prepare a change is a first-class way to contribute.
 - **AI may be used to evaluate pull requests.** Submissions may be reviewed with
-  the help of AI tooling in addition to, or instead of, a human reviewer. Expect
-  automated review feedback and feel free to address it the same way you would a
-  human reviewer's comments.
+  the help of AI tooling in addition to a human reviewer. Expect automated review
+  feedback and feel free to address it the same way you would a human reviewer's
+  comments.
 
-Whatever tools you use, the bar for merging is unchanged: the change must be
-correct, keep the test suite green, and keep the docs in step with the code.
+The provider is developed in close collaboration between its maintainer(s) and an
+AI coding assistant — this is the project's method by design. Whatever tools are
+used, the bar for merging is unchanged: the change must be correct, keep the test
+suite green, and keep the docs in step with the code. Every contribution —
+including AI-generated code — has been and will continue to be reviewed and
+approved by a human maintainer before it is merged; AI tooling may assist that
+review but never replaces it, and a human maintainer is accountable for each
+change that lands. This is development review for correctness, test coverage and
+design fit — **not** a formal security audit, and it does not change the
+project's "not for production use" status (see [SECURITY.md](SECURITY.md)).
 
 ## Getting started
 
@@ -57,7 +65,6 @@ The guide is the reference; the concrete expectations that already hold here are
   path (`OPENSSL_cleanse` / `OPENSSL_clear_free` / `OPENSSL_secure_clear_free`).
 - **No secrets in diagnostics.** `ERR_raise*` strings and logs carry algorithm
   names and public lengths only — never key or secret bytes.
-- **Constant-time secret comparison** (e.g. via `EVP_PKEY_eq`), never `memcmp`.
 - **Test the failure paths**, not just the happy path — negative decode tests and
   the decoder fuzz harness (`-DHYBRID_FUZZ`) are part of that contract.
 - Dynamic analysis (ASan/UBSan/TSan, libFuzzer) is the primary safety net; CI also
@@ -97,6 +104,7 @@ of truth for names, OIDs and TLS code points:
 
 - KEMs / signatures — `HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in `hybrid_prov.h`
 - composite signatures — `COMPOSITE_SIG_LIST` in `composite_prov.h`
+- composite KEMs — `COMPOSITE_KEM_LIST` in `composite_kem_prov.h`
 
 Adding a hybrid is normally a table entry plus its component wiring; see
 [design.md → Algorithm Configuration](design.md#algorithm-configuration) for how
@@ -127,3 +135,5 @@ Open a pull request against
 `ctest` green (including the composite and oqsprovider-interop tests when their
 prerequisites are present), and keep the docs in step with the code — the tables,
 the README inventory and design.md are expected to agree.
+
+All participants are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).

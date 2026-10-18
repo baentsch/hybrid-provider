@@ -9,8 +9,10 @@ An external OpenSSL 3.x provider implementing **hybrid post-quantum KEM** and
 > vehicle for experimentation, prototyping and interoperability research — it has
 > **not** been developed, reviewed or audited to the standard required for
 > productive use, and must not be relied upon to protect sensitive data.
-> AI-assisted contributions are explicitly welcome; see
-> [CONTRIBUTING.md](CONTRIBUTING.md#ai-contributions).
+> AI-assisted contributions are explicitly welcome, and the code is produced in
+> close collaboration between its human maintainer and an AI assistant, with every
+> change human-reviewed before merging (development review, not a security audit);
+> see [CONTRIBUTING.md](CONTRIBUTING.md#ai-contributions).
 
 ## Motivation
 
@@ -249,7 +251,9 @@ Once built, verify with `ctest` from the `build` directory. See
 | [TESTING.md](TESTING.md) | Test suite, cross-provider interop matrix, CLI harness, benchmark |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Code conventions, project layout, how to add a hybrid, coverage invariants |
 | [design.md](design.md) | Full architecture and design decisions |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Expected conduct (follows the spirit of the OpenSSL Code of Conduct) |
+| [SECURITY.md](SECURITY.md) | Security status and how to report issues (experimental; no embargo or CVE process) |
 
 ## License
 
-Apache-2.0
+Apache-2.0 — see [LICENSE.md](LICENSE.md).
