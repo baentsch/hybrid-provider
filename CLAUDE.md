@@ -15,7 +15,7 @@ See [design.md](design.md) for the full architecture and design decisions.
   (default, oqsprovider, or others). The hybrid provider does not care which
   provider implements the components.
 - **Wire-format compatibility**: KEM hybrids match the byte layout of OpenSSL's
-  built-in MLX KEM (draft-ietf-tls-ecdhe-mlkem) for interoperability.
+  built-in MLX KEM (RFC 10024, ex draft-ietf-tls-ecdhe-mlkem) for interoperability.
 
 ## Build
 

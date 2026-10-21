@@ -50,7 +50,7 @@ static int fail_count = 0;
     ERR_print_errors_fp(stderr); \
 } while (0)
 
-/* Standardized TLS codepoints (draft-ietf-tls-ecdhe-mlkem). */
+/* Standardized TLS codepoints (RFC 10024, ex draft-ietf-tls-ecdhe-mlkem). */
 static const struct {
     const char *name;
     int codepoint;

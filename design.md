@@ -24,8 +24,9 @@ Interoperability is the entire point of this work, split by algorithm family:
 - **Hybrid family → interop with oqsprovider.** Names, TLS code points, X.509
   OIDs and wire formats are format-identical to upstream oqsprovider's GitHub
   `main`, exercised in-process (same OpenSSL libctx). The MLX KEM subset is the
-  exception: it follows OpenSSL's default provider (IETF draft-ietf-tls-ecdhe-mlkem
-  raw-concat), which is the interop peer for those three groups.
+  exception: it follows OpenSSL's default provider (IETF RFC 10024, ex
+  draft-ietf-tls-ecdhe-mlkem, raw-concat), which is the interop peer for those
+  three groups.
 - **Composite family (LAMPS) → interop with external software** such as Bouncy
   Castle, out-of-process, validated via serialized DER/PEM artifacts and the
   draft's KAT vectors.
@@ -179,7 +180,7 @@ typedef struct {
 ### KEM algorithms
 
 The MLX hybrids below match the OpenSSL default provider's wire format
-(draft-ietf-tls-ecdhe-mlkem) and are the interop baseline:
+(RFC 10024, ex draft-ietf-tls-ecdhe-mlkem) and are the interop baseline:
 
 | Hybrid Name          | Component 1 | Component 2   | Slot Order         |
 |----------------------|-------------|---------------|--------------------|
@@ -277,11 +278,11 @@ KEMs, and the hybrid is at parity with oqsprovider's own hybrid — see *Perform
 
 | | Hybrid (concatenation) | Composite (LAMPS) |
 | --- | --- | --- |
-| **KEM role** | TLS 1.3 hybrid key exchange (`draft-ietf-tls-ecdhe-mlkem` / MLX); registered TLS named groups (`HYBRID_KEM_INFO.tls_codepoint`) | PKI / CMS only; SPKI OID, **no** TLS key-exchange codepoint (`COMPOSITE_KEM_INFO` has no `tls_codepoint`) |
+| **KEM role** | TLS 1.3 hybrid key exchange (RFC 10024 / MLX); registered TLS named groups (`HYBRID_KEM_INFO.tls_codepoint`) | PKI / CMS only; SPKI OID, **no** TLS key-exchange codepoint (`COMPOSITE_KEM_INFO` has no `tls_codepoint`) |
 | **Signature role** | oqsprovider-compatible concat sigs; any PQ family | X.509 / CMS certificate signatures; standardized tier is ML-DSA-only |
 | **Binding** | two independent signatures with a length prefix (separable) | joint message representative `M'` — **non-separable** |
 | **Interop peer** | default provider + oqsprovider (TLS wire, OQS ecosystem) | LAMPS implementations (BouncyCastle, future OpenSSL-native) in certificates |
-| **Standardization** | MLX KEM is IETF-standard; concat sigs follow the oqsprovider convention | IETF/LAMPS standards-track (composite-sigs draft-19, composite-kem draft-18) |
+| **Standardization** | MLX KEM is IETF-standard (RFC 10024); concat sigs follow the oqsprovider convention | IETF/LAMPS standards-track (composite-sigs draft-19, composite-kem draft-18) |
 | **Performance** | primitive-bound; ~1.0× glue (up to ~1.2× fastest KEMs), at parity with oqsprovider's own hybrid | primitive-bound; ~1.0× glue incl. one SHA3-256 combiner pass (up to ~1.2× fastest KEM) |
 
 **Can the hybrids be dropped in favour of composites only? No.**
@@ -593,7 +594,7 @@ The provider reports `TLS-GROUP` capabilities (`hybrid_caps.c`) so its KEMs are
 negotiable in a TLS handshake, and `TLS-SIGALG` capabilities so its hybrid (and,
 when built, composite) signatures are usable for TLS authentication. Every hybrid
 whose table row carries a non-zero `tls_codepoint` is advertised: the three MLX
-groups with standardized codepoints (draft-ietf-tls-ecdhe-mlkem —
+groups with standardized codepoints (RFC 10024 —
 `X25519MLKEM768` 0x11EC, `SecP256r1MLKEM768` 0x11EB, `SecP384r1MLKEM1024`
 0x11ED) plus the oqsprovider-assigned code points for the OQS-legacy KEM and
 signature hybrids. `X448MLKEM1024` has no TLS codepoint and is reachable only via
@@ -994,7 +995,7 @@ the fastest provider exposing the standalone EVP algorithm. Run
 ## Constraints and Limitations
 
 - **TLS-specific**: The initial KEM hybrids follow the TLS wire format
-  (draft-ietf-tls-ecdhe-mlkem). They concatenate shared secrets directly
+  (RFC 10024, ex draft-ietf-tls-ecdhe-mlkem). They concatenate shared secrets directly
   without an additional KDF — the TLS HKDF handles derivation.
 - **Key serialization**: Signature keys encode/decode as X.509
   SubjectPublicKeyInfo and PKCS#8 PrivateKeyInfo (DER + PEM), byte-compatible
@@ -1020,5 +1021,5 @@ the fastest provider exposing the standalone EVP algorithm. Run
 - [provider-kem(7)](https://docs.openssl.org/3.5/man7/provider-kem/)
 - [provider-keymgmt(7)](https://docs.openssl.org/3.5/man7/provider-keymgmt/)
 - [provider-signature(7)](https://docs.openssl.org/3.5/man7/provider-signature/)
-- [draft-ietf-tls-ecdhe-mlkem](https://datatracker.ietf.org/doc/draft-ietf-tls-ecdhe-mlkem/)
+- [RFC 10024](https://datatracker.ietf.org/doc/rfc10024/) — PQ/T Hybrid Key Agreement for TLS 1.3 (ex [draft-ietf-tls-ecdhe-mlkem](https://datatracker.ietf.org/doc/draft-ietf-tls-ecdhe-mlkem/))
 - [EVP_PKEY-MLX-KEM(7)](https://docs.openssl.org/master/man7/EVP_PKEY-MLX-KEM/)

@@ -44,7 +44,9 @@ from [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) only.
 ### Hybrid KEMs
 
 **MLX — byte-compatible with OpenSSL's built-in MLX KEM**
-(draft-ietf-tls-ecdhe-mlkem), interoperable with the default provider:
+(RFC 10024, formerly draft-ietf-tls-ecdhe-mlkem), interoperable with the default
+provider. RFC 10024 defines the first three; `X448MLKEM1024` is an OpenSSL
+default-provider extension (not in the RFC, no TLS code point):
 
 | Algorithm | Components |
 |---|---|
@@ -251,6 +253,7 @@ Once built, verify with `ctest` from the `build` directory. See
 | [TESTING.md](TESTING.md) | Test suite, cross-provider interop matrix, CLI harness, benchmark |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Code conventions, project layout, how to add a hybrid, coverage invariants |
 | [design.md](design.md) | Full architecture and design decisions |
+| [STANDARDS.md](STANDARDS.md) | Standards & standards-proposals catalogue by provenance: ceded, standard/draft-backed, convention-only, future work |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Expected conduct (follows the spirit of the OpenSSL Code of Conduct) |
 | [SECURITY.md](SECURITY.md) | Security status and how to report issues (experimental; no embargo or CVE process) |
 

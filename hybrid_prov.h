@@ -225,9 +225,10 @@ typedef struct hybrid_key_st {
  *
  * PROVENANCE — the `tls_codepoint` and `oid` values are copied from their
  * origins and must stay in sync with them:
- *   - MLX names (X25519MLKEM768, …): code points are IETF
- *     draft-ietf-tls-ecdhe-mlkem, implemented by OpenSSL's default provider.
- *     These groups have no key-file encoders anywhere, hence oid = NULL.
+ *   - MLX names (X25519MLKEM768, …): code points are IETF RFC 10024
+ *     (ex draft-ietf-tls-ecdhe-mlkem), implemented by OpenSSL's default provider.
+ *     X448MLKEM1024 is a default-provider extension (not in RFC 10024, no code
+ *     point). These groups have no key-file encoders anywhere, hence oid = NULL.
  *   - OQS-legacy names: code points and OIDs are oqsprovider's, defined in its
  *     `oqs-template/generate.yml` (see ALGORITHMS.md). Most hybrid KEMs have
  *     oid = NULL there too (not key-file encodable); only a few carry one.
@@ -680,8 +681,8 @@ int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
  * VALUE alone (not by algorithm name), and hybrid_capability_test asserts that
  * for every table entry:
  *   - IANA-assigned span: the ML-KEM-hybrid NamedGroups, registered as the
- *     contiguous span 0x11E9..0x11ED. 0x11EB..0x11ED are draft-ietf-tls-ecdhe-mlkem
- *     (ML-KEM 768/1024); 0x11E9..0x11EA are the ML-KEM-512 tier added by
+ *     contiguous span 0x11E9..0x11ED. 0x11EB..0x11ED are RFC 10024
+ *     (ex draft-ietf-tls-ecdhe-mlkem; ML-KEM 768/1024); 0x11E9..0x11EA are the ML-KEM-512 tier added by
  *     draft-rosomakho-tls-ecdhe-mlkem512-00 (adopted by oqsprovider #802). The
  *     only standards-track values we use; taken verbatim from the assignments.
  *   - Provisional: everything else, inherited from oqsprovider for on-the-wire
@@ -696,7 +697,7 @@ int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
 #define HYBRID_TLS_OQS_EXPERIMENTAL_MIN 0x2F00u
 #define HYBRID_TLS_OQS_EXPERIMENTAL_MAX 0x2FFFu
 #define HYBRID_TLS_IANA_ASSIGNED_MIN    0x11E9u   /* 0x11E9..0x11EA: draft-rosomakho */
-#define HYBRID_TLS_IANA_ASSIGNED_MAX    0x11EDu   /* 0x11EB..0x11ED: draft-ietf-tls-ecdhe-mlkem */
+#define HYBRID_TLS_IANA_ASSIGNED_MAX    0x11EDu   /* 0x11EB..0x11ED: RFC 10024 (ex draft-ietf-tls-ecdhe-mlkem) */
 
 static inline int hybrid_codepoint_is_provisional(unsigned int cp)
 {
