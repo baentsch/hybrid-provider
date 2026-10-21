@@ -11,8 +11,29 @@ name: CI
 #     Never blocks a PR.
 
 on:
+  # Run CI only when it can actually catch something. Two levers keep the fast
+  # tier from spending on no-build changes:
+  #   - paths-ignore (below): a push / PR that touches ONLY documentation or other
+  #     non-build files does not trigger CI at all (GitHub skips the run when every
+  #     changed path matches). A mixed change (docs + code) still runs normally.
+  #   - [skip ci] / [ci skip] in the HEAD commit message: GitHub honours these
+  #     tokens natively for push and pull_request and skips the whole run — a
+  #     manual override for anything paths-ignore does not cover (e.g. a trivial
+  #     comment fix). `main` is unprotected, so a skipped run never blocks a merge.
+  # Keep the two lists identical. Do NOT add '.github/**' here — workflow changes
+  # must be CI-tested.
   push:               # primary trigger — every push is tested, even before a PR exists
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE*'
+      - '.gitignore'
   pull_request:       # deduplicated by the `gate` job (skipped when the push already covered the tree)
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE*'
+      - '.gitignore'
   workflow_dispatch:
     inputs:
       fuzz_seconds:

@@ -745,6 +745,15 @@ are out of scope):
 CI is split by a hard rule: **push/PR CI stays fast and deterministic; anything
 expensive or dependent on upstream drift runs weekly.**
 
+The fast tier also runs *only when it can catch something*. A push or PR that
+touches only documentation or other non-build files (`**.md`, `docs/**`,
+`LICENSE*`, `.gitignore`) is skipped via `paths-ignore` on the push/PR triggers; a
+mixed docs+code change still runs. For anything `paths-ignore` does not cover, a
+`[skip ci]` / `[ci skip]` token in the HEAD commit message skips the run (GitHub
+honours those natively for push/PR). `main` is unprotected, so a skipped run never
+leaves a required check pending. `workflow_dispatch` and the weekly `schedule`
+have no paths filter — they always run in full.
+
 - **regular** (push / PR / manual) — a minimal *pinned* matrix (one pre-3.5 and
   one ≥3.5 OpenSSL release, fixed liboqs / oqs-provider refs). It deliberately
   does **not** scale with the number of OpenSSL releases and does **not** track
