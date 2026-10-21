@@ -4,8 +4,8 @@
  *
  * TLS-GROUP code-point parity test. Our hybrid KEM code points (the
  * tls_codepoint column of HYBRID_KEM_LIST) are hand-copied from their origins:
- * the IETF draft-ietf-tls-ecdhe-mlkem code points (implemented by the default
- * provider) for the MLX groups, and oqsprovider's for the OQS-legacy groups.
+ * the IETF RFC 10024 (ex draft-ietf-tls-ecdhe-mlkem) code points (implemented by
+ * the default provider) for the MLX groups, and oqsprovider's for the OQS-legacy groups.
  *
  * This test keeps them from drifting: it enumerates the TLS-GROUP capabilities
  * actually advertised by the default provider and oqsprovider (their live,
@@ -362,7 +362,7 @@ int main(void)
     /*
      * Code-point provenance (issue #45): every non-zero code point must be
      * classifiable by VALUE — either the IANA-assigned ML-KEM-hybrid span
-     * (draft-ietf-tls-ecdhe-mlkem) or a provisional range (oqsprovider's
+     * (RFC 10024, ex draft-ietf-tls-ecdhe-mlkem) or a provisional range (oqsprovider's
      * experimental block / TLS private-use). Anything else means a value was
      * invented in IANA-managed space, where a real assignment could overrun it
      * (cf. issue #38). No algorithm names appear — the classifier is on the

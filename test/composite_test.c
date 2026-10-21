@@ -9,10 +9,9 @@
  * each combo self-skips when its components are absent.
  *
  * Proves the provider wiring (keymgmt + signature dispatch + registration) at the
- * C/EVP level. TWO deliberately-out-of-scope items:
- *  - TODO(#15): also drive composite through the `openssl` command line for
- *    end-to-end stack coverage (cert/CMS/TLS), as hybrid_scenarios.sh does for
- *    the hybrid paths.
+ * C/EVP level. End-to-end certificate coverage through the `openssl` command line
+ * lives in hybrid_scenarios.sh, which drives the composite combos too. One
+ * deliberately-out-of-scope item here:
  *  - Cross-implementation wire-format interop (vs the draft-19 reference) is
  *    covered separately by composite_kat_test; interop against Bouncy Castle /
  *    a future OpenSSL-native composite is external and version-dependent.

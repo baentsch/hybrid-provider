@@ -107,7 +107,7 @@ static int hybrid_sigalg_operable(HYBRID_PROV_CTX *ctx,
  * hybrids (so hybrid vs. default provider is a config-only choice) and the OQS
  * names for the rest (matching oqsprovider, so the two interoperate on the
  * wire). Code points come from their standards: the MLX groups from IETF
- * draft-ietf-tls-ecdhe-mlkem (also what OpenSSL's default provider registers),
+ * RFC 10024 (ex draft-ietf-tls-ecdhe-mlkem; also what OpenSSL's default provider registers),
  * the OQS-legacy groups from oqsprovider's `oqs-template/generate.yml`. They are
  * fixed integer constants, so there is nothing to "pull" at build time (a spec
  * document is not machine-readable, and OpenSSL's own group tables live behind
