@@ -259,8 +259,7 @@ key exchanges). **Informational anchors:** RFC 9958 (PQC for Engineers),
 
 ### Tracking
 
-Planned issues in `baentsch/hybrid-provider` (upstream-bound work is tracked here,
-never filed against oqsprovider/openssl). Numbers backfilled once filed:
+Each future-work item above is tracked as an issue:
 
 | Issue | Scope |
 |---|---|
