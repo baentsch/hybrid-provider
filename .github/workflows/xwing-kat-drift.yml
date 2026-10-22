@@ -1,0 +1,99 @@
+name: X-Wing KAT drift
+
+# Weekly, buildless guard that this repo's vendored X-Wing reference vectors
+# (test/xwing_kat.txt, the oracle for xwing_kat_test) stay coherent with upstream
+# draft-connolly-cfrg-xwing-kem. It catches two things:
+#   (a) the vendored copy diverging from what test/regen_xwing_kat.py produces at
+#       the pinned draft tag (a hand-edit, a corrupted file, or a TAG bump landed
+#       without regenerating), and
+#   (b) a newer draft-connolly-cfrg-xwing-kem-NN tag upstream than the one we pin.
+# On drift it opens a tracking issue in this repo and auto-closes it once back in
+# sync. Mirrors the OQS hybrid drift job (scripts/check-oqs-hybrid-drift.sh).
+#
+# The X-Wing combiner and vectors are version-sensitive, so a newer draft is a
+# prompt to EVALUATE a bump (combiner first, then regen + re-run the KAT), not to
+# chase it automatically.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "45 6 * * 1"   # Mondays 06:45 UTC (just after the OQS drift job)
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: xwing-kat-drift
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      LABEL: xwing-kat-drift
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check vendored X-Wing vectors vs upstream draft
+        id: check
+        run: |
+          set +e
+          ./scripts/check-xwing-kat-drift.sh | tee report.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # status 2 = fetch/tooling error; surface as a failed run, not an issue.
+      - name: Fail on tooling error
+        if: steps.check.outputs.status == '2'
+        run: |
+          echo "drift check errored (see log above)"
+          exit 1
+
+      - name: Open tracking issue on drift
+        if: steps.check.outputs.status == '1'
+        run: |
+          set -euo pipefail
+          gh label create "$LABEL" --color BFD4F2 --force \
+            --description "vendored X-Wing KAT vectors drifted from upstream"
+          existing=$(gh issue list --label "$LABEL" --state open \
+                       --json number --jq '.[0].number // empty')
+          {
+            echo "Automated weekly check: the vendored X-Wing reference vectors"
+            echo "(\`test/xwing_kat.txt\`) are out of sync with upstream"
+            echo "\`draft-connolly-cfrg-xwing-kem\`."
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo "**Coherence drift** (vendored file != regen at the pinned tag):"
+            echo "regenerate with \`python3 test/regen_xwing_kat.py > test/xwing_kat.txt\`."
+            echo
+            echo "**Staleness** (a newer draft tag exists): the X-Wing combiner and"
+            echo "vectors are version-sensitive — review the draft diff, update the"
+            echo "combiner in \`hybrid_kem.c\` only if it changed, bump \`TAG\` in"
+            echo "\`test/regen_xwing_kat.py\`, regenerate the vectors, and re-run"
+            echo "\`xwing_kat_test\`."
+            echo
+            echo "_This check runs weekly and will not re-notify while this issue"
+            echo "is open; it auto-closes once back in sync._"
+            echo "_Source: .github/workflows/xwing-kat-drift.yml · run ${{ github.run_id }}_"
+          } > body.md
+          if [ -n "$existing" ]; then
+            echo "drift already tracked in #$existing — leaving it open"
+          else
+            gh issue create --title "X-Wing KAT vectors drifted from upstream" \
+              --label "$LABEL" --body-file body.md
+          fi
+
+      - name: Close tracking issue when back in sync
+        if: steps.check.outputs.status == '0'
+        run: |
+          set -euo pipefail
+          for n in $(gh issue list --label "$LABEL" --state open \
+                       --json number --jq '.[].number'); do
+            gh issue comment "$n" \
+              --body "Back in sync as of run ${{ github.run_id }} — closing."
+            gh issue close "$n"
+          done

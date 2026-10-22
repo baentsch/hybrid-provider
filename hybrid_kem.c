@@ -198,6 +198,78 @@ end:
     return ret;
 }
 
+/* X-Wing combiner output length (HYBRID_XWING_SS_LEN) lives in hybrid_prov.h,
+ * shared with the test; the SHA3-256 label is local to this combiner. */
+static const uint8_t XWING_LABEL[6] = {
+    0x5c, 0x2e, 0x2f, 0x2f, 0x5e, 0x5c
+};
+
+/*
+ * X-Wing strongly-binding combiner (draft-connolly-cfrg-xwing-kem-11 §5.3):
+ *
+ *   ss = SHA3-256(ss_pq || ss_cl || ct_cl || pk_cl || XWingLabel)
+ *
+ * In the draft's instantiation ss_pq is the ML-KEM-768 secret, ss_cl the X25519
+ * secret, ct_cl the X25519 ephemeral public key (the classical half of the
+ * ciphertext) and pk_cl the recipient's X25519 public key; XWingLabel is the
+ * fixed 6-byte ASCII string "\.//^\" (0x5c2e2f2f5e5c). Folding ct_cl and pk_cl in
+ * is what makes the secret ciphertext/key-binding, unlike the RFC 10024 concat.
+ *
+ * Called only for a HYBRID_COMBINER_XWING key, but component-agnostic within
+ * that: ss_pq/ss_cl/ct_cl are passed by (ptr, len) and pk_cl is read here at its
+ * own length (key->sizes->a1_pub), so an X-Wing-style row over any classical
+ * key-exchange + PQ KEM pair (e.g. ML-KEM-1024, or an experimental KEM) is
+ * combined by this same code with nothing component-specific hardcoded. ss_pq is
+ * the PQ (alg2) secret, ss_cl/ct_cl the classical (alg1) secret and ciphertext.
+ * The output is always one SHA3-256 digest (a property of the combiner, not the
+ * components); the digest is fetched with a NULL property query (not the
+ * component propq, which may pin a provider without SHA-3) so it resolves from
+ * the default provider in key->libctx. pk_cl is public, so it is not cleansed;
+ * the component secrets live in the caller's scratch, which the caller cleanses.
+ */
+static int
+hybrid_xwing_combine(const HYBRID_KEY *key,
+                     const uint8_t *ss_pq, size_t ss_pq_len,
+                     const uint8_t *ss_cl, size_t ss_cl_len,
+                     const uint8_t *ct_cl, size_t ct_cl_len,
+                     uint8_t *out, size_t outlen)
+{
+    EVP_MD *sha3 = NULL;
+    EVP_MD_CTX *mdctx = NULL;
+    size_t pklen = key->sizes->a1_pub, pkgot = 0;
+    uint8_t *pk_cl = NULL;
+    unsigned int dlen = 0;
+    int ret = 0;
+
+    if (outlen != HYBRID_XWING_SS_LEN || (pk_cl = OPENSSL_malloc(pklen)) == NULL)
+        return 0;
+    /* Recipient classical public key (pk_cl). Works for both an encapsulation
+     * (public) key and a decapsulation (private) key, since the classical key
+     * always exposes its public half via OSSL_PKEY_PARAM_PUB_KEY. */
+    if (EVP_PKEY_get_octet_string_param(key->key1, OSSL_PKEY_PARAM_PUB_KEY,
+                                        pk_cl, pklen, &pkgot) <= 0)
+        goto end;
+
+    sha3 = EVP_MD_fetch(key->libctx, "SHA3-256", NULL);
+    mdctx = EVP_MD_CTX_new();
+    if (sha3 == NULL || mdctx == NULL
+        || EVP_DigestInit_ex(mdctx, sha3, NULL) <= 0
+        || EVP_DigestUpdate(mdctx, ss_pq, ss_pq_len) <= 0
+        || EVP_DigestUpdate(mdctx, ss_cl, ss_cl_len) <= 0
+        || EVP_DigestUpdate(mdctx, ct_cl, ct_cl_len) <= 0
+        || EVP_DigestUpdate(mdctx, pk_cl, pkgot) <= 0
+        || EVP_DigestUpdate(mdctx, XWING_LABEL, sizeof(XWING_LABEL)) <= 0
+        || EVP_DigestFinal_ex(mdctx, out, &dlen) <= 0
+        || dlen != outlen)
+        goto end;
+    ret = 1;
+end:
+    EVP_MD_CTX_free(mdctx);
+    EVP_MD_free(sha3);
+    OPENSSL_free(pk_cl);
+    return ret;
+}
+
 static int hybrid_kem_encapsulate(void *vctx,
                                   unsigned char *ctext, size_t *clen,
                                   unsigned char *shsec, size_t *slen)
@@ -205,10 +277,14 @@ static int hybrid_kem_encapsulate(void *vctx,
     HYBRID_KEM_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
     const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)key->info;
-    size_t total_clen, total_slen;
+    int xwing = (key->combiner == HYBRID_COMBINER_XWING);
+    size_t total_clen, total_slen, comb_slen;
+    /* Scratch for the component secrets when the X-Wing combiner derives the
+     * output into shsec itself. 2*EVP_MAX_MD_SIZE comfortably holds both. */
+    uint8_t sscomp[2 * EVP_MAX_MD_SIZE];
+    uint8_t *ssbuf;
     uint8_t *ct1, *ct2, *ss1, *ss2;
     size_t ct1len, ct2len, ss1len, ss2len;
-    int ret = 0;
 
     if (!hybrid_have_pubkey(key))
         return 0;
@@ -222,20 +298,30 @@ static int hybrid_kem_encapsulate(void *vctx,
     ss1len = key->sizes->a1_ss;
     ss2len = key->sizes->a2_ss;
     total_clen = ct1len + ct2len;
-    total_slen = ss1len + ss2len;
+    total_slen = ss1len + ss2len;           /* concatenated component secrets */
+    /* Output secret length: the X-Wing combiner hashes the component secrets
+     * down to a fixed 32 bytes; plain concat returns their concatenation. */
+    comb_slen = xwing ? HYBRID_XWING_SS_LEN : total_slen;
 
     /* Size query */
     if (ctext == NULL) {
         if (clen != NULL) *clen = total_clen;
-        if (slen != NULL) *slen = total_slen;
+        if (slen != NULL) *slen = comb_slen;
         return 1;
     }
     if (shsec == NULL || clen == NULL || slen == NULL)
         return 0;
-    if (*clen < total_clen || *slen < total_slen)
+    if (*clen < total_clen || *slen < comb_slen)
+        return 0;
+    if (xwing && total_slen > sizeof(sscomp))
         return 0;
     *clen = total_clen;
-    *slen = total_slen;
+    *slen = comb_slen;
+
+    /* The X-Wing combiner assembles the component secrets in scratch and
+     * derives the output into shsec; plain concat writes them straight into the
+     * caller's secret, slot-ordered. */
+    ssbuf = xwing ? sscomp : shsec;
 
     /*
      * Slot ordering:
@@ -245,13 +331,13 @@ static int hybrid_kem_encapsulate(void *vctx,
     if (info->alg2_slot == 0) {
         ct2 = ctext;
         ct1 = ctext + ct2len;
-        ss2 = shsec;
-        ss1 = shsec + ss2len;
+        ss2 = ssbuf;
+        ss1 = ssbuf + ss2len;
     } else {
         ct1 = ctext;
         ct2 = ctext + ct1len;
-        ss1 = shsec;
-        ss2 = shsec + ss1len;
+        ss1 = ssbuf;
+        ss2 = ssbuf + ss1len;
     }
 
     /* Encapsulate alg2 (PQ KEM) */
@@ -272,11 +358,22 @@ static int hybrid_kem_encapsulate(void *vctx,
             goto err;
     }
 
+    /* X-Wing combiner: derive the bound secret from the component outputs and
+     * the recipient classical public key (read inside, per the key's row). */
+    if (xwing) {
+        if (!hybrid_xwing_combine(key, ss2, ss2len, ss1, ss1len,
+                                  ct1, ct1len, shsec, comb_slen))
+            goto err;
+        OPENSSL_cleanse(sscomp, sizeof(sscomp));
+    }
+
     return 1;
 
 err:
-    /* Don't leave a partial shared secret in the caller's buffer. */
-    OPENSSL_cleanse(shsec, total_slen);
+    /* Don't leave a partial shared secret in the caller's buffer or scratch. */
+    if (xwing)
+        OPENSSL_cleanse(sscomp, sizeof(sscomp));
+    OPENSSL_cleanse(shsec, comb_slen);
     return 0;
 }
 
@@ -287,7 +384,10 @@ static int hybrid_kem_decapsulate(void *vctx,
     HYBRID_KEM_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
     const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)key->info;
-    size_t total_clen, total_slen;
+    int xwing = (key->combiner == HYBRID_COMBINER_XWING);
+    size_t total_clen, total_slen, comb_slen;
+    uint8_t sscomp[2 * EVP_MAX_MD_SIZE];
+    uint8_t *ssbuf;
     const uint8_t *ct1, *ct2;
     uint8_t *ss1, *ss2;
     size_t ct1len, ct2len, ss1len, ss2len;
@@ -300,16 +400,19 @@ static int hybrid_kem_decapsulate(void *vctx,
     ss1len = key->sizes->a1_ss;
     ss2len = key->sizes->a2_ss;
     total_clen = ct1len + ct2len;
-    total_slen = ss1len + ss2len;
+    total_slen = ss1len + ss2len;           /* concatenated component secrets */
+    comb_slen = xwing ? HYBRID_XWING_SS_LEN : total_slen;  /* see hybrid_kem_encapsulate */
 
     /* Size query */
     if (shsec == NULL) {
-        if (slen != NULL) *slen = total_slen;
+        if (slen != NULL) *slen = comb_slen;
         return 1;
     }
     if (slen == NULL)
         return 0;
-    if (*slen < total_slen)
+    if (*slen < comb_slen)
+        return 0;
+    if (xwing && total_slen > sizeof(sscomp))
         return 0;
     /*
      * Length/count sanity check BEFORE splitting the concatenated ciphertext at
@@ -325,19 +428,21 @@ static int hybrid_kem_decapsulate(void *vctx,
                        "expected %zu", clen, total_clen);
         return 0;
     }
-    *slen = total_slen;
+    *slen = comb_slen;
+
+    ssbuf = xwing ? sscomp : shsec;
 
     /* Slot ordering */
     if (info->alg2_slot == 0) {
         ct2 = ctext;
         ct1 = ctext + ct2len;
-        ss2 = shsec;
-        ss1 = shsec + ss2len;
+        ss2 = ssbuf;
+        ss1 = ssbuf + ss2len;
     } else {
         ct1 = ctext;
         ct2 = ctext + ct1len;
-        ss1 = shsec;
-        ss2 = shsec + ss1len;
+        ss1 = ssbuf;
+        ss2 = ssbuf + ss1len;
     }
 
     /* Decapsulate alg2 (PQ KEM) */
@@ -358,11 +463,21 @@ static int hybrid_kem_decapsulate(void *vctx,
             goto err;
     }
 
+    /* X-Wing combiner: derive the bound secret (see hybrid_kem_encapsulate). */
+    if (xwing) {
+        if (!hybrid_xwing_combine(key, ss2, ss2len, ss1, ss1len,
+                                  ct1, ct1len, shsec, comb_slen))
+            goto err;
+        OPENSSL_cleanse(sscomp, sizeof(sscomp));
+    }
+
     return 1;
 
 err:
-    /* Don't leave a partial shared secret in the caller's buffer. */
-    OPENSSL_cleanse(shsec, total_slen);
+    /* Don't leave a partial shared secret in the caller's buffer or scratch. */
+    if (xwing)
+        OPENSSL_cleanse(sscomp, sizeof(sscomp));
+    OPENSSL_cleanse(shsec, comb_slen);
     return 0;
 }
 

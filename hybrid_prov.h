@@ -181,6 +181,9 @@ typedef struct hybrid_key_st {
     char *propq;
     const void *info;           /* HYBRID_KEM_INFO * or HYBRID_SIG_INFO * */
     int is_kem;                 /* 1 = KEM, 0 = signature */
+    int combiner;               /* KEM shared-secret combiner (HYBRID_COMBINER_*);
+                                 * copied from hybrid_kem_combiner[] at construction.
+                                 * 0 (CONCAT) for every concat hybrid and all sigs. */
     EVP_PKEY *key1;             /* classical component */
     EVP_PKEY *key2;             /* PQ component */
     unsigned int state;
@@ -332,7 +335,37 @@ typedef struct hybrid_key_st {
   X(x448_hqc3,         "x448_hqc3",          "X448",   NULL,            0,    \
       "hqc3", 1, 0xfe38, 192, "X448+HQC-3", NULL)\
   X(p521_hqc5,         "p521_hqc5",          "EC",     "P-521",         0,    \
-      "hqc5", 1, 0xfe3a, 256, "P-521+HQC-5", NULL)
+      "hqc5", 1, 0xfe3a, 256, "P-521+HQC-5", NULL)\
+  /* --- CFRG X-Wing: X25519 + ML-KEM-768, SHA3-256 strongly-binding combiner --- */ \
+  /* draft-connolly-cfrg-xwing-kem-11. NOT the X25519MLKEM768 TLS group          \
+   * (0x11ec): same two primitives, but X-Wing folds the ML-KEM public key and   \
+   * ciphertext into the KDF, so it is a distinct KEM. It carries its own OID     \
+   * 1.3.6.1.4.1.62253.25722 and deliberately has NO TLS group code point here   \
+   * (a general-purpose KEM, exposed via the KEM API only, like X448MLKEM1024).  \
+   * The non-concat combiner is selected by hybrid_kem_combiner[] below, keyed on \
+   * this row's index — the row itself is identical in shape to any MLX hybrid.   \
+   * oid is NULL: X-Wing keys are not cross-provider key-file encodable in this   \
+   * build (no counterpart in default/oqsprovider), matching the other           \
+   * non-encodable hybrids; the assigned OID is recorded above for when they are. */ \
+  X(xwing,             "X-Wing",             "X25519", NULL,            0,    \
+      "MLKEM768",  0, 0x0000, 192, "X-Wing (X25519+ML-KEM-768)", NULL)\
+  /* --- Experimental X-Wing-style strongly-binding KEMs (NOT the X-Wing draft): \
+   * the same SHA3-256 combiner (selected in hybrid_kem_combiner[]) over OTHER    \
+   * component pairs, to exercise — and let users experiment with — the           \
+   * component-agnostic combiner in hybrid_kem.c. Each is just a row: the combiner \
+   * reads every length from the size row, nothing here is specific to a component.\
+   * Operation-only: private component-pair names, NO TLS code point and NO OID   \
+   * (not standardized; must not be mistaken for X-Wing or shadow any standard    \
+   * identifier). ML-KEM halves resolve from default (3.5+) or oqsprovider; the    \
+   * eFrodo half needs oqsprovider. */                                           \
+  X(xwing_x25519_mlkem1024,    "xwing_x25519_mlkem1024",    "X25519", NULL,  0,  \
+      "MLKEM1024",    0, 0x0000, 256, "X-Wing-style X25519+ML-KEM-1024", NULL)\
+  X(xwing_p256_mlkem768,       "xwing_p256_mlkem768",       "EC",   "P-256", 0,  \
+      "MLKEM768",     0, 0x0000, 192, "X-Wing-style P-256+ML-KEM-768", NULL)\
+  X(xwing_x448_mlkem1024,      "xwing_x448_mlkem1024",      "X448",   NULL,  0,  \
+      "MLKEM1024",    0, 0x0000, 256, "X-Wing-style X448+ML-KEM-1024", NULL)\
+  X(xwing_x25519_efrodo640aes, "xwing_x25519_efrodo640aes", "X25519", NULL,  0,  \
+      "efrodo640aes", 0, 0x0000, 128, "X-Wing-style X25519+eFrodoKEM-640-AES", NULL)
 
 /* Generate the info table from the master list. */
 #define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)       \
@@ -405,6 +438,46 @@ static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
     { 97,48,48,97, 4514,4602,32,8978, 0,0 },        /* p384_hqc3 */
     { 56,56,56,56, 4514,4602,32,8978, 0,0 },        /* x448_hqc3 */
     { 133,66,66,133, 7237,7333,32,14421, 0,0 },     /* p521_hqc5 */
+    { 32,32,32,32, 1184,2400,32,1088, 0,0 },        /* X-Wing (same components
+                                                     * as X25519MLKEM768; the
+                                                     * combiner, not these sizes,
+                                                     * is what differs) */
+    /* Experimental X-Wing-style rows — component sizes only; the 32-byte combined
+     * secret is produced by the combiner, not recorded here (see HYBRID_SIZES). */
+    { 32,32,32,32, 1568,3168,32,1568, 0,0 },        /* xwing_x25519_mlkem1024 */
+    { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* xwing_p256_mlkem768 */
+    { 56,56,56,56, 1568,3168,32,1568, 0,0 },        /* xwing_x448_mlkem1024 */
+    { 32,32,32,32, 9616,19888,16,9720, 0,0 },       /* xwing_x25519_efrodo640aes */
+};
+
+/*
+ * Shared-secret combiner selector, one entry per HYBRID_KEM_LIST row (indexed by
+ * HYBRID_KEM_IDX_*). The default, 0 == HYBRID_COMBINER_CONCAT, means the hybrid
+ * shared secret is the raw concatenation of the component secrets (RFC 10024 /
+ * oqsprovider wire format) — true of every MLX and OQS-legacy hybrid, so their
+ * rows are left implicit. The X-Wing SHA3-256 strongly-binding combiner
+ *   ss = SHA3-256(ss_pq || ss_cl || ct_cl || pk_cl || XWingLabel)
+ * (draft-connolly-cfrg-xwing-kem-11 §5.3, hybrid_xwing_combine() in hybrid_kem.c)
+ * is the only non-concat combiner type; the rows below select it — the draft
+ * X-Wing plus the experimental X-Wing-style pairs. Keeping the selector in its
+ * own table — rather than a column on every row — means a non-concat KEM touches
+ * exactly one line here per row and leaves the ~45 concat rows untouched. The
+ * value is copied onto each key at construction (HYBRID_KEY.combiner).
+ */
+enum { HYBRID_COMBINER_CONCAT = 0, HYBRID_COMBINER_XWING };
+
+/* X-Wing combiner output: one SHA3-256 digest (32 bytes), independent of the
+ * components combined. Single source for the implementation (hybrid_kem.c) and
+ * the KAT test (test/xwing_kat_test.c). */
+#define HYBRID_XWING_SS_LEN 32
+
+static const int hybrid_kem_combiner[HYBRID_KEM_ALG_COUNT] = {
+    [HYBRID_KEM_IDX_xwing]                     = HYBRID_COMBINER_XWING,
+    /* Experimental X-Wing-style rows (non-draft component pairs). */
+    [HYBRID_KEM_IDX_xwing_x25519_mlkem1024]    = HYBRID_COMBINER_XWING,
+    [HYBRID_KEM_IDX_xwing_p256_mlkem768]       = HYBRID_COMBINER_XWING,
+    [HYBRID_KEM_IDX_xwing_x448_mlkem1024]      = HYBRID_COMBINER_XWING,
+    [HYBRID_KEM_IDX_xwing_x25519_efrodo640aes] = HYBRID_COMBINER_XWING,
 };
 
 /*

@@ -512,6 +512,22 @@ set_tests_properties(hybrid_coverage_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# X-Wing KAT interop: decapsulate the draft's reference ciphertexts under keys
+# rebuilt from its seeds and check the shared secret (real cross-impl check of
+# the strongly-binding combiner against draft-connolly-cfrg-xwing-kem, distilled
+# into xwing_kat.txt). Deterministic decapsulation only, so it needs no keygen-
+# from-seed; it self-skips when the default provider lacks ML-KEM-768 seed import
+# (pre-3.5), so it is registered on every version.
+add_executable(xwing_kat_test test/xwing_kat_test.c)
+target_include_directories(xwing_kat_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(xwing_kat_test PRIVATE OpenSSL::Crypto)
+add_dependencies(xwing_kat_test hybrid-provider)
+add_test(NAME xwing_kat_test
+    COMMAND xwing_kat_test ${CMAKE_SOURCE_DIR}/test/xwing_kat.txt)
+set_tests_properties(xwing_kat_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Composite (LAMPS) tests — the composite family itself is compiled into the
 # hybrid provider above (HYBRID_COMPOSITE). These just exercise it; they load
 # "provider=hybrid" and need the hybrid module built with -DHYBRID_COMPOSITE.
