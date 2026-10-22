@@ -21,8 +21,10 @@
  *
  * Decapsulation is deterministic given (sk, ct), so no keygen-from-seed support
  * is needed in the hybrid provider itself (that is a deliberate non-goal); the
- * test only needs the DEFAULT provider's ML-KEM-768 seed import, i.e. 3.5+. It
- * self-skips otherwise.
+ * test only needs the DEFAULT provider's ML-KEM-768 seed import, i.e. 3.5+. The
+ * build gates the target on that floor (SEED_API in CMakeLists.txt) — below it
+ * the seed-import macro is undeclared — so this file is only ever compiled on
+ * 3.5+; the runtime SKIP below is a secondary guard.
  *
  * Scope: this file is ONLY the draft KAT — reconstruct-from-seed + decapsulate
  * the published vectors. That is X-Wing-specific by nature (vectors exist only

@@ -170,12 +170,15 @@ if(HYBRID_COMPOSITE AND OPENSSL_VERSION VERSION_LESS 3.2)
     message(STATUS "HYBRID_COMPOSITE needs OpenSSL 3.2+ (oqsprovider floor); disabling on ${OPENSSL_VERSION}")
     set(HYBRID_COMPOSITE OFF)
 endif()
-# Whether the standardized (seed-based) composite tiers are usable here (3.5+).
-# Gates the standardized-only tests below; the experimental tier runs regardless.
+# Whether the default provider's ML-KEM/ML-DSA seed-import API is available here
+# (OSSL_PKEY_PARAM_ML_{KEM,DSA}_SEED, added in 3.5). Single source for the 3.5+
+# floor shared by every seed-based test: the standardized composite tiers and the
+# X-Wing KAT (which rebuilds keys from the draft's seeds). Below it, those tests
+# are not registered; the experimental tier runs regardless.
 if(OPENSSL_VERSION VERSION_GREATER_EQUAL 3.5)
-    set(COMPOSITE_SEED ON)
+    set(SEED_API ON)
 else()
-    set(COMPOSITE_SEED OFF)
+    set(SEED_API OFF)
 endif()
 
 # Provider shared library
@@ -516,8 +519,11 @@ set_tests_properties(hybrid_coverage_test PROPERTIES
 # rebuilt from its seeds and check the shared secret (real cross-impl check of
 # the strongly-binding combiner against draft-connolly-cfrg-xwing-kem, distilled
 # into xwing_kat.txt). Deterministic decapsulation only, so it needs no keygen-
-# from-seed; it self-skips when the default provider lacks ML-KEM-768 seed import
-# (pre-3.5), so it is registered on every version.
+# from-seed, but rebuilding the key from the draft seed uses the ML-KEM-768
+# seed-import API, so it is a seed-based test: gated on SEED_API (3.5+), like the
+# composite KATs below. On <3.5 the default provider has no native ML-KEM and the
+# macro is undeclared, so it is simply not registered.
+if(SEED_API)
 add_executable(xwing_kat_test test/xwing_kat_test.c)
 target_include_directories(xwing_kat_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(xwing_kat_test PRIVATE OpenSSL::Crypto)
@@ -527,6 +533,7 @@ add_test(NAME xwing_kat_test
 set_tests_properties(xwing_kat_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
+endif()   # SEED_API (seed-based KAT, 3.5+)
 
 # Composite (LAMPS) tests — the composite family itself is compiled into the
 # hybrid provider above (HYBRID_COMPOSITE). These just exercise it; they load
@@ -570,7 +577,7 @@ if(HYBRID_COMPOSITE)
     # are covered by composite_sig_test / composite_test and the experimental
     # composite KEMs by composite_kem_prov_test, which self-skip the standardized
     # rows.
-    if(COMPOSITE_SEED)
+    if(SEED_API)
     # KAT interop: verify the draft-19 reference test vectors (real cross-impl
     # check against lamps-wg/draft-composite-sigs, distilled into composite_kat.txt).
     add_executable(composite_kat_test test/composite_kat_test.c)
@@ -605,7 +612,7 @@ if(HYBRID_COMPOSITE)
     set_tests_properties(composite_kem_kat_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
-    endif()   # COMPOSITE_SEED (standardized-tier tests, 3.5+)
+    endif()   # SEED_API (standardized-tier tests, 3.5+)
 
     # Certificate benchmark: self-signed X.509 cert size + cert-gen/verify time
     # for every composite (standardized ML-DSA + experimental OQS families). Runs
