@@ -3,37 +3,44 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * X-Wing KEM KAT interop test (issue #110) — the real cross-implementation
- * check for the provider's first non-concatenation combiner. Loads the
- * reference decapsulation vectors from draft-connolly-cfrg-xwing-kem
- * (dconnolly/draft-connolly-cfrg-xwing-kem, spec/test-vectors.json, distilled
- * into test/xwing_kat.txt), reconstructs each X-Wing decapsulation key from the
- * draft's 32-byte seed, imports it into the hybrid provider's X-Wing key, and
- * DECAPSULATES the reference ciphertext — asserting the 32-byte shared secret
- * equals the draft's.
+ * check for the provider's first non-concatenation combiner. It DECAPSULATES
+ * the reference ciphertexts from draft-connolly-cfrg-xwing-kem under the draft's
+ * own decapsulation keys and asserts the 32-byte shared secret equals the
+ * draft's — proving our strongly-binding combiner is byte-compatible with the
+ * reference across the whole construction (ML-KEM-768 decapsulation, the X25519
+ * shared secret, the slot split of the concatenated ciphertext, and the SHA3-256
+ * combiner input order ss_M || ss_X || ct_X || pk_X || XWingLabel), since
+ * decapsulation recomputes the secret from ciphertext bytes we did not produce.
+ * Self-consistent encap/decap within one provider cannot establish that.
  *
- * A pass means our strongly-binding combiner is byte-compatible with the
- * reference across the whole construction: the SHAKE-256 key expansion, the
- * ML-KEM-768 decapsulation, the X25519 shared secret, the slot split of the
- * concatenated ciphertext, and the SHA3-256 combiner input order (ss_M || ss_X
- * || ct_X || pk_X || XWingLabel) — since decapsulation recomputes the secret
- * from ciphertext bytes we did not produce. Self-consistent encap/decap within
- * one provider cannot establish that.
+ * Two vendored oracles feed this (both distilled from the draft, see their
+ * regen scripts):
+ *   - test/xwing_kat.txt       the upstream vectors verbatim (sk pk ct ss), a
+ *                              pure mirror guarded buildlessly by
+ *                              scripts/check-xwing-kat-drift.sh;
+ *   - test/xwing_kat_keys.txt  the EXPANDED decapsulation key per vector
+ *                              (ML-KEM-768 dk || X25519 scalar), derived offline
+ *                              by test/regen_xwing_kat_keys.py.
  *
- * Decapsulation is deterministic given (sk, ct), so no keygen-from-seed support
- * is needed in the hybrid provider itself (that is a deliberate non-goal); the
- * test only needs the DEFAULT provider's ML-KEM-768 seed import, i.e. 3.5+. The
- * build gates the target on that floor (SEED_API in CMakeLists.txt) — below it
- * the seed-import macro is undeclared — so this file is only ever compiled on
- * 3.5+; the runtime SKIP below is a secondary guard.
+ * Because the expanded key is vendored, the test raw-imports it (no seed API)
+ * and therefore runs wherever ML-KEM-768 resolves — oqsprovider on 3.0-3.4, the
+ * default provider on 3.5+ — i.e. whenever X-Wing itself is available, not only
+ * on 3.5+. When the default provider's ML-KEM seed API IS present (3.5+) the test
+ * additionally re-derives each key from its seed and asserts it equals the
+ * vendored blob, so xwing_kat_keys.txt cannot silently rot (XWING_HAVE_SEED_API).
  *
- * Scope: this file is ONLY the draft KAT — reconstruct-from-seed + decapsulate
- * the published vectors. That is X-Wing-specific by nature (vectors exist only
- * for the one standardized X25519+ML-KEM-768 instantiation), so its constants
- * hardcode those components; see the note at the #defines. The generic property
- * that every served KEM — incl. the experimental X-Wing-style component pairs —
- * simply round-trips in this provider is already covered, table-driven, by
- * hybrid_leakcheck_test (keygen/encaps/decaps with shared-secret match over the
- * whole inventory); it is not duplicated here.
+ * If ML-KEM-768 cannot be resolved at all (neither default-native nor
+ * oqsprovider), X-Wing is unavailable and the whole suite SKIPs rather than
+ * fails — mirroring the other cross-provider blocks.
+ *
+ * Scope: this file is ONLY the draft KAT — decapsulate the published vectors.
+ * That is X-Wing-specific by nature (vectors exist only for the one standardized
+ * X25519+ML-KEM-768 instantiation), so its constants hardcode those components;
+ * see the note at the #defines. The generic property that every served KEM —
+ * incl. the experimental X-Wing-style component pairs — simply round-trips in
+ * this provider is already covered, table-driven, by hybrid_leakcheck_test
+ * (keygen/encaps/decaps with shared-secret match over the whole inventory); it is
+ * not duplicated here.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
@@ -48,15 +55,13 @@
 
 /*
  * The constants below hardcode X-Wing's exact components (ML-KEM-768 + X25519).
- * That is deliberate and confined to the KAT-reconstruction path: the reference
- * vectors exist ONLY for the draft's one standardized instantiation, and rebuilding
- * a key from the draft's 32-byte seed is inherently component-specific — it needs
- * the exact expandDecapsulationKey definition (SHAKE-256 -> ML-KEM (d||z) seed +
- * X25519 scalar) and the ML-KEM-768 dk encoding. There is nothing to generalize
+ * That is deliberate and confined to the KAT path: the reference vectors exist
+ * ONLY for the draft's one standardized instantiation, and the key/ciphertext
+ * byte layout is inherently component-specific. There is nothing to generalize
  * here: no other component pair has published vectors. The *component-agnostic*
- * side of X-Wing is tested separately by sweep_selfconsistency() below, which
- * drives every X-Wing-combiner row (incl. the experimental non-draft pairs)
- * purely through provider-reported sizes and hardcodes none of this.
+ * side of X-Wing is tested separately by hybrid_leakcheck_test, which drives
+ * every X-Wing-combiner row (incl. the experimental non-draft pairs) purely
+ * through provider-reported sizes and hardcodes none of this.
  *
  * X-Wing component sizes (draft §4): ML-KEM-768 dk + X25519 scalar, slot 0 =
  * ML-KEM first in the hybrid private-key blob (matches HYBRID_KEM_LIST).
@@ -65,14 +70,17 @@
 #define X25519_PRV       32
 #define XWING_PRV_BLOB (MLKEM768_PRV + X25519_PRV)
 #define MLKEM768_CT    1088
+#define XWING_SEED_LEN   32                                /* sk */
 /* X-Wing shared-secret length: HYBRID_XWING_SS_LEN from hybrid_prov.h (shared
  * with the combiner implementation), not re-defined here. */
 
+#ifdef XWING_HAVE_SEED_API
 /* X-Wing decapsulation-key expansion (draft §5.2, expandDecapsulationKey):
- * SHAKE-256(sk) -> ML-KEM-768 (d||z) seed, then the X25519 scalar. */
-#define XWING_SEED_LEN     32                              /* sk */
-#define MLKEM768_SEED_LEN  64                              /* d || z */
-#define XWING_EXPANDED_LEN (MLKEM768_SEED_LEN + X25519_PRV)/* = 96 */
+ * SHAKE-256(sk) -> ML-KEM-768 (d||z) seed, then the X25519 scalar. Used only for
+ * the 3.5+ coherence self-check of the vendored xwing_kat_keys.txt. */
+# define MLKEM768_SEED_LEN  64                              /* d || z */
+# define XWING_EXPANDED_LEN (MLKEM768_SEED_LEN + X25519_PRV)/* = 96 */
+#endif
 
 static int tests, passed, failed, skipped;
 
@@ -96,6 +104,7 @@ static unsigned char *hexdec(const char *h, size_t *outlen)
     return b;
 }
 
+#ifdef XWING_HAVE_SEED_API
 /* SHAKE-256(in, outlen) — the X-Wing decapsulation-key expansion XOF. */
 static int shake256(OSSL_LIB_CTX *ctx, const unsigned char *in, size_t inlen,
                     unsigned char *out, size_t outlen)
@@ -113,8 +122,8 @@ static int shake256(OSSL_LIB_CTX *ctx, const unsigned char *in, size_t inlen,
 }
 
 /* Build an ML-KEM-768 key from its 64-byte (d||z) seed via the default
- * provider, then export the 2400-byte decapsulation key the hybrid import
- * expects. Returns 0 (and leaves *out untouched) if seed import is unsupported. */
+ * provider, then export the 2400-byte decapsulation key. Returns 0 if seed
+ * import is unsupported (leaves *out untouched). */
 static int mlkem768_dk_from_seed(OSSL_LIB_CTX *ctx, const unsigned char *seed64,
                                  unsigned char *out, size_t outcap, size_t *outlen)
 {
@@ -140,12 +149,38 @@ end:
     return ok;
 }
 
-static void check(OSSL_LIB_CTX *ctx, const char *skh, const char *pkh,
-                  const char *cth, const char *ssh)
+/* 3.5+ self-check: re-derive the expanded blob from the seed and confirm the
+ * vendored xwing_kat_keys.txt entry matches, so it cannot silently go stale.
+ * Returns 1 ok, 0 mismatch; skips quietly if seed import is unavailable. */
+static int coherence_ok(OSSL_LIB_CTX *ctx, const unsigned char *sk, size_t sklen,
+                        const unsigned char *blob, size_t bloblen)
 {
-    unsigned char *sk = NULL, *pk = NULL, *ct = NULL, *ss = NULL;
-    unsigned char expanded[XWING_EXPANDED_LEN], blob[XWING_PRV_BLOB], *out = NULL;
-    size_t sklen = 0, pklen = 0, ctlen = 0, sslen = 0, dklen = 0, outlen = 0;
+    unsigned char expanded[XWING_EXPANDED_LEN], dk[MLKEM768_PRV];
+    size_t dklen = 0;
+    int ok = 1;
+
+    if (sklen != XWING_SEED_LEN || bloblen != XWING_PRV_BLOB)
+        return 0;
+    if (!shake256(ctx, sk, sklen, expanded, sizeof(expanded)))
+        return 0;
+    if (!mlkem768_dk_from_seed(ctx, expanded, dk, sizeof(dk), &dklen)
+            || dklen != MLKEM768_PRV)
+        return 1;   /* no seed import here — trust the vendored blob */
+    ok = memcmp(dk, blob, MLKEM768_PRV) == 0
+         && memcmp(expanded + MLKEM768_SEED_LEN, blob + MLKEM768_PRV,
+                   X25519_PRV) == 0;
+    OPENSSL_cleanse(expanded, sizeof(expanded));
+    OPENSSL_cleanse(dk, sizeof(dk));
+    return ok;
+}
+#endif /* XWING_HAVE_SEED_API */
+
+static void check(OSSL_LIB_CTX *ctx, const char *skh, const char *pkh,
+                  const char *cth, const char *ssh, const char *blobh)
+{
+    unsigned char *sk = NULL, *pk = NULL, *ct = NULL, *ss = NULL, *blob = NULL;
+    unsigned char *out = NULL;
+    size_t sklen = 0, pklen = 0, ctlen = 0, sslen = 0, bloblen = 0, outlen = 0;
     EVP_PKEY_CTX *fc = NULL, *dc = NULL;
     EVP_PKEY *key = NULL;
     OSSL_PARAM params[2];
@@ -157,32 +192,30 @@ static void check(OSSL_LIB_CTX *ctx, const char *skh, const char *pkh,
     pk = hexdec(pkh, &pklen);
     ct = hexdec(cth, &ctlen);
     ss = hexdec(ssh, &sslen);
-    if (sk == NULL || pk == NULL || ct == NULL || ss == NULL
+    blob = blobh != NULL ? hexdec(blobh, &bloblen) : NULL;
+    if (sk == NULL || pk == NULL || ct == NULL || ss == NULL || blob == NULL
             || sklen != XWING_SEED_LEN || sslen != HYBRID_XWING_SS_LEN
-            || ctlen != MLKEM768_CT + X25519_PRV) {
-        printf("FAIL (bad vector)\n");
+            || ctlen != MLKEM768_CT + X25519_PRV || bloblen != XWING_PRV_BLOB) {
+        printf("FAIL (bad vector or missing expanded key — "
+               "regenerate test/xwing_kat_keys.txt)\n");
         failed++;
         goto done;
     }
 
-    /* expandDecapsulationKey: SHAKE-256(sk, 96) -> ML-KEM seed (d||z) + X25519 scalar */
-    if (!shake256(ctx, sk, sklen, expanded, sizeof(expanded))) {
-        printf("FAIL (SHAKE-256)\n");
+#ifdef XWING_HAVE_SEED_API
+    if (!coherence_ok(ctx, sk, sklen, blob, bloblen)) {
+        printf("FAIL (xwing_kat_keys.txt disagrees with the seed — "
+               "regenerate test/xwing_kat_keys.txt)\n");
         failed++;
         goto done;
     }
-    if (!mlkem768_dk_from_seed(ctx, expanded, blob, MLKEM768_PRV, &dklen)
-            || dklen != MLKEM768_PRV) {
-        printf("SKIP (no ML-KEM-768 seed import; needs OpenSSL 3.5+ default)\n");
-        skipped++;
-        goto done;
-    }
-    /* Hybrid X-Wing private blob, slot order [ML-KEM dk | X25519 scalar]. */
-    memcpy(blob + MLKEM768_PRV, expanded + MLKEM768_SEED_LEN, X25519_PRV);
+#endif
 
+    /* Import the draft's decapsulation key directly: hybrid X-Wing private blob,
+     * slot order [ML-KEM dk | X25519 scalar]. Raw import, so no seed API. */
     fc = EVP_PKEY_CTX_new_from_name(ctx, "X-Wing", "provider=hybrid");
     params[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PRIV_KEY,
-                                                  blob, sizeof(blob));
+                                                  blob, bloblen);
     params[1] = OSSL_PARAM_construct_end();
     if (fc == NULL
             || EVP_PKEY_fromdata_init(fc) <= 0
@@ -254,22 +287,82 @@ static void check(OSSL_LIB_CTX *ctx, const char *skh, const char *pkh,
 
 done:
     OPENSSL_clear_free(out, outlen);
-    OPENSSL_cleanse(expanded, sizeof(expanded));
-    OPENSSL_cleanse(blob, sizeof(blob));
     OPENSSL_free(sk);
     OPENSSL_free(pk);
     OPENSSL_free(ct);
     OPENSSL_free(ss);
+    OPENSSL_clear_free(blob, bloblen);
     EVP_PKEY_free(key);
     EVP_PKEY_CTX_free(fc);
     EVP_PKEY_CTX_free(dc);
 }
+
+/* Can X-Wing resolve its ML-KEM-768 component here? Probe with a keygen through
+ * the hybrid provider: success proves both halves resolve (default-native or
+ * oqsprovider). If not, X-Wing is unavailable and the KAT SKIPs. */
+static int xwing_available(OSSL_LIB_CTX *ctx)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, "X-Wing", "provider=hybrid");
+    EVP_PKEY *k = NULL;
+    int ok = c != NULL
+             && EVP_PKEY_keygen_init(c) > 0
+             && EVP_PKEY_generate(c, &k) > 0;
+
+    EVP_PKEY_free(k);
+    EVP_PKEY_CTX_free(c);
+    ERR_clear_error();
+    return ok;
+}
+
+/* Load the expanded-key oracle: fill sks[i]/blobs[i] with the hex columns of
+ * test/xwing_kat_keys.txt. Returns the number of rows, or -1 on open error. */
+static int load_keys(const char *path, char **sks, char **blobs, int max)
+{
+    FILE *f = fopen(path, "r");
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n;
+    int i = 0;
+
+    if (f == NULL)
+        return -1;
+    while (i < max && (n = getline(&line, &cap, f)) > 0) {
+        char *save, *skh, *blobh;
+
+        if (line[0] == '#' || line[0] == '\n')
+            continue;
+        skh = strtok_r(line, " \t\r\n", &save);
+        blobh = strtok_r(NULL, " \t\r\n", &save);
+        if (skh != NULL && blobh != NULL) {
+            sks[i] = OPENSSL_strdup(skh);
+            blobs[i] = OPENSSL_strdup(blobh);
+            i++;
+        }
+    }
+    free(line);
+    fclose(f);
+    return i;
+}
+
+/* Expanded private blob for the vector whose seed is skh, or NULL if absent. */
+static const char *blob_for(const char *skh, char **sks, char **blobs, int nkeys)
+{
+    for (int i = 0; i < nkeys; i++)
+        if (strcmp(skh, sks[i]) == 0)
+            return blobs[i];
+    return NULL;
+}
+
+#define MAX_VECTORS 64
 
 int main(int argc, char **argv)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
     const char *mods = getenv("OPENSSL_MODULES");
     const char *katfile = argc > 1 ? argv[1] : "xwing_kat.txt";
+    const char *keyfile = argc > 2 ? argv[2] : "xwing_kat_keys.txt";
+    char *sks[MAX_VECTORS], *blobs[MAX_VECTORS];
+    int nkeys, i;
     FILE *f;
     char *line = NULL;
     size_t cap = 0;
@@ -282,14 +375,28 @@ int main(int argc, char **argv)
         fprintf(stderr, "failed to load default/hybrid providers\n");
         return 1;
     }
+    /* oqsprovider is optional: it supplies ML-KEM-768 below 3.5. Ignore load
+     * failure (default-native ML-KEM covers 3.5+). */
+    (void)OSSL_PROVIDER_load(ctx, "oqsprovider");
     ERR_clear_error();
 
-    /* The reconstruction #defines above must be a compile-time constant (they
-     * size a stack buffer), so they can't be read from the central size table
-     * directly — but they must not silently diverge from it. Tie them together:
-     * the authoritative X-Wing component sizes are hybrid_kem_sizes[xwing], which
-     * hybrid_sizes_test re-derives from live keygens. If they disagree, one side
-     * changed without the other. */
+    printf("X-Wing KAT interop vs draft-connolly-cfrg-xwing-kem-11 reference vectors\n");
+    printf("======================================================================\n");
+
+    /* If X-Wing's ML-KEM-768 half cannot be resolved, the algorithm is simply
+     * not available here — skip, do not fail. */
+    if (!xwing_available(ctx)) {
+        printf("SKIP (X-Wing unavailable: no ML-KEM-768 from default or oqsprovider)\n");
+        OSSL_LIB_CTX_free(ctx);
+        return 0;
+    }
+
+    /* The reconstruction #defines above must be compile-time constants, so they
+     * can't be read from the central size table directly — but they must not
+     * silently diverge from it. Tie them together: the authoritative X-Wing
+     * component sizes are hybrid_kem_sizes[xwing], which hybrid_sizes_test
+     * re-derives from live keygens. If they disagree, one side changed without
+     * the other. */
     {
         const HYBRID_SIZES *xw = &hybrid_kem_sizes[HYBRID_KEM_IDX_xwing];
 
@@ -301,13 +408,16 @@ int main(int argc, char **argv)
         }
     }
 
+    nkeys = load_keys(keyfile, sks, blobs, MAX_VECTORS);
+    if (nkeys < 0) {
+        fprintf(stderr, "cannot open expanded-key oracle: %s\n", keyfile);
+        return 1;
+    }
+
     if ((f = fopen(katfile, "r")) == NULL) {
         fprintf(stderr, "cannot open KAT file: %s\n", katfile);
         return 1;
     }
-
-    printf("X-Wing KAT interop vs draft-connolly-cfrg-xwing-kem-11 reference vectors\n");
-    printf("======================================================================\n");
     while ((n = getline(&line, &cap, f)) > 0) {
         char *save, *skh, *pkh, *cth, *ssh;
 
@@ -318,10 +428,15 @@ int main(int argc, char **argv)
         cth = strtok_r(NULL, " \t\r\n", &save);
         ssh = strtok_r(NULL, " \t\r\n", &save);
         if (skh && pkh && cth && ssh)
-            check(ctx, skh, pkh, cth, ssh);
+            check(ctx, skh, pkh, cth, ssh, blob_for(skh, sks, blobs, nkeys));
     }
     free(line);
     fclose(f);
+
+    for (i = 0; i < nkeys; i++) {
+        OPENSSL_free(sks[i]);
+        OPENSSL_free(blobs[i]);
+    }
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);

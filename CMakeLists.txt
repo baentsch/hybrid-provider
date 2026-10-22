@@ -515,25 +515,28 @@ set_tests_properties(hybrid_coverage_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
-# X-Wing KAT interop: decapsulate the draft's reference ciphertexts under keys
-# rebuilt from its seeds and check the shared secret (real cross-impl check of
-# the strongly-binding combiner against draft-connolly-cfrg-xwing-kem, distilled
-# into xwing_kat.txt). Deterministic decapsulation only, so it needs no keygen-
-# from-seed, but rebuilding the key from the draft seed uses the ML-KEM-768
-# seed-import API, so it is a seed-based test: gated on SEED_API (3.5+), like the
-# composite KATs below. On <3.5 the default provider has no native ML-KEM and the
-# macro is undeclared, so it is simply not registered.
-if(SEED_API)
+# X-Wing KAT interop: decapsulate the draft's reference ciphertexts under the
+# draft's own decapsulation keys and check the shared secret (real cross-impl
+# check of the strongly-binding combiner against draft-connolly-cfrg-xwing-kem).
+# It raw-imports the EXPANDED keys vendored in xwing_kat_keys.txt (derived offline
+# by test/regen_xwing_kat_keys.py), so it needs NO seed API and runs wherever
+# ML-KEM-768 resolves — oqsprovider on 3.0-3.4, default on 3.5+ — i.e. whenever
+# X-Wing is available; it SKIPs (does not fail) if ML-KEM-768 is absent. On 3.5+
+# (SEED_API) it additionally re-derives the keys from their seeds and asserts
+# they match the vendored copy, so xwing_kat_keys.txt cannot silently rot.
 add_executable(xwing_kat_test test/xwing_kat_test.c)
 target_include_directories(xwing_kat_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(xwing_kat_test PRIVATE OpenSSL::Crypto)
 add_dependencies(xwing_kat_test hybrid-provider)
+if(SEED_API)
+    target_compile_definitions(xwing_kat_test PRIVATE XWING_HAVE_SEED_API)
+endif()
 add_test(NAME xwing_kat_test
-    COMMAND xwing_kat_test ${CMAKE_SOURCE_DIR}/test/xwing_kat.txt)
+    COMMAND xwing_kat_test ${CMAKE_SOURCE_DIR}/test/xwing_kat.txt
+                           ${CMAKE_SOURCE_DIR}/test/xwing_kat_keys.txt)
 set_tests_properties(xwing_kat_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
-endif()   # SEED_API (seed-based KAT, 3.5+)
 
 # Composite (LAMPS) tests — the composite family itself is compiled into the
 # hybrid provider above (HYBRID_COMPOSITE). These just exercise it; they load

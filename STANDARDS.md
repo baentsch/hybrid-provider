@@ -142,7 +142,7 @@ PKI/CMS only — **no** TLS key-exchange code point. **Normative.**
 
 Underlying: FIPS 203 (ML-KEM), RFC 8017 (RSA-OAEP), RFC 7748, RFC 5480.
 
-### 2.5 X-Wing — `draft-connolly-cfrg-xwing-kem-11` (CFRG)
+### 2.5 X-Wing — [`draft-connolly-cfrg-xwing-kem-11`](https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/) (CFRG)
 
 General-purpose hybrid KEM, X25519 + ML-KEM-768, with a **strongly-binding**
 combiner — the provider's only non-concatenation combiner. The shared secret is

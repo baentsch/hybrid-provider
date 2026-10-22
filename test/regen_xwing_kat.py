@@ -20,6 +20,10 @@ Source of truth: dconnolly/draft-connolly-cfrg-xwing-kem spec/test-vectors.json
 The scheduled coherence check (.github/workflows/xwing-kat-drift.yml via
 scripts/check-xwing-kat-drift.sh) re-runs this against the pinned tag and flags
 any drift between upstream and the vendored copy.
+
+Companion: test/regen_xwing_kat_keys.py derives test/xwing_kat_keys.txt (the
+EXPANDED decapsulation keys xwing_kat_test raw-imports) from the seeds emitted
+here. If these vectors move, regenerate that file too.
 """
 import json
 import sys

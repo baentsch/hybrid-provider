@@ -59,7 +59,10 @@ if ! diff_out="$(diff -u "$VENDORED" "$fresh")"; then
     drift=1
     report+="Vendored test/xwing_kat.txt no longer matches regen at ${TAG}:"$'\n'
     report+="$diff_out"$'\n\n'
-    report+="Fix: python3 test/regen_xwing_kat.py > test/xwing_kat.txt"$'\n\n'
+    report+="Fix: python3 test/regen_xwing_kat.py > test/xwing_kat.txt"$'\n'
+    report+="     then regenerate the derived keys (needs an OpenSSL 3.5+ with ML-KEM):"$'\n'
+    report+="     OPENSSL_BIN=<openssl-3.5+> python3 test/regen_xwing_kat_keys.py \\"$'\n'
+    report+="         test/xwing_kat.txt > test/xwing_kat_keys.txt"$'\n\n'
 fi
 
 # (b) staleness: find the highest draft number published upstream.

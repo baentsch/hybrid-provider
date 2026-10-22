@@ -40,7 +40,12 @@ LD_LIBRARY_PATH=/path/to/openssl/lib OPENSSL_MODULES=. ./hybrid_tls_test
   standalone ML-DSA enabled on OpenSSL 3.5+ (unlike its ML-KEM, which it disables
   there), so the oqs ML-DSA composition runs on 3.5.
 
-`hybrid_test` checks representative algorithms; the in-provider round-trip
+`hybrid_test` checks a fixed interop set — the four MLX hybrid KEMs mandated as
+the default-provider interop baseline (`X25519MLKEM768`, `SecP256r1MLKEM768`,
+`X448MLKEM1024`, `SecP384r1MLKEM1024`; see "Testing Requirements" in `CLAUDE.md`)
+plus a hybrid-signature sampler spanning each ML-DSA level and classical family
+(`p256_mldsa44`, `rsa3072_mldsa44`, `p384_mldsa65`, `p521_mldsa87`). It is the
+focused cross-provider set, not the whole inventory; the in-provider round-trip
 (keygen + encaps/decaps with shared-secret match, and sign/verify) is exercised
 across the **entire** inventory — every `HYBRID_KEM_LIST`/`HYBRID_SIG_LIST` row
 (and the composite families) — by `hybrid_leakcheck_test` (below), which asserts
@@ -77,7 +82,10 @@ failure returns rather than hanging), concurrency / `fork()` / teardown stress
 also served here (`hybrid_coverage_test`), the X-Wing KAT interop check that
 decapsulates the `draft-connolly-cfrg-xwing-kem` reference ciphertexts and
 matches the draft's shared secret (`xwing_kat_test`, vectors vendored in
-`test/xwing_kat.txt`), the drop-in replacement test over a
+`test/xwing_kat.txt` with the draft's expanded decapsulation keys in
+`test/xwing_kat_keys.txt` — raw-imported with no seed API, so the check runs
+wherever ML-KEM-768 resolves, not only on 3.5+), the drop-in replacement test
+over a
 PQ-only [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 (`hybrid_replace_test`, below), and — with `-DHYBRID_COMPOSITE` — the composite
 combiner, provider and draft-19 KAT tests (`composite_sig_test`,
