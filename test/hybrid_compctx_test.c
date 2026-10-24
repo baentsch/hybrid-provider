@@ -168,6 +168,14 @@ int main(void)
      * client/server report "no suitable groups" / "no suitable key share"),
      * while BIKE-L3/L5 do. BIKE-L1 KEM interop itself is covered in
      * hybrid_oqs_test.
+     *
+     * NB (issue #78): deliberately NOT auto-derived like the other oqs-peer
+     * tests (the Frodo/BIKE/HQC rows). The fact this list encodes — "which such
+     * groups the oqsprovider peer actually negotiates over TLS in this build"
+     * (BIKE-L1 out) — is peer wire
+     * behavior, not an origin/feature property of our tables, and would regress
+     * if auto-expanded. This curated subset is itself the single source of that
+     * fact; the handshake subtests below are fail-hard, so it cannot be a probe.
      */
     static const char *groups[] = {
         "p256_frodo640aes", "x25519_frodo640aes", "p384_frodo976aes",

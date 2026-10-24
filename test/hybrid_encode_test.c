@@ -19,19 +19,25 @@
 #include <openssl/encoder.h>
 #include <openssl/decoder.h>
 #include <openssl/err.h>
+#include "hybrid_prov.h"   /* HYBRID_SIG_* master table (issue #78) */
 
-static int tests, passed, failed;
+static int tests, passed, failed, skipped;
 
-/* Hybrid sigs across every PQ family and both classical types (EC + RSA-3072). */
-static const char *sigs[] = {
-    "p256_mldsa44", "rsa3072_mldsa44", "p384_mldsa65", "p521_mldsa87",
-    "p256_falcon512", "rsa3072_falcon512", "p521_falcon1024",
-    "p256_falconpadded512", "rsa3072_falconpadded512",
-    "p256_mayo1", "p384_mayo3", "p521_mayo5",
-    "p256_OV_Is_pkc", "p256_OV_Ip_pkc_skc",
-    "p256_snova2454", "p384_snova2455", "p521_snova2965",
-    "p256_mqom2cat1gf16fastr5", "p521_mqom2cat5gf16fastr5",
-};
+/*
+ * Every hybrid signature is exercised (all HYBRID_SIG_LIST rows, across every PQ
+ * family and both classical types) — derived from the master table rather than a
+ * hand sample (issue #78). The interop peer is oqsprovider; algorithms a given
+ * oqsprovider build does not serve are runtime-probed and skipped, not failed.
+ */
+static int provider_has(OSSL_LIB_CTX *ctx, const char *alg, const char *prop)
+{
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(ctx, alg, prop);
+    int ok = g != NULL && EVP_PKEY_keygen_init(g) > 0;
+
+    ERR_clear_error();
+    EVP_PKEY_CTX_free(g);
+    return ok;
+}
 
 static void check(OSSL_LIB_CTX *ctx, const char *alg)
 {
@@ -311,12 +317,20 @@ int main(void)
 
     printf("hybrid SPKI encode -> oqsprovider decode + verify\n");
     printf("=================================================\n");
-    for (i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
-        check(ctx, sigs[i]);
-        check_decode(ctx, sigs[i]);
-        check_priv(ctx, sigs[i]);
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+        const char *alg = hybrid_sig_table[i].hybrid_name;
+
+        if (!provider_has(ctx, alg, "provider=oqsprovider")) {
+            printf("  %-28s SKIPPED (oqsprovider does not serve it here)\n", alg);
+            skipped++;
+            continue;
+        }
+        check(ctx, alg);
+        check_decode(ctx, alg);
+        check_priv(ctx, alg);
     }
-    printf("\nResults: %d/%d passed, %d failed\n", passed, tests, failed);
+    printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
+           passed, tests, failed, skipped);
 
     OSSL_LIB_CTX_free(ctx);
     return failed == 0 ? 0 : 1;
