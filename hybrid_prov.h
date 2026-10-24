@@ -9,6 +9,7 @@
 #include <openssl/core.h>
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
+#include <openssl/opensslv.h>   /* OPENSSL_VERSION_NUMBER (default-builtin set) */
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/err.h>
@@ -481,6 +482,43 @@ static const int hybrid_kem_combiner[HYBRID_KEM_ALG_COUNT] = {
 };
 
 /*
+ * The one piece of interop classification NOT derivable from the master row
+ * itself: which hybrids the OpenSSL DEFAULT provider ships as built-ins (the
+ * standardized MLX groups). Everything else the interop tests need is derived
+ * from data already in the table — the combiner selector (concat vs the
+ * non-concat X-Wing rows) and the PQ component name (hybrid_kem_table[i].
+ * alg2_name: "MLKEM*" vs Frodo/BIKE/HQC) — so NO per-row provenance table is
+ * needed (issue #78). Adding an ordinary new hybrid is therefore one
+ * HYBRID_KEM_LIST row (plus its hybrid_kem_sizes[] row), nothing here.
+ *
+ * This set is a pure function of OPENSSL_VERSION_NUMBER: OpenSSL never adds
+ * features to a released branch, so each version's built-in MLX family is fixed
+ * and known at compile time — no runtime probe, no generated file. Native MLX
+ * landed in 3.5. Edit this list ONLY when adding support for a newer OpenSSL
+ * release that grew the family (e.g. 4.0 added curveSM2MLKEM768 — serving it,
+ * and a default-provider coverage guard, are tracked separately). NULL-terminated
+ * so the array is never zero-length on a pre-3.5 build.
+ */
+static const char *const hybrid_default_builtin_kems[] = {
+#if OPENSSL_VERSION_NUMBER >= 0x30500000L
+    "X25519MLKEM768", "SecP256r1MLKEM768", "X448MLKEM1024", "SecP384r1MLKEM1024",
+#endif
+    NULL
+};
+
+/* True if `name` is a hybrid KEM the default provider ships built-in (list
+ * above). static inline so unused translation units cost nothing / no warning. */
+static inline int hybrid_kem_is_default_builtin(const char *name)
+{
+    size_t i;
+
+    for (i = 0; hybrid_default_builtin_kems[i] != NULL; i++)
+        if (strcmp(name, hybrid_default_builtin_kems[i]) == 0)
+            return 1;
+    return 0;
+}
+
+/*
  * Master hybrid-SIG list — single source of truth, mirroring HYBRID_KEM_LIST.
  * These are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ), matching
  * its names, OIDs and wire format. Component sizes are discovered at runtime.
@@ -573,6 +611,24 @@ enum { HYBRID_SIG_LIST(HYBRID_SIG_IDX_ROW) HYBRID_SIG_ALG_COUNT_ENUM };
 
 #define HYBRID_SIG_ALG_COUNT \
     (sizeof(hybrid_sig_table) / sizeof(hybrid_sig_table[0]))
+
+/*
+ * Signature interop subsets derive from the PQ component name already in the
+ * master row (hybrid_sig_table[i].alg2_name) — no per-row provenance table
+ * (issue #78). ML-DSA ("MLDSA*") is served by the default provider (3.5+) or
+ * oqsprovider, so those hybrids keygen with the default alone; every other
+ * family (Falcon, Falcon-padded, MAYO, OV, SNOVA, MQOM) has a PQ base only
+ * oqsprovider provides. static inline so unused TUs cost nothing / no warning.
+ */
+static inline int hybrid_sig_pq_is_mldsa(size_t i)
+{
+    return strncmp(hybrid_sig_table[i].alg2_name, "MLDSA", 5) == 0;
+}
+
+static inline int hybrid_sig_is_oqs_only(size_t i)
+{
+    return !hybrid_sig_pq_is_mldsa(i);
+}
 
 /*
  * Constant component sizes, one row per hybrid signature in HYBRID_SIG_LIST

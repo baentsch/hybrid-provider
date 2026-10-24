@@ -23,20 +23,21 @@
 #include <openssl/encoder.h>
 #include <openssl/decoder.h>
 #include <openssl/err.h>
+#include "hybrid_prov.h"   /* HYBRID_KEM_* master table (issue #78) */
 
 static int tests, passed, failed;
 
 /*
- * Hybrid KEMs with an assigned OID (key-file encodable). Their interop peer is
- * oqsprovider: the default provider implements the MLX KEMs as TLS groups only
- * and has NO key-file encoders for them, so oqsprovider is the sole peer that
- * both owns and serializes these keys. SecP384r1MLKEM1024 is owned+encoded by
- * oqsprovider on OpenSSL < 3.5 but ceded to default (which can't encode it) on
- * >= 3.5; the per-alg peer check below then skips it rather than failing.
+ * The key-file-encodable hybrid KEMs are exactly the rows carrying an assigned
+ * OID (hybrid_kem_table[i].oid != NULL) — derived from the master table rather
+ * than re-listed here (issue #78). Their interop peer is oqsprovider: the default
+ * provider implements the MLX KEMs as TLS groups only and has NO key-file
+ * encoders for them, so oqsprovider is the sole peer that both owns and
+ * serializes these keys. SecP384r1MLKEM1024 is owned+encoded by oqsprovider on
+ * OpenSSL < 3.5 but ceded to default (which can't encode it) on >= 3.5; the
+ * per-alg peer check below then skips it rather than failing.
  */
-static const char *kems[] = {
-    "SecP256r1MLKEM512", "x25519_mlkem512", "SecP384r1MLKEM1024",
-};
+#define KEM_IS_ENCODABLE(i) (hybrid_kem_table[(i)].oid != NULL)
 
 /* Can `prop` generate this algorithm? (peer-availability probe) */
 static int provider_has(OSSL_LIB_CTX *ctx, const char *alg, const char *prop)
@@ -212,7 +213,15 @@ int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
     const char *mods = getenv("OPENSSL_MODULES");
+    const char *sample = NULL;
     size_t i;
+
+    /* First encodable row — representative for the HYBRID_KEM_ENCODERS probe. */
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+        if (KEM_IS_ENCODABLE(i)) {
+            sample = hybrid_kem_table[i].hybrid_name;
+            break;
+        }
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
@@ -225,22 +234,26 @@ int main(void)
         printf("oqsprovider unavailable -- SKIPPING\n");
         return 0;
     }
-    if (!hybrid_kem_encoders_present(ctx, kems[0])) {
+    if (sample == NULL || !hybrid_kem_encoders_present(ctx, sample)) {
         printf("hybrid provider built without HYBRID_KEM_ENCODERS -- SKIPPING\n");
         return 0;
     }
 
     printf("hybrid <-> oqsprovider KEM key-file interop\n");
     printf("==========================================\n");
-    for (i = 0; i < sizeof(kems) / sizeof(kems[0]); i++) {
-        if (!provider_has(ctx, kems[i], "provider=oqsprovider")) {
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+        const char *alg = hybrid_kem_table[i].hybrid_name;
+
+        if (!KEM_IS_ENCODABLE(i))
+            continue;
+        if (!provider_has(ctx, alg, "provider=oqsprovider")) {
             printf("  %-22s SKIPPED (oqsprovider does not provide it here)\n",
-                   kems[i]);
+                   alg);
             continue;
         }
-        one_dir(ctx, kems[i], "hybrid->oqs", "provider=hybrid",
+        one_dir(ctx, alg, "hybrid->oqs", "provider=hybrid",
                 "provider=oqsprovider");
-        one_dir(ctx, kems[i], "oqs->hybrid", "provider=oqsprovider",
+        one_dir(ctx, alg, "oqs->hybrid", "provider=oqsprovider",
                 "provider=hybrid");
     }
     printf("\nResults: %d/%d passed, %d failed\n", passed, tests, failed);
