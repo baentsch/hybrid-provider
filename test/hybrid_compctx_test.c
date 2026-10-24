@@ -164,10 +164,11 @@ int main(void)
     /*
      * Representative Frodo/BIKE/HQC groups (PQ base only in oqsprovider) that
      * complete a TLS 1.3 handshake against pure oqsprovider. BIKE-L1
-     * (p256_bikel1, x25519_bikel1) is intentionally excluded: oqsprovider
-     * advertises the group but the handshake does not complete against this
-     * build, while BIKE-L3/L5 do (re-confirmed 2026-10-24). BIKE-L1 KEM interop
-     * itself works and is covered in hybrid_oqs_test — this is TLS-specific.
+     * (p256_bikel1, x25519_bikel1) is intentionally excluded: oqsprovider does
+     * not TLS-enable BIKE-L1 (oqs-template/generate.yml: bikel1 enable_tls:
+     * false; L3/L5 are true), so libssl reports "no suitable groups" and never
+     * negotiates it. BIKE-L1 KEM interop itself works and is covered in
+     * hybrid_oqs_test — this is purely the peer's TLS-group config, not us.
      *
      * Deliberately hand-asserted, NOT table-derived or auto-generated (issue
      * #78). The discriminator — which advertised groups actually complete a
