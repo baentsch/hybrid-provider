@@ -60,6 +60,10 @@ hybrid_key_new(int is_kem, unsigned int variant,
     /* Point at this variant's row in the constant size table — no per-key copy,
      * no runtime discovery, no cache, no lock. The table is static-lifetime. */
     key->sizes = is_kem ? &hybrid_kem_sizes[variant] : &hybrid_sig_sizes[variant];
+    /* Shared-secret combiner is a per-variant KEM property (concat vs X-Wing);
+     * signatures have none. Stored as a value so the KEM op need not re-derive
+     * the variant index from the (possibly cross-TU) info pointer. */
+    key->combiner = is_kem ? hybrid_kem_combiner[variant] : HYBRID_COMBINER_CONCAT;
     key->key1 = NULL;
     key->key2 = NULL;
     key->state = HYBRID_HAVE_NOKEYS;
@@ -113,6 +117,7 @@ static void *hybrid_kem_dup(const void *vkey, int selection)
     ret->is_kem = key->is_kem;
     ret->info = key->info;
     ret->sizes = key->sizes;
+    ret->combiner = key->combiner;
     ret->state = HYBRID_HAVE_NOKEYS;
     ret->propq = NULL;
     ret->pq_propq = key->pq_propq;

@@ -112,6 +112,28 @@ the tables drive keymgmt, KEM/sig dispatch and capability advertising. Update th
 inventory tables in the [README](README.md#supported-algorithms) to match, and
 add coverage to the relevant test.
 
+A hybrid KEM whose shared secret is **not** the plain concatenation of the
+component secrets (the RFC 10024 default) selects a combiner in
+`hybrid_kem_combiner[]` (next to `hybrid_kem_sizes[]` in `hybrid_prov.h`), keyed
+by the row's `HYBRID_KEM_IDX_*`. The combiner code in `hybrid_kem.c` is
+**component-agnostic** — it reads every segment length from the key's size row —
+so:
+
+- **Same combiner, different components** (e.g. an X-Wing-style KEM over ML-KEM-1024
+  or an experimental KEM) is **two table lines only**: a `HYBRID_KEM_LIST` row and
+  a `hybrid_kem_combiner[]` entry. No combiner-code change. The `xwing_*`
+  experimental rows are the worked examples; `hybrid_leakcheck_test` already
+  round-trips every KEM row in-provider (keygen/encaps/decaps with shared-secret
+  match, over `HYBRID_KEM_ALG_COUNT`), so a new row is covered automatically.
+- **A genuinely new combiner** adds a `HYBRID_COMBINER_*` value and its own
+  combine function in `hybrid_kem.c` (alongside `hybrid_xwing_combine`), invoked
+  from the encaps/decaps combiner branch.
+
+X-Wing (`draft-connolly-cfrg-xwing-kem`, a SHA3-256 strongly-binding combiner) is
+the standards-backed instance — additionally pinned by a KAT against the draft's
+reference vectors (`xwing_kat_test`) with a weekly vector-coherence guard
+(`scripts/check-xwing-kat-drift.sh`).
+
 ### The oqsprovider coverage invariant
 
 Every OQS-legacy hybrid must match

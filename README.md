@@ -26,7 +26,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 42 hybrid KEMs + 26 hybrid signatures = 68 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 120 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 68 hybrids (90 total).
+**Algorithms served:** 47 hybrid KEMs + 26 hybrid signatures = 73 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 125 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 73 hybrids (95 total).
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -79,6 +79,35 @@ FrodoKEM/eFrodoKEM/BIKE/HQC need
 | eFrodoKEM | `p256_efrodo640aes`, `x25519_efrodo640aes`, `p256_efrodo640shake`, `x25519_efrodo640shake`, `p384_efrodo976aes`, `x448_efrodo976aes`, `p384_efrodo976shake`, `x448_efrodo976shake`, `p521_efrodo1344aes`, `p521_efrodo1344shake` |
 | BIKE | `p256_bikel1`, `x25519_bikel1`, `p384_bikel3`, `x448_bikel3`, `p521_bikel5` |
 | HQC | `p256_hqc1`, `x25519_hqc1`, `p384_hqc3`, `x448_hqc3`, `p521_hqc5` |
+
+**X-Wing** (`draft-connolly-cfrg-xwing-kem`) — the one **strongly-binding**
+combiner: X25519 + ML-KEM-768 with `ss = SHA3-256(ss_M || ss_X || ct_X || pk_X ||
+label)`, folding the X25519 ciphertext and public key into the KDF rather than
+concatenating the component secrets. Same primitives as `X25519MLKEM768` but a
+distinct KEM with its own OID and **no** TLS code point (KEM API only). Verified
+against the draft's reference vectors (`xwing_kat_test`). See
+[STANDARDS.md §2.5](STANDARDS.md).
+
+| Algorithm | Components |
+|---|---|
+| `X-Wing` | X25519 + ML-KEM-768 (SHA3-256 strongly-binding combiner) |
+
+Because the combiner is component-agnostic (it reads every length from the
+algorithm's table row, nothing in the code is tied to X25519 or ML-KEM-768), the
+same strongly-binding construction is also offered over **non-draft** component
+pairs, for experimentation. These are **not** standardized — operation-only,
+private component-pair names, no TLS code point and no OID:
+
+| Algorithm | Components |
+|---|---|
+| `xwing_x25519_mlkem1024` | X25519 + ML-KEM-1024 |
+| `xwing_p256_mlkem768` | ECDH P-256 + ML-KEM-768 |
+| `xwing_x448_mlkem1024` | X448 + ML-KEM-1024 |
+| `xwing_x25519_efrodo640aes` | X25519 + eFrodoKEM-640-AES (needs oqsprovider) |
+
+Adding another is two central lines — a row in `HYBRID_KEM_LIST` and an entry in
+`hybrid_kem_combiner[]` — with no combiner-code change (see
+[CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ### Hybrid Signatures
 

@@ -142,6 +142,43 @@ PKI/CMS only — **no** TLS key-exchange code point. **Normative.**
 
 Underlying: FIPS 203 (ML-KEM), RFC 8017 (RSA-OAEP), RFC 7748, RFC 5480.
 
+### 2.5 X-Wing — [`draft-connolly-cfrg-xwing-kem-11`](https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/) (CFRG)
+
+General-purpose hybrid KEM, X25519 + ML-KEM-768, with a **strongly-binding**
+combiner — the provider's only non-concatenation combiner. The shared secret is
+
+```
+ss = SHA3-256(ss_M || ss_X || ct_X || pk_X || XWingLabel)   XWingLabel = 0x5c2e2f2f5e5c
+```
+
+i.e. the X25519 ciphertext and recipient public key are folded into the KDF
+alongside both component secrets, so the output is bound to the ciphertext and
+key (unlike the §2.1 concatenation). The ciphertext is still `ct_M || ct_X` and
+the components come from the same providers as `X25519MLKEM768`, but X-Wing is a
+**distinct KEM, not** the `X25519MLKEM768` TLS group (code point `0x11ec`): it
+has its own OID `1.3.6.1.4.1.62253.25722` and deliberately **no TLS code point**
+here (exposed via the KEM API only, like `X448MLKEM1024`). The combiner is
+selected per row by `hybrid_kem_combiner[]` (not a new code path per algorithm),
+and verified byte-for-byte against the draft's reference vectors by
+`xwing_kat_test` (vendored `test/xwing_kat.txt`, pinned to the draft tag and
+kept coherent with upstream by a weekly drift check). **Normative** (CFRG draft).
+
+| Algorithm | Components | Combiner | Identifier |
+|---|---|---|---|
+| `X-Wing` | X25519 + ML-KEM-768 | SHA3-256 strongly-binding | OID `1.3.6.1.4.1.62253.25722`; no TLS code point |
+
+The combiner implementation is **component-agnostic** — it reads every segment
+length from the algorithm's table row, so nothing in the code is tied to X25519
+or ML-KEM-768. Only `X-Wing` (the exact draft instantiation) is standards-backed;
+the same construction over other component pairs is offered as **non-normative
+experimentation** (see §3.4) under private component-pair names, operation-only,
+with no TLS code point and no OID: `xwing_x25519_mlkem1024`, `xwing_p256_mlkem768`,
+`xwing_x448_mlkem1024`, `xwing_x25519_efrodo640aes`. These are **not** X-Wing and
+have no cross-implementation interop target; they exist to exercise the combiner
+over larger ML-KEM, a different classical curve, and a non-ML-KEM PQ KEM.
+
+Underlying: FIPS 203 (ML-KEM), RFC 7748 (X25519), FIPS 202 (SHA-3).
+
 ---
 
 ## 3. Convention-only (non-normative)
@@ -243,7 +280,6 @@ yet implemented**. Candidates, strongest fit first:
 
 | Spec | What it adds | Why it fits |
 |---|---|---|
-| **X-Wing** — `draft-connolly-cfrg-xwing-kem` (CFRG) | General-purpose hybrid KEM X25519 + ML-KEM-768 with a **strongly-binding** combiner (ML-KEM pubkey folded into the KDF) | A genuinely different combiner from the §2.1 concatenation; exercises the table-driven combiner design |
 | **Composite ML-DSA in CMS** — `draft-ietf-lamps-cms-composite-sigs` | CMS binding of the §2.3 composite signatures | We already have `hybrid_cms_test.c` (SignedData) and the composite signers |
 | **Composite ML-KEM in CMS / KEMRI** — **RFC 9629** (Using KEMs with CMS) + the composite-kem CMS binding | `EnvelopedData` driven by the §2.4 composite KEM | **No new crypto needed** — OpenSSL's CMS KEMRI path is provider-generic (auto-routes any `EVP_PKEY_encapsulate`-capable key to `KEMRI`) and our composite KEM already exposes the full KEM interface + SPKI encoders. The gap is a KEMRI round-trip **test** and **recipient-cert issuance** (a KEM key can't self-sign; issue the cert with a signing key). 3.5+ floor matches composite's. |
 | **Dual / parallel hybrid X.509** — `draft-truskovsky-lamps-pq-hybrid-x509`, `draft-sun-lamps-hybrid-scheme`, ITU-T X.509 "catalyst" (`subjectAltPublicKeyInfo` / `altSignature*`) | Two independent signatures in one certificate | The *other* hybrid-cert philosophy vs. our single composite signature; architecturally adjacent |
@@ -265,7 +301,6 @@ Each future-work item above is tracked as an issue:
 |---|---|
 | [#108](https://github.com/baentsch/hybrid-provider/issues/108) CMS KEMRI (RFC 9629) for composite ML-KEM | `EnvelopedData` round-trip test + recipient-cert issuance; KDF/key-wrap pinning for cross-impl interop |
 | [#109](https://github.com/baentsch/hybrid-provider/issues/109) Composite ML-DSA signatures in CMS SignedData | Verify/extend `hybrid_cms_test.c` to the composite keytype (`draft-ietf-lamps-cms-composite-sigs`), attr + `-noattr` |
-| [#110](https://github.com/baentsch/hybrid-provider/issues/110) X-Wing hybrid KEM | New strongly-binding KEM family (`draft-connolly-cfrg-xwing-kem`) + draft KAT vectors |
 | [#111](https://github.com/baentsch/hybrid-provider/issues/111) Dual / parallel hybrid X.509 certificates | Scope decision + prototype for `subjectAltPublicKeyInfo` / catalyst-style dual-sig certs |
 | [#112](https://github.com/baentsch/hybrid-provider/issues/112) Runtime "define-a-hybrid" config mechanism | cnf-declared experimental hybrids for arbitrary component pairs (operation-only; private IDs optional; §3.4) |
 

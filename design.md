@@ -773,7 +773,13 @@ have no paths filter — they always run in full.
   drift/tripwire workflows). This closes a real gap: neither dedicated workflow
   catches a weekly-matrix failure — the deprecation tripwire is a master *build*
   only (a runtime undefined-symbol at provider load stays green there), and the
-  drift check is a buildless algorithm-set diff.
+  drift check is a buildless algorithm-set diff. A sibling buildless weekly job,
+  `xwing-kat-drift` (`scripts/check-xwing-kat-drift.sh`), guards the vendored
+  X-Wing reference vectors (`test/xwing_kat.txt`) against the pinned CFRG draft —
+  both the coherence of the local copy with the pinned tag and the appearance of
+  a newer draft tag — filing and auto-closing a tracking issue the same way (the
+  combiner and vectors are version-sensitive, so a newer draft is a prompt to
+  evaluate a bump, never an auto-chase).
 
 The pinned tier caches its toolchain as **three independent `actions/cache`
 entries**, not one bundle, so a pin that did not change is never rebuilt: OpenSSL
