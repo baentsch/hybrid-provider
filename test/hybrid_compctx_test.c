@@ -162,20 +162,20 @@ int main(void)
     OSSL_LIB_CTX *app = NULL, *oqs = NULL;
     OSSL_PROVIDER *od = NULL, *oq = NULL;
     /*
-     * Representative Frodo/BIKE/HQC groups (PQ base only in oqsprovider).
-     * BIKE-L1 (p256_bikel1 etc.) is intentionally omitted: the oqsprovider peer
-     * does not negotiate BIKE-L1 groups over TLS in this build (its own
-     * client/server report "no suitable groups" / "no suitable key share"),
-     * while BIKE-L3/L5 do. BIKE-L1 KEM interop itself is covered in
-     * hybrid_oqs_test.
+     * Representative Frodo/BIKE/HQC groups (PQ base only in oqsprovider) that
+     * complete a TLS 1.3 handshake against pure oqsprovider. BIKE-L1
+     * (p256_bikel1, x25519_bikel1) is intentionally excluded: oqsprovider
+     * advertises the group but the handshake does not complete against this
+     * build, while BIKE-L3/L5 do (re-confirmed 2026-10-24). BIKE-L1 KEM interop
+     * itself works and is covered in hybrid_oqs_test — this is TLS-specific.
      *
-     * NB (issue #78): deliberately NOT auto-derived like the other oqs-peer
-     * tests (the Frodo/BIKE/HQC rows). The fact this list encodes — "which such
-     * groups the oqsprovider peer actually negotiates over TLS in this build"
-     * (BIKE-L1 out) — is peer wire
-     * behavior, not an origin/feature property of our tables, and would regress
-     * if auto-expanded. This curated subset is itself the single source of that
-     * fact; the handshake subtests below are fail-hard, so it cannot be a probe.
+     * Deliberately hand-asserted, NOT table-derived or auto-generated (issue
+     * #78). The discriminator — which advertised groups actually complete a
+     * handshake with the live peer — is observable only by running the handshake,
+     * which is fail-hard here. A probe/generator that dropped the failing ones
+     * would silently mask a real regression (e.g. a Frodo group breaking), which
+     * is exactly what this test exists to catch. So this stays a human-curated
+     * MUST-pass contract; the list is the single source of that fact.
      */
     static const char *groups[] = {
         "p256_frodo640aes", "x25519_frodo640aes", "p384_frodo976aes",
