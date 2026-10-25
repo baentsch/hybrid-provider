@@ -39,8 +39,19 @@
 
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))
 
-/* Classical prefixes that mark an oqsprovider hybrid (KEM or signature). */
-static const char *const hybrid_prefixes[] = {
+/*
+ * Classical prefixes that mark an *oqsprovider* hybrid (KEM or signature): its
+ * hybrids are spelled <classical>_<pq> (e.g. p256_mlkem768, rsa3072_falcon512).
+ * This mirror of the classical set is not hand-invented — it is the same prefix
+ * list oqsprovider itself uses to classify its hybrids in its generator input
+ * (ALGS/*.yml -> oqs-template, surfaced via the OQS_CEDE_HYBRIDS lever); if
+ * oqsprovider adds a classical family, that shows up as a coverage MISS here,
+ * which is the signal to extend this list (and our tables) to match. Other PQ
+ * providers (wolfprovider, ...) do not use this spelling and are not scanned by
+ * this predicate; the standardized MLX hybrids are matched structurally by
+ * is_mlx_hybrid_name() below instead.
+ */
+static const char *const oqs_hybrid_prefixes[] = {
     "p256_",  "p384_",  "p521_",   "x25519_",
     "x448_",  "bp256_", "bp384_",  "bp512_", "rsa3072_"};
 
@@ -55,8 +66,17 @@ static int contains_ci(const char *hay, const char *needle)
     return 0;
 }
 
-/* The bare ML-KEM primitive, in the spellings the default provider
- * ("ML-KEM-768") and oqsprovider ("mlkem768") use — NOT hybrids. */
+/*
+ * The bare ML-KEM primitive (NOT a hybrid), in the spellings the default
+ * provider ("ML-KEM-768") and oqsprovider ("mlkem768") use. This list is
+ * MANUALLY CURATED: it must be updated if an upstream provider renames the
+ * primitive or a new NIST security level is standardized. That is deliberately
+ * accepted here — ML-KEM is a finalized FIPS 203 standard, so both its three
+ * parameter sets and their established names are frozen; a change is very
+ * unlikely, and if it ever happens it is a conscious upstream event, not silent
+ * drift. (A structural "ML/KEM-token + level" matcher was considered and
+ * rejected as a more obfuscated way of hard-coding the very same assumption.)
+ */
 static int is_bare_mlkem(const char *name)
 {
     static const char *const bare[] = {
@@ -83,8 +103,9 @@ static int is_hybrid_name(const char *name)
 {
     size_t i;
 
-    for (i = 0; i < NELEM(hybrid_prefixes); i++)
-        if (strncmp(name, hybrid_prefixes[i], strlen(hybrid_prefixes[i])) == 0)
+    for (i = 0; i < NELEM(oqs_hybrid_prefixes); i++)
+        if (strncmp(name, oqs_hybrid_prefixes[i],
+                    strlen(oqs_hybrid_prefixes[i])) == 0)
             return 1;
     return is_mlx_hybrid_name(name);
 }

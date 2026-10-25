@@ -281,10 +281,11 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
 
     if ((key = gen(ctx, alg)) == NULL) {
         /* A keygen failure is only benign when a component provider is absent:
-         * the PQ half (oqsprovider families) or the classical half (curveSM2,
-         * which needs the default provider of OpenSSL 4.0+ and is absent under
-         * FIPS). If BOTH components can be generated here, hybrid keygen must not
-         * fail. */
+         * the PQ half (from whichever provider serves it — oqsprovider,
+         * wolfprovider, the default provider on 3.5+, ...) or the classical half
+         * (curveSM2, which needs the default provider of OpenSSL 4.0+ and is
+         * absent under FIPS). If BOTH components can be generated here, hybrid
+         * keygen must not fail. */
         if (!component_available(ctx, pq_alg, NULL)
                 || (classic_alg != NULL
                     && !component_available(ctx, classic_alg, classic_group))) {

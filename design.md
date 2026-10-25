@@ -606,9 +606,9 @@ groups with standardized codepoints (RFC 10024 —
 `X25519MLKEM768` 0x11EC, `SecP256r1MLKEM768` 0x11EB, `SecP384r1MLKEM1024`
 0x11ED), the default-provider `curveSM2MLKEM768` 0x11EE (OpenSSL 4.0+), plus the
 oqsprovider-assigned code points for the OQS-legacy KEM and signature hybrids.
-`X448MLKEM1024` has no TLS codepoint and is reachable only via the KEM API. The code points are kept in lockstep with their origins by
-`hybrid_capability_test`, which compares them against the live default/oqsprovider
-capabilities.
+`X448MLKEM1024` has no TLS codepoint and is reachable only via the KEM API. The
+code points are kept in lockstep with their origins by `hybrid_capability_test`,
+which compares them against the live default/oqsprovider capabilities.
 
 The **standardized composite signatures** (`composite_caps.c`) are the one
 exception to "code points match their origin". `draft-reddy-tls-composite-mldsa`
