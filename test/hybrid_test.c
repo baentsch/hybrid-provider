@@ -1180,14 +1180,14 @@ int main(int argc, char **argv)
 
     /* --- Signature tests --- */
     {
-        /* ML-DSA hybrids (PQ base from the default provider on 3.5+, so these run
-         * without oqsprovider), collected from the master sig table by PQ
-         * component name rather than relisted here (issue #78). */
+        /* Hybrids whose PQ base the default provider ships built-in (ML-DSA on
+         * 3.5+), so these run without oqsprovider — collected from the master
+         * sig table rather than relisted here (issue #78). */
         const char *sig_algorithms[HYBRID_SIG_ALG_COUNT];
         size_t nsigs = 0;
 
         for (size_t ti = 0; ti < HYBRID_SIG_ALG_COUNT; ti++)
-            if (hybrid_sig_pq_is_mldsa(ti))
+            if (hybrid_sig_pq_is_default_builtin(ti))
                 sig_algorithms[nsigs++] = hybrid_sig_table[ti].hybrid_name;
 
         for (size_t i = 0; i < nsigs; i++) {

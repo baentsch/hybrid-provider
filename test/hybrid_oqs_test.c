@@ -272,7 +272,7 @@ int main(void)
     printf("\nhybrid signatures with oqsprovider PQ base (self-consistency)\n");
     printf("=============================================================\n");
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
-        if (hybrid_sig_is_oqs_only(i))
+        if (!hybrid_sig_pq_is_default_builtin(i))   /* PQ base only oqsprovider has */
             sig_selfcheck(ctx, hybrid_sig_table[i].hybrid_name);
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",

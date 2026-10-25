@@ -111,7 +111,7 @@ static long advertised_codepoint(const char *name)
  * to the expected provider, so we know the handshake exercises the intended
  * implementation rather than silently falling through to the default provider.
  */
-static int kem_provider_is(OSSL_LIB_CTX *libctx, const char *propq,
+static int kem_handled_by_provider(OSSL_LIB_CTX *libctx, const char *propq,
                            const char *alg, const char *want_provider)
 {
     EVP_KEM *kem = EVP_KEM_fetch(libctx, alg, propq);
@@ -459,14 +459,14 @@ int main(void)
 
         snprintf(t, sizeof(t), "%s: '?provider=hybrid' routes to hybrid", name);
         TEST_START(t);
-        if (kem_provider_is(hyb_ctx, "?provider=hybrid", name, "hybrid"))
+        if (kem_handled_by_provider(hyb_ctx, "?provider=hybrid", name, "hybrid"))
             TEST_PASS();
         else
             TEST_FAIL("group did not resolve to hybrid provider");
 
         snprintf(t, sizeof(t), "%s: default context routes to default", name);
         TEST_START(t);
-        if (kem_provider_is(dflt_ctx, NULL, name, "default"))
+        if (kem_handled_by_provider(dflt_ctx, NULL, name, "default"))
             TEST_PASS();
         else
             TEST_FAIL("group did not resolve to default provider");

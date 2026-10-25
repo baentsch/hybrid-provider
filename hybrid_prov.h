@@ -613,21 +613,41 @@ enum { HYBRID_SIG_LIST(HYBRID_SIG_IDX_ROW) HYBRID_SIG_ALG_COUNT_ENUM };
     (sizeof(hybrid_sig_table) / sizeof(hybrid_sig_table[0]))
 
 /*
- * Signature interop subsets derive from the PQ component name already in the
- * master row (hybrid_sig_table[i].alg2_name) — no per-row provenance table
- * (issue #78). ML-DSA ("MLDSA*") is served by the default provider (3.5+) or
- * oqsprovider, so those hybrids keygen with the default alone; every other
- * family (Falcon, Falcon-padded, MAYO, OV, SNOVA, MQOM) has a PQ base only
- * oqsprovider provides. static inline so unused TUs cost nothing / no warning.
+ * The one piece of signature interop classification NOT derivable from the
+ * master row itself: which hybrids' PQ component the OpenSSL DEFAULT provider
+ * ships built-in — so the hybrid keygens with the default alone. Mirrors the
+ * KEM side (hybrid_default_builtin_kems[]), but lists the PQ *component* names:
+ * unlike KEMs, the default provider ships no built-in hybrid signatures, only
+ * the PQ primitive (ML-DSA). Everything else the sig interop tests need is
+ * derived from data already in the row (issue #78).
+ *
+ * Like the KEM list this is a pure function of OPENSSL_VERSION_NUMBER: native
+ * ML-DSA landed in 3.5, so on 3.0–3.4 the list is empty and every hybrid sig
+ * (ML-DSA included) is oqsprovider-only, which is correct for those releases.
+ * Edit ONLY when a newer OpenSSL grows its built-in PQ-signature family.
+ * NULL-terminated so the array is never zero-length on a pre-3.5 build.
  */
-static inline int hybrid_sig_pq_is_mldsa(size_t i)
-{
-    return strncmp(hybrid_sig_table[i].alg2_name, "MLDSA", 5) == 0;
-}
+static const char *const hybrid_default_builtin_sig_pqs[] = {
+#if OPENSSL_VERSION_NUMBER >= 0x30500000L
+    "MLDSA44", "MLDSA65", "MLDSA87",
+#endif
+    NULL
+};
 
-static inline int hybrid_sig_is_oqs_only(size_t i)
+/* True if hybrid sig i's PQ component (alg2_name) is one the default provider
+ * ships built-in. Its complement is "oqsprovider-only" (Falcon, Falcon-padded,
+ * MAYO, OV, SNOVA, MQOM — and, below 3.5, ML-DSA too), spelled !... at the one
+ * call site, mirroring hybrid_kem_is_default_builtin. static inline so unused
+ * TUs cost nothing / no warning. */
+static inline int hybrid_sig_pq_is_default_builtin(size_t i)
 {
-    return !hybrid_sig_pq_is_mldsa(i);
+    size_t j;
+
+    for (j = 0; hybrid_default_builtin_sig_pqs[j] != NULL; j++)
+        if (strcmp(hybrid_sig_table[i].alg2_name,
+                   hybrid_default_builtin_sig_pqs[j]) == 0)
+            return 1;
+    return 0;
 }
 
 /*
