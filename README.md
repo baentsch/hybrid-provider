@@ -26,7 +26,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 47 hybrid KEMs + 26 hybrid signatures = 73 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 125 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 73 hybrids (95 total).
+**Algorithms served:** 48 hybrid KEMs + 26 hybrid signatures = 74 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 126 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 74 hybrids (96 total).
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -46,7 +46,10 @@ from [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) only.
 **MLX — byte-compatible with OpenSSL's built-in MLX KEM**
 (RFC 10024, formerly draft-ietf-tls-ecdhe-mlkem), interoperable with the default
 provider. RFC 10024 defines the first three; `X448MLKEM1024` is an OpenSSL
-default-provider extension (not in the RFC, no TLS code point):
+default-provider extension (not in the RFC, no TLS code point); `curveSM2MLKEM768`
+is a default-provider group added in OpenSSL 4.0 (RFC 8998 SM2 curve), served here
+only where the default provider supplies the `curveSM2` component (OpenSSL 4.0+,
+non-FIPS):
 
 | Algorithm | Components |
 |---|---|
@@ -54,6 +57,7 @@ default-provider extension (not in the RFC, no TLS code point):
 | `X448MLKEM1024` | X448 + ML-KEM-1024 |
 | `SecP256r1MLKEM768` | ECDH P-256 + ML-KEM-768 |
 | `SecP384r1MLKEM1024` | ECDH P-384 + ML-KEM-1024 |
+| `curveSM2MLKEM768` | SM2 curve + ML-KEM-768 (OpenSSL 4.0+) |
 
 Whatever the OpenSSL default provider already serves, this provider **cedes to
 it by default**: on load it detects every algorithm the default provider

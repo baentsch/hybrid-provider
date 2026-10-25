@@ -170,6 +170,22 @@ static void run(const char *kind, int (*fn)(OSSL_LIB_CTX *, const char *),
     }
 }
 
+/* Can a component algorithm be instantiated in this build (fetch + keygen_init,
+ * the same provider-agnostic probe the provider's capability advertiser uses)?
+ * A hybrid can only be exercised where BOTH its components resolve: curveSM2 (the
+ * classical half of curveSM2MLKEM768) exists only in the default provider of
+ * OpenSSL 4.0+ and is absent under FIPS, so below 4.0 that row self-skips — it is
+ * not an oqsprovider hybrid being replaced anyway. */
+static int component_instantiable(OSSL_LIB_CTX *ctx, const char *name)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, name, NULL);
+    int ok = (c != NULL && EVP_PKEY_keygen_init(c) > 0);
+
+    EVP_PKEY_CTX_free(c);
+    ERR_clear_error();
+    return ok;
+}
+
 /* Does `prov` serve algorithm `alg` (KEM or signature)? */
 static int provider_serves(OSSL_LIB_CTX *ctx, const char *alg, const char *prov,
                            int is_kem)
@@ -249,6 +265,15 @@ int main(void)
          * hybrid-provider-only and replace nothing oqsprovider served (#78). */
         if (hybrid_kem_combiner[i] != HYBRID_COMBINER_CONCAT)
             continue;
+        /* Skip rows whose components are not instantiable here (curveSM2MLKEM768
+         * below OpenSSL 4.0); the drop-in applies only where the alg is served. */
+        if (!component_instantiable(ctx, hybrid_kem_table[i].alg1_name)
+                || !component_instantiable(ctx, hybrid_kem_table[i].alg2_name)) {
+            printf("  %-26s kem ... SKIP (component unavailable)\n",
+                   hybrid_kem_table[i].hybrid_name);
+            skipped++;
+            continue;
+        }
         run("kem", kem_roundtrip, ctx, hybrid_kem_table[i].hybrid_name);
     }
 

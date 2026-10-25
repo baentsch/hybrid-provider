@@ -37,6 +37,7 @@
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/core_names.h>
+#include <openssl/params.h>
 #include <openssl/provider.h>
 #include <openssl/x509.h>
 #include <openssl/err.h>
@@ -61,20 +62,36 @@ static EVP_PKEY *gen(OSSL_LIB_CTX *ctx, const char *alg)
 }
 
 /*
- * Can the PQ component be generated in the running provider mix? Probes the exact
- * fetch name the provider uses internally for the component (hybrid_component_keygen
- * calls EVP_PKEY_CTX_new_from_name with this same name), so a failure here means
- * the component's provider is genuinely absent — the row self-skips — as opposed
- * to a hybrid keygen failure with the component present, which is a real bug.
+ * Can a component (PQ or classical) be generated in the running provider mix?
+ * Probes the exact fetch name + EC group the provider uses internally
+ * (hybrid_component_keygen calls EVP_PKEY_CTX_new_from_name with this same name),
+ * so a failure here means the component's provider is genuinely absent — the row
+ * self-skips — as opposed to a hybrid keygen failure with both components present,
+ * which is a real bug. Used for the PQ half (oqsprovider families, group NULL) and
+ * the classical half (curveSM2, which needs the default provider of OpenSSL 4.0+
+ * and is absent under FIPS).
  */
-static int pq_available(OSSL_LIB_CTX *ctx, const char *pq_alg)
+static int component_available(OSSL_LIB_CTX *ctx, const char *alg,
+                               const char *group)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, pq_alg, NULL);
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, alg, NULL);
     EVP_PKEY *k = NULL;
     int ok = 0;
 
-    if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &k) > 0)
+    if (c == NULL || EVP_PKEY_keygen_init(c) <= 0)
+        goto end;
+    if (group != NULL) {
+        OSSL_PARAM p[2];
+
+        p[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
+                                                (char *)group, 0);
+        p[1] = OSSL_PARAM_construct_end();
+        if (EVP_PKEY_CTX_set_params(c, p) <= 0)
+            goto end;
+    }
+    if (EVP_PKEY_keygen(c, &k) > 0)
         ok = 1;
+end:
     EVP_PKEY_free(k);
     EVP_PKEY_CTX_free(c);
     ERR_clear_error();
@@ -82,27 +99,47 @@ static int pq_available(OSSL_LIB_CTX *ctx, const char *pq_alg)
 }
 
 /*
- * Can a standalone key of this PQ algorithm be serialized to SubjectPublicKeyInfo
- * *and* PKCS#8 by its own provider? If yes, the hybrid's component extraction must
- * succeed too, so an extraction failure is a real bug (FAIL) — not a skip. If no
- * (the oqs research KEMs Frodo/BIKE/HQC, which get no standalone encoding even
- * with OQS_KEM_ENCODERS=ON — they carry no OID for the encode path), extraction
- * genuinely cannot work and the row legitimately self-skips. This mirrors exactly
- * what the provider's extraction params do (i2d_PUBKEY / EVP_PKEY2PKCS8 on the
- * component), so it keeps skips trustworthy without hardcoding an allowlist.
+ * Can a standalone key of this component algorithm be serialized to
+ * SubjectPublicKeyInfo *and* PKCS#8 by its own provider? If yes, the hybrid's
+ * component extraction must succeed too, so an extraction failure is a real bug
+ * (FAIL) — not a skip. If no, extraction genuinely cannot work and the row
+ * legitimately self-skips. Two component kinds are non-serializable standalone:
+ *   - the oqs research KEMs Frodo/BIKE/HQC (PQ half), which get no standalone
+ *     encoding even with OQS_KEM_ENCODERS=ON — they carry no OID for the encode
+ *     path; and
+ *   - curveSM2 (the classical half of curveSM2MLKEM768): the default provider
+ *     can keygen it but ships no SPKI/PKCS8 encoder for it ("No encoders were
+ *     found"), so a standalone curveSM2 key cannot be serialized either.
+ * `group` is the EC group name for EC-family components (NULL for X25519/X448,
+ * RSA, the PQ halves). This mirrors exactly what the provider's extraction params
+ * do (i2d_PUBKEY / EVP_PKEY2PKCS8 on the component), so it keeps skips
+ * trustworthy without hardcoding an allowlist.
  */
-static int pq_serializable(OSSL_LIB_CTX *ctx, const char *pq_alg)
+static int component_serializable(OSSL_LIB_CTX *ctx, const char *alg,
+                                  const char *group)
 {
-    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(ctx, pq_alg, NULL);
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(ctx, alg, NULL);
     EVP_PKEY *k = NULL;
     PKCS8_PRIV_KEY_INFO *p8 = NULL;
     unsigned char *der = NULL;
     int ok = 0;
 
-    if (g != NULL && EVP_PKEY_keygen_init(g) > 0 && EVP_PKEY_keygen(g, &k) > 0
+    if (g == NULL || EVP_PKEY_keygen_init(g) <= 0)
+        goto end;
+    if (group != NULL) {
+        OSSL_PARAM p[2];
+
+        p[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
+                                                (char *)group, 0);
+        p[1] = OSSL_PARAM_construct_end();
+        if (EVP_PKEY_CTX_set_params(g, p) <= 0)
+            goto end;
+    }
+    if (EVP_PKEY_keygen(g, &k) > 0
             && i2d_PUBKEY(k, &der) > 0
             && (p8 = EVP_PKEY2PKCS8(k)) != NULL)
         ok = 1;
+end:
     PKCS8_PRIV_KEY_INFO_free(p8);
     OPENSSL_free(der);
     EVP_PKEY_free(k);
@@ -230,7 +267,8 @@ static EVP_PKEY *import_pub(OSSL_LIB_CTX *ctx, const char *alg,
 }
 
 static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
-                  const char *pq_alg)
+                  const char *pq_alg, const char *classic_alg,
+                  const char *classic_group)
 {
     EVP_PKEY *key = NULL, *cpub = NULL, *qpub = NULL;
     EVP_PKEY *cpriv = NULL, *qpriv = NULL, *composed_key = NULL;
@@ -242,11 +280,15 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
     fflush(stdout);
 
     if ((key = gen(ctx, alg)) == NULL) {
-        /* A keygen failure is only benign when a component provider is absent
-         * (the PQ half — the classical half is always default-provider). If the
-         * PQ component *can* be generated here, hybrid keygen must not fail. */
-        if (!pq_available(ctx, pq_alg)) {
-            printf("SKIP (PQ component provider absent)\n");
+        /* A keygen failure is only benign when a component provider is absent:
+         * the PQ half (oqsprovider families) or the classical half (curveSM2,
+         * which needs the default provider of OpenSSL 4.0+ and is absent under
+         * FIPS). If BOTH components can be generated here, hybrid keygen must not
+         * fail. */
+        if (!component_available(ctx, pq_alg, NULL)
+                || (classic_alg != NULL
+                    && !component_available(ctx, classic_alg, classic_group))) {
+            printf("SKIP (component provider absent)\n");
             skipped++; tests--; ERR_clear_error();
         } else {
             printf("FAIL (keygen)\n");
@@ -269,9 +311,21 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
     cpub = extract_pub(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PUB);
     cpriv = extract_priv(ctx, key, HYBRID_PKEY_PARAM_CLASSIC_PRIV);
     if (cpub == NULL || cpriv == NULL) {
-        printf("FAIL (classical extraction: pub=%d priv=%d)\n",
-               cpub != NULL, cpriv != NULL);
-        ERR_print_errors_fp(stdout); failed++; goto done;
+        /* The classical half is standalone-serializable for every family except
+         * curveSM2 (the default provider keygens it but ships no encoder), which
+         * self-skips here just as the research-KEM PQ halves do below — but only
+         * after confirming the component genuinely cannot be serialized; an
+         * otherwise-serializable component failing to extract is a real bug. */
+        if (classic_alg != NULL
+                && !component_serializable(ctx, classic_alg, classic_group)) {
+            printf("SKIP (classical component not serializable by its provider)\n");
+            skipped++; tests--; ERR_clear_error();
+        } else {
+            printf("FAIL (classical extraction: pub=%d priv=%d)\n",
+                   cpub != NULL, cpriv != NULL);
+            ERR_print_errors_fp(stdout); failed++;
+        }
+        goto done;
     }
     if (EVP_PKEY_eq(cpriv, cpub) != 1) {
         printf("FAIL (classical priv/pub inconsistent)\n");
@@ -282,7 +336,7 @@ static void check(OSSL_LIB_CTX *ctx, const char *alg, enum family fam,
     if (qpub == NULL || qpriv == NULL) {
         /* Only a genuine "component cannot be serialized standalone" is a skip;
          * if the component IS serializable, the hybrid must extract it too. */
-        if (pq_serializable(ctx, pq_alg)) {
+        if (component_serializable(ctx, pq_alg, NULL)) {
             printf("FAIL (PQ extraction pub=%d priv=%d, but component IS "
                    "serializable standalone)\n", qpub != NULL, qpriv != NULL);
             ERR_print_errors_fp(stdout); failed++;
@@ -396,14 +450,17 @@ int main(void)
      * whose provider simply is not loaded here. */
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         check(ctx, hybrid_kem_table[i].hybrid_name, HYBRID,
-              hybrid_kem_table[i].alg2_name);
+              hybrid_kem_table[i].alg2_name, hybrid_kem_table[i].alg1_name,
+              hybrid_kem_table[i].alg1_group);
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         check(ctx, hybrid_sig_table[i].hybrid_name, HYBRID,
-              hybrid_sig_table[i].alg2_name);
+              hybrid_sig_table[i].alg2_name, hybrid_sig_table[i].alg1_name,
+              hybrid_sig_table[i].alg1_group);
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
         check(ctx, composite_sig_table[i].name, COMPOSITE,
-              composite_sig_table[i].pq_alg);
+              composite_sig_table[i].pq_alg, composite_sig_table[i].trad_alg,
+              composite_sig_table[i].trad_group);
 #endif
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
