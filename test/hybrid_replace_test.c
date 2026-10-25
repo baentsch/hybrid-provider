@@ -40,40 +40,23 @@
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
+#include "hybrid_prov.h"      /* HYBRID_KEM/SIG tables + origin side-tables (#78) */
+#include "composite_prov.h"   /* COMPOSITE_SIG_LIST master table (always compiled) */
 
 static int tests = 0, passed = 0, failed = 0, skipped = 0;
 
-/* Hybrid KEMs: MLX (default-compatible) + every OQS-legacy family. */
-static const char *kem_hybrids[] = {
-    /* MLX */
-    "X25519MLKEM768", "SecP256r1MLKEM768", "X448MLKEM1024", "SecP384r1MLKEM1024",
-    /* OQS-legacy ML-KEM */
-    "x25519_mlkem512", "SecP256r1MLKEM512", "bp256_mlkem512", "p384_mlkem768",
-    "x448_mlkem768", "bp384_mlkem768", "p521_mlkem1024", "bp512_mlkem1024",
-    /* FrodoKEM / eFrodoKEM / BIKE / HQC — PQ base is oqsprovider-only */
-    "p256_frodo640aes", "x25519_frodo640aes", "p384_frodo976shake",
-    "p521_frodo1344aes", "p256_efrodo640aes", "x25519_efrodo640shake",
-    "p256_bikel1", "x25519_bikel1", "p384_bikel3", "p521_bikel5",
-    "p256_hqc1", "x25519_hqc1", "p384_hqc3", "p521_hqc5",
-};
+/*
+ * Hybrid KEMs exercised for the drop-in: every concat/"replaceable" row (MLX +
+ * all OQS-legacy families), derived from the master table instead of a hand
+ * sample (issue #78). The non-concat X-Wing rows are excluded — they are
+ * hybrid-provider-only and replace nothing oqsprovider ever served.
+ */
 
-/* Hybrid signatures across every family. */
-static const char *sig_hybrids[] = {
-    "p256_mldsa44", "rsa3072_mldsa44", "p384_mldsa65", "p521_mldsa87",
-    "p256_falcon512", "rsa3072_falcon512", "p521_falcon1024",
-    "p256_falconpadded512", "p256_mayo1", "p256_mayo2", "p384_mayo3",
-    "p521_mayo5", "p256_OV_Is_pkc", "p256_OV_Ip_pkc",
-    "p256_snova2454", "p384_snova2455", "p521_snova2965",
-    "p256_mqom2cat1gf16fastr5", "p384_mqom2cat3gf16fastr5",
-    "p521_mqom2cat5gf16fastr5",
-};
-
-/* Composite (LAMPS) signatures — only when hybrid-provider was built with them. */
-static const char *composite_sigs[] = {
-    "mldsa44_ecdsa_p256", "mldsa44_ed25519", "mldsa44_rsa2048_pss",
-    "mldsa65_ecdsa_p384", "mldsa65_ed25519", "mldsa87_ecdsa_p521",
-    "mldsa87_ed448",
-};
+/*
+ * Hybrid signatures (every HYBRID_SIG_LIST row) and composite signatures (every
+ * COMPOSITE_SIG_LIST row) are iterated straight from the master tables below —
+ * no hand-maintained name lists (issue #78).
+ */
 
 /* KEM self-consistency via provider=hybrid (keygen, encaps, decaps, ss match). */
 static int kem_roundtrip(OSSL_LIB_CTX *ctx, const char *alg)
@@ -261,33 +244,39 @@ int main(void)
 
     /* Hybrid KEMs — OpenSSL 3.0+ (always). */
     printf("hybrid KEMs (>= 3.0) served by hybrid-provider, PQ from oqsprovider\n");
-    for (i = 0; i < sizeof(kem_hybrids) / sizeof(kem_hybrids[0]); i++)
-        run("kem", kem_roundtrip, ctx, kem_hybrids[i]);
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+        /* Replaceable = the raw-concat hybrids; the non-concat X-Wing rows are
+         * hybrid-provider-only and replace nothing oqsprovider served (#78). */
+        if (hybrid_kem_combiner[i] != HYBRID_COMBINER_CONCAT)
+            continue;
+        run("kem", kem_roundtrip, ctx, hybrid_kem_table[i].hybrid_name);
+    }
 
     /* Hybrid signatures — OpenSSL 3.2+. */
     printf("\nhybrid signatures (>= 3.2)\n");
     if (ver >= 0x30200000L) {
-        for (i = 0; i < sizeof(sig_hybrids) / sizeof(sig_hybrids[0]); i++)
-            run("sign/verify", sig_roundtrip, ctx, sig_hybrids[i]);
+        for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
+            run("sign/verify", sig_roundtrip, ctx, hybrid_sig_table[i].hybrid_name);
     } else {
-        size_t n = sizeof(sig_hybrids) / sizeof(sig_hybrids[0]);
-        printf("  SKIP %zu sigs (need OpenSSL 3.2+)\n", n);
-        skipped += (int)n;
+        printf("  SKIP %zu sigs (need OpenSSL 3.2+)\n",
+               (size_t)HYBRID_SIG_ALG_COUNT);
+        skipped += (int)HYBRID_SIG_ALG_COUNT;
     }
 
     /* Composite signatures — OpenSSL 3.5+, and only if built with them. */
     printf("\ncomposite signatures (>= 3.5)\n");
     if (ver < 0x30500000L) {
-        size_t n = sizeof(composite_sigs) / sizeof(composite_sigs[0]);
-        printf("  SKIP %zu composite (need OpenSSL 3.5+)\n", n);
-        skipped += (int)n;
-    } else if (!provider_serves(ctx, composite_sigs[0], "provider=hybrid", 0)) {
-        size_t n = sizeof(composite_sigs) / sizeof(composite_sigs[0]);
-        printf("  SKIP %zu composite (hybrid-provider built without composite)\n", n);
-        skipped += (int)n;
+        printf("  SKIP %zu composite (need OpenSSL 3.5+)\n",
+               (size_t)COMPOSITE_SIG_ALG_COUNT);
+        skipped += (int)COMPOSITE_SIG_ALG_COUNT;
+    } else if (!provider_serves(ctx, composite_sig_table[0].name,
+                                "provider=hybrid", 0)) {
+        printf("  SKIP %zu composite (hybrid-provider built without composite)\n",
+               (size_t)COMPOSITE_SIG_ALG_COUNT);
+        skipped += (int)COMPOSITE_SIG_ALG_COUNT;
     } else {
-        for (i = 0; i < sizeof(composite_sigs) / sizeof(composite_sigs[0]); i++)
-            run("sign/verify", sig_roundtrip, ctx, composite_sigs[i]);
+        for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
+            run("sign/verify", sig_roundtrip, ctx, composite_sig_table[i].name);
     }
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",

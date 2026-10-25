@@ -19,25 +19,26 @@
 #include <openssl/provider.h>
 #include <openssl/core_names.h>
 #include <openssl/err.h>
+#include "hybrid_prov.h"   /* HYBRID_KEM_* table + origin side-table (issue #78) */
 
-static int tests = 0, passed = 0, failed = 0;
+static int tests = 0, passed = 0, failed = 0, skipped = 0;
 
-static const char *legacy_kems[] = {
-    /* ML-KEM hybrids */
-    "x25519_mlkem512", "SecP256r1MLKEM512", "bp256_mlkem512",
-    "p384_mlkem768",   "x448_mlkem768", "bp384_mlkem768",
-    "p521_mlkem1024",  "bp512_mlkem1024",
-    /* FrodoKEM hybrids */
-    "p256_frodo640aes", "x25519_frodo640aes",
-    "p256_frodo640shake", "x25519_frodo640shake",
-    "p384_frodo976aes", "x448_frodo976aes",
-    "p384_frodo976shake", "x448_frodo976shake",
-    "p521_frodo1344aes", "p521_frodo1344shake",
-    /* BIKE hybrids */
-    "p256_bikel1", "x25519_bikel1", "p384_bikel3", "x448_bikel3", "p521_bikel5",
-    /* HQC hybrids */
-    "p256_hqc1", "x25519_hqc1", "p384_hqc3", "x448_hqc3", "p521_hqc5",
-};
+/*
+ * The cross-encapsulation set is every hybrid whose interop peer is oqsprovider,
+ * derived from the master table (issue #78): raw-concat rows (not the non-concat
+ * X-Wing rows) that are not default-provider built-ins. Which of these a given
+ * oqsprovider build actually serves as a *hybrid* varies by version (e.g. eFrodo
+ * hybrids are absent from older builds), so each alg is runtime-probed and
+ * skipped — not failed — when the peer does not provide it. */
+static int provider_has(OSSL_LIB_CTX *ctx, const char *alg, const char *prop)
+{
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(ctx, alg, prop);
+    int ok = g != NULL && EVP_PKEY_keygen_init(g) > 0;
+
+    ERR_clear_error();
+    EVP_PKEY_CTX_free(g);
+    return ok;
+}
 
 /*
  * Import an encoded (raw-concat) public key into `prop`'s provider.
@@ -156,18 +157,11 @@ done:
     EVP_PKEY_CTX_free(d);
 }
 
-/* Hybrid sigs whose PQ base exists only in oqsprovider. */
-static const char *oqs_sigs[] = {
-    "p256_falcon512", "rsa3072_falcon512", "p521_falcon1024",
-    "p256_falconpadded512", "rsa3072_falconpadded512", "p521_falconpadded1024",
-    "p256_mayo1", "p256_mayo2", "p384_mayo3", "p521_mayo5",
-    "p256_OV_Is_pkc", "p256_OV_Ip_pkc",
-    "p256_OV_Is_pkc_skc", "p256_OV_Ip_pkc_skc",
-    "p256_snova2454", "p256_snova2454esk", "p256_snova37172",
-    "p384_snova2455", "p521_snova2965",
-    "p256_mqom2cat1gf16fastr5", "p384_mqom2cat3gf16fastr5",
-    "p521_mqom2cat5gf16fastr5",
-};
+/*
+ * Hybrid sigs whose PQ base exists only in oqsprovider are the origin==OQS_ONLY
+ * rows of the master sig table (every family but ML-DSA) — derived, not relisted
+ * (issue #78).
+ */
 
 /*
  * Sign/verify self-consistency for a hybrid signature composed by the hybrid
@@ -239,7 +233,7 @@ int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
     const char *mods = getenv("OPENSSL_MODULES");
-    size_t i, n = sizeof(legacy_kems) / sizeof(legacy_kems[0]);
+    size_t i;
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
@@ -255,20 +249,34 @@ int main(void)
         return 0;
     }
 
-    printf("hybrid <-> oqsprovider KEM interop (OQS-legacy ML-KEM hybrids)\n");
+    printf("hybrid <-> oqsprovider KEM interop (oqsprovider-peer hybrids)\n");
     printf("=============================================================\n");
-    for (i = 0; i < n; i++) {
-        cross(ctx, legacy_kems[i], "provider=hybrid", "provider=oqsprovider",
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+        const char *alg = hybrid_kem_table[i].hybrid_name;
+
+        /* oqsprovider-peer hybrids: raw-concat (not the non-concat X-Wing rows)
+         * and not a default-provider built-in (issue #78). */
+        if (hybrid_kem_combiner[i] != HYBRID_COMBINER_CONCAT
+                || hybrid_kem_is_default_builtin(alg))
+            continue;
+        if (!provider_has(ctx, alg, "provider=oqsprovider")) {
+            printf("  %-16s SKIPPED (oqsprovider does not serve it here)\n", alg);
+            skipped += 2;    /* both directions */
+            continue;
+        }
+        cross(ctx, alg, "provider=hybrid", "provider=oqsprovider",
               "hybrid-gen / oqs-encaps");
-        cross(ctx, legacy_kems[i], "provider=oqsprovider", "provider=hybrid",
+        cross(ctx, alg, "provider=oqsprovider", "provider=hybrid",
               "oqs-gen / hybrid-encaps");
     }
     printf("\nhybrid signatures with oqsprovider PQ base (self-consistency)\n");
     printf("=============================================================\n");
-    for (i = 0; i < sizeof(oqs_sigs) / sizeof(oqs_sigs[0]); i++)
-        sig_selfcheck(ctx, oqs_sigs[i]);
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
+        if (!hybrid_sig_pq_is_default_builtin(i))   /* PQ base only oqsprovider has */
+            sig_selfcheck(ctx, hybrid_sig_table[i].hybrid_name);
 
-    printf("\nResults: %d/%d passed, %d failed\n", passed, tests, failed);
+    printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
+           passed, tests, failed, skipped);
 
     OSSL_LIB_CTX_free(ctx);
     return failed == 0 ? 0 : 1;

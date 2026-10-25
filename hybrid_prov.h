@@ -9,6 +9,7 @@
 #include <openssl/core.h>
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
+#include <openssl/opensslv.h>   /* OPENSSL_VERSION_NUMBER (default-builtin set) */
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/err.h>
@@ -481,6 +482,43 @@ static const int hybrid_kem_combiner[HYBRID_KEM_ALG_COUNT] = {
 };
 
 /*
+ * The one piece of interop classification NOT derivable from the master row
+ * itself: which hybrids the OpenSSL DEFAULT provider ships as built-ins (the
+ * standardized MLX groups). Everything else the interop tests need is derived
+ * from data already in the table — the combiner selector (concat vs the
+ * non-concat X-Wing rows) and the PQ component name (hybrid_kem_table[i].
+ * alg2_name: "MLKEM*" vs Frodo/BIKE/HQC) — so NO per-row provenance table is
+ * needed (issue #78). Adding an ordinary new hybrid is therefore one
+ * HYBRID_KEM_LIST row (plus its hybrid_kem_sizes[] row), nothing here.
+ *
+ * This set is a pure function of OPENSSL_VERSION_NUMBER: OpenSSL never adds
+ * features to a released branch, so each version's built-in MLX family is fixed
+ * and known at compile time — no runtime probe, no generated file. Native MLX
+ * landed in 3.5. Edit this list ONLY when adding support for a newer OpenSSL
+ * release that grew the family (e.g. 4.0 added curveSM2MLKEM768 — serving it,
+ * and a default-provider coverage guard, are tracked separately). NULL-terminated
+ * so the array is never zero-length on a pre-3.5 build.
+ */
+static const char *const hybrid_default_builtin_kems[] = {
+#if OPENSSL_VERSION_NUMBER >= 0x30500000L
+    "X25519MLKEM768", "SecP256r1MLKEM768", "X448MLKEM1024", "SecP384r1MLKEM1024",
+#endif
+    NULL
+};
+
+/* True if `name` is a hybrid KEM the default provider ships built-in (list
+ * above). static inline so unused translation units cost nothing / no warning. */
+static inline int hybrid_kem_is_default_builtin(const char *name)
+{
+    size_t i;
+
+    for (i = 0; hybrid_default_builtin_kems[i] != NULL; i++)
+        if (strcmp(name, hybrid_default_builtin_kems[i]) == 0)
+            return 1;
+    return 0;
+}
+
+/*
  * Master hybrid-SIG list — single source of truth, mirroring HYBRID_KEM_LIST.
  * These are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ), matching
  * its names, OIDs and wire format. Component sizes are discovered at runtime.
@@ -573,6 +611,44 @@ enum { HYBRID_SIG_LIST(HYBRID_SIG_IDX_ROW) HYBRID_SIG_ALG_COUNT_ENUM };
 
 #define HYBRID_SIG_ALG_COUNT \
     (sizeof(hybrid_sig_table) / sizeof(hybrid_sig_table[0]))
+
+/*
+ * The one piece of signature interop classification NOT derivable from the
+ * master row itself: which hybrids' PQ component the OpenSSL DEFAULT provider
+ * ships built-in — so the hybrid keygens with the default alone. Mirrors the
+ * KEM side (hybrid_default_builtin_kems[]), but lists the PQ *component* names:
+ * unlike KEMs, the default provider ships no built-in hybrid signatures, only
+ * the PQ primitive (ML-DSA). Everything else the sig interop tests need is
+ * derived from data already in the row (issue #78).
+ *
+ * Like the KEM list this is a pure function of OPENSSL_VERSION_NUMBER: native
+ * ML-DSA landed in 3.5, so on 3.0–3.4 the list is empty and every hybrid sig
+ * (ML-DSA included) is oqsprovider-only, which is correct for those releases.
+ * Edit ONLY when a newer OpenSSL grows its built-in PQ-signature family.
+ * NULL-terminated so the array is never zero-length on a pre-3.5 build.
+ */
+static const char *const hybrid_default_builtin_sig_pqs[] = {
+#if OPENSSL_VERSION_NUMBER >= 0x30500000L
+    "MLDSA44", "MLDSA65", "MLDSA87",
+#endif
+    NULL
+};
+
+/* True if hybrid sig i's PQ component (alg2_name) is one the default provider
+ * ships built-in. Its complement is "oqsprovider-only" (Falcon, Falcon-padded,
+ * MAYO, OV, SNOVA, MQOM — and, below 3.5, ML-DSA too), spelled !... at the one
+ * call site, mirroring hybrid_kem_is_default_builtin. static inline so unused
+ * TUs cost nothing / no warning. */
+static inline int hybrid_sig_pq_is_default_builtin(size_t i)
+{
+    size_t j;
+
+    for (j = 0; hybrid_default_builtin_sig_pqs[j] != NULL; j++)
+        if (strcmp(hybrid_sig_table[i].alg2_name,
+                   hybrid_default_builtin_sig_pqs[j]) == 0)
+            return 1;
+    return 0;
+}
 
 /*
  * Constant component sizes, one row per hybrid signature in HYBRID_SIG_LIST

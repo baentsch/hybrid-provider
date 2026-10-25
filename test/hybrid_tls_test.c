@@ -50,16 +50,17 @@ static int fail_count = 0;
     ERR_print_errors_fp(stderr); \
 } while (0)
 
-/* Standardized TLS codepoints (RFC 10024, ex draft-ietf-tls-ecdhe-mlkem). */
-static const struct {
-    const char *name;
-    int codepoint;
-} GROUPS[] = {
-    { "X25519MLKEM768",     0x11EC },
-    { "SecP256r1MLKEM768",  0x11EB },
-    { "SecP384r1MLKEM1024", 0x11ED },
-};
-#define N_GROUPS (sizeof(GROUPS) / sizeof(GROUPS[0]))
+/*
+ * The default-provider MLX groups (standardized TLS code points, RFC 10024, ex
+ * draft-ietf-tls-ecdhe-mlkem): the master-table rows the default provider ships
+ * built-in (hybrid_kem_is_default_builtin) that carry a TLS code point; names
+ * and code points live in HYBRID_KEM_LIST, not here (issue #78). X448MLKEM1024
+ * is built-in but KEM-only (code point 0), so the "tls_codepoint != 0" half of
+ * the filter excludes it, exactly as the old 3-entry GROUPS[] did.
+ */
+#define IS_MLX_TLS_GROUP(g)                                                    \
+    (hybrid_kem_is_default_builtin(hybrid_kem_table[(g)].hybrid_name)          \
+     && hybrid_kem_table[(g)].tls_codepoint != 0)
 
 /*
  * Records the TLS-GROUP code points the hybrid provider advertises, so the
@@ -110,7 +111,7 @@ static long advertised_codepoint(const char *name)
  * to the expected provider, so we know the handshake exercises the intended
  * implementation rather than silently falling through to the default provider.
  */
-static int kem_provider_is(OSSL_LIB_CTX *libctx, const char *propq,
+static int kem_handled_by_provider(OSSL_LIB_CTX *libctx, const char *propq,
                            const char *alg, const char *want_provider)
 {
     EVP_KEM *kem = EVP_KEM_fetch(libctx, alg, propq);
@@ -449,22 +450,23 @@ int main(void)
      * context selects the default provider. This proves the handshakes below
      * exercise the hybrid implementation, not a silent default fallback.
      */
-    for (g = 0; g < N_GROUPS; g++) {
+    for (g = 0; g < HYBRID_KEM_ALG_COUNT; g++) {
+        const char *name = hybrid_kem_table[g].hybrid_name;
         char t[128];
 
-        snprintf(t, sizeof(t), "%s: '?provider=hybrid' routes to hybrid",
-                 GROUPS[g].name);
+        if (!IS_MLX_TLS_GROUP(g))
+            continue;
+
+        snprintf(t, sizeof(t), "%s: '?provider=hybrid' routes to hybrid", name);
         TEST_START(t);
-        if (kem_provider_is(hyb_ctx, "?provider=hybrid", GROUPS[g].name,
-                            "hybrid"))
+        if (kem_handled_by_provider(hyb_ctx, "?provider=hybrid", name, "hybrid"))
             TEST_PASS();
         else
             TEST_FAIL("group did not resolve to hybrid provider");
 
-        snprintf(t, sizeof(t), "%s: default context routes to default",
-                 GROUPS[g].name);
+        snprintf(t, sizeof(t), "%s: default context routes to default", name);
         TEST_START(t);
-        if (kem_provider_is(dflt_ctx, NULL, GROUPS[g].name, "default"))
+        if (kem_handled_by_provider(dflt_ctx, NULL, name, "default"))
             TEST_PASS();
         else
             TEST_FAIL("group did not resolve to default provider");
@@ -478,15 +480,20 @@ int main(void)
      * code point, closing advertised -> wire end to end.
      */
     OSSL_PROVIDER_get_capabilities(hyb, "TLS-GROUP", collect_group, NULL);
-    for (g = 0; g < N_GROUPS; g++) {
+    for (g = 0; g < HYBRID_KEM_ALG_COUNT; g++) {
+        const char *name = hybrid_kem_table[g].hybrid_name;
+        int codepoint = hybrid_kem_table[g].tls_codepoint;
         char t[128];
         long adv;
 
+        if (!IS_MLX_TLS_GROUP(g))
+            continue;
+
         snprintf(t, sizeof(t), "%s: advertised code point == 0x%04x",
-                 GROUPS[g].name, GROUPS[g].codepoint);
+                 name, codepoint);
         TEST_START(t);
-        adv = advertised_codepoint(GROUPS[g].name);
-        if (adv == GROUPS[g].codepoint)
+        adv = advertised_codepoint(name);
+        if (adv == codepoint)
             TEST_PASS();
         else if (adv < 0)
             TEST_FAIL("group not advertised by hybrid provider");
@@ -501,16 +508,19 @@ int main(void)
      * keygen here proves gen_init accepted it. (The handshakes below rely on the
      * same path; this isolates it as an explicit unit check.)
      */
-    for (g = 0; g < N_GROUPS; g++) {
+    for (g = 0; g < HYBRID_KEM_ALG_COUNT; g++) {
+        const char *name = hybrid_kem_table[g].hybrid_name;
         char t[128];
         EVP_PKEY_CTX *kg;
         EVP_PKEY *pk = NULL;
 
+        if (!IS_MLX_TLS_GROUP(g))
+            continue;
+
         snprintf(t, sizeof(t), "%s: keymgmt gen_init accepts key-share selection",
-                 GROUPS[g].name);
+                 name);
         TEST_START(t);
-        kg = EVP_PKEY_CTX_new_from_name(hyb_ctx, GROUPS[g].name,
-                                        "?provider=hybrid");
+        kg = EVP_PKEY_CTX_new_from_name(hyb_ctx, name, "?provider=hybrid");
         if (kg != NULL && EVP_PKEY_keygen_init(kg) > 0
                 && EVP_PKEY_keygen(kg, &pk) > 0 && pk != NULL)
             TEST_PASS();
@@ -522,23 +532,26 @@ int main(void)
 
     /* "?provider=hybrid": prefer hybrid for the (colliding) group name, but
      * fall back to default for the X25519/EC/ML-KEM components. */
-    for (g = 0; g < N_GROUPS; g++) {
+    for (g = 0; g < HYBRID_KEM_ALG_COUNT; g++) {
+        const char *name = hybrid_kem_table[g].hybrid_name;
+        int codepoint = hybrid_kem_table[g].tls_codepoint;
         char t[128];
 
-        snprintf(t, sizeof(t), "%s: hybrid server <-> default client",
-                 GROUPS[g].name);
+        if (!IS_MLX_TLS_GROUP(g))
+            continue;
+
+        snprintf(t, sizeof(t), "%s: hybrid server <-> default client", name);
         TEST_START(t);
         if (run_handshake(hyb_ctx, "?provider=hybrid", dflt_ctx, NULL,
-                          GROUPS[g].name, GROUPS[g].codepoint))
+                          name, codepoint))
             TEST_PASS();
         else
             TEST_FAIL("handshake / keying-material mismatch");
 
-        snprintf(t, sizeof(t), "%s: default server <-> hybrid client",
-                 GROUPS[g].name);
+        snprintf(t, sizeof(t), "%s: default server <-> hybrid client", name);
         TEST_START(t);
         if (run_handshake(dflt_ctx, NULL, hyb_ctx, "?provider=hybrid",
-                          GROUPS[g].name, GROUPS[g].codepoint))
+                          name, codepoint))
             TEST_PASS();
         else
             TEST_FAIL("handshake / keying-material mismatch");
@@ -549,10 +562,10 @@ int main(void)
          * cleanly rather than derive a wrong secret or crash.
          */
         snprintf(t, sizeof(t), "%s: corrupted key_share -> clean handshake failure",
-                 GROUPS[g].name);
+                 name);
         TEST_START(t);
         if (run_handshake_tampered(hyb_ctx, "?provider=hybrid",
-                                   hyb_ctx, "?provider=hybrid", GROUPS[g].name))
+                                   hyb_ctx, "?provider=hybrid", name))
             TEST_PASS();
         else
             TEST_FAIL("corrupted key_share did not fail cleanly");
@@ -566,13 +579,13 @@ int main(void)
      * (not failed) when oqsprovider is unavailable.
      */
     {
-        static const struct { const char *name; int codepoint; } OQS_GROUPS[] = {
-            { "x25519_mlkem512", 0x11EA }, { "SecP256r1MLKEM512", 0x11E9 },
-            { "bp256_mlkem512",  0xFE20 }, { "p384_mlkem768", 0x2F4C },
-            { "x448_mlkem768",   0x2FB7 }, { "bp384_mlkem768", 0xFE21 },
-            { "p521_mlkem1024",  0x2F4D }, { "bp512_mlkem1024", 0xFE22 },
-        };
-        size_t n = sizeof(OQS_GROUPS) / sizeof(OQS_GROUPS[0]);
+        /*
+         * The OQS-legacy ML-KEM hybrid groups, derived from the master table
+         * (issue #78): ML-KEM-based (alg2 "MLKEM*"), NOT a default built-in, and
+         * carrying a TLS code point. ML-KEM base comes from the default provider,
+         * so the hybrid side needs no oqsprovider and the libctxs stay
+         * collision-free; names and code points live in HYBRID_KEM_LIST.
+         */
         OSSL_LIB_CTX *oqs_ctx = OSSL_LIB_CTX_new();
         OSSL_PROVIDER *od = NULL, *oq = NULL;
 
@@ -580,23 +593,30 @@ int main(void)
                 && (od = OSSL_PROVIDER_load(oqs_ctx, "default")) != NULL
                 && (oq = OSSL_PROVIDER_load(oqs_ctx, "oqsprovider")) != NULL) {
             printf("\n[hybrid <-> oqsprovider TLS interop]\n");
-            for (g = 0; g < n; g++) {
+            for (g = 0; g < HYBRID_KEM_ALG_COUNT; g++) {
+                const char *name;
+                int codepoint;
                 char t[128];
 
-                snprintf(t, sizeof(t), "%s: hybrid server <-> oqs client",
-                         OQS_GROUPS[g].name);
+                if (strncmp(hybrid_kem_table[g].alg2_name, "MLKEM", 5) != 0
+                        || hybrid_kem_is_default_builtin(hybrid_kem_table[g].hybrid_name)
+                        || hybrid_kem_table[g].tls_codepoint == 0)
+                    continue;
+                name = hybrid_kem_table[g].hybrid_name;
+                codepoint = hybrid_kem_table[g].tls_codepoint;
+
+                snprintf(t, sizeof(t), "%s: hybrid server <-> oqs client", name);
                 TEST_START(t);
                 if (run_handshake(hyb_ctx, "?provider=hybrid", oqs_ctx, NULL,
-                                  OQS_GROUPS[g].name, OQS_GROUPS[g].codepoint))
+                                  name, codepoint))
                     TEST_PASS();
                 else
                     TEST_FAIL("handshake / keying-material mismatch");
 
-                snprintf(t, sizeof(t), "%s: oqs server <-> hybrid client",
-                         OQS_GROUPS[g].name);
+                snprintf(t, sizeof(t), "%s: oqs server <-> hybrid client", name);
                 TEST_START(t);
                 if (run_handshake(oqs_ctx, NULL, hyb_ctx, "?provider=hybrid",
-                                  OQS_GROUPS[g].name, OQS_GROUPS[g].codepoint))
+                                  name, codepoint))
                     TEST_PASS();
                 else
                     TEST_FAIL("handshake / keying-material mismatch");

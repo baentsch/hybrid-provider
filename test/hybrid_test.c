@@ -15,6 +15,7 @@
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 #include <openssl/param_build.h>
+#include "hybrid_prov.h"   /* HYBRID_KEM/SIG tables + origin side-tables (#78) */
 
 /* OSSL_SIGNATURE_PARAM_CONTEXT_STRING landed in core_names.h in OpenSSL 3.2. The
  * context-string test below exercises an operable hybrid signature, which needs
@@ -1094,13 +1095,14 @@ int main(int argc, char **argv)
     const char *modulepath;
     int exit_code = 1;
 
-    static const char *algorithms[] = {
-        "X25519MLKEM768",
-        "SecP256r1MLKEM768",
-        "X448MLKEM1024",
-        "SecP384r1MLKEM1024",
-    };
-    size_t nalgs = sizeof(algorithms) / sizeof(algorithms[0]);
+    /* The default-provider built-in MLX KEMs, collected from the master table
+     * rather than relisted here (issue #78). */
+    const char *algorithms[HYBRID_KEM_ALG_COUNT];
+    size_t nalgs = 0;
+
+    for (size_t ti = 0; ti < HYBRID_KEM_ALG_COUNT; ti++)
+        if (hybrid_kem_is_default_builtin(hybrid_kem_table[ti].hybrid_name))
+            algorithms[nalgs++] = hybrid_kem_table[ti].hybrid_name;
 
     /* Use OPENSSL_MODULES env or build dir */
     modulepath = getenv("OPENSSL_MODULES");
@@ -1178,13 +1180,15 @@ int main(int argc, char **argv)
 
     /* --- Signature tests --- */
     {
-        static const char *sig_algorithms[] = {
-            "p256_mldsa44",
-            "rsa3072_mldsa44",
-            "p384_mldsa65",
-            "p521_mldsa87",
-        };
-        size_t nsigs = sizeof(sig_algorithms) / sizeof(sig_algorithms[0]);
+        /* Hybrids whose PQ base the default provider ships built-in (ML-DSA on
+         * 3.5+), so these run without oqsprovider — collected from the master
+         * sig table rather than relisted here (issue #78). */
+        const char *sig_algorithms[HYBRID_SIG_ALG_COUNT];
+        size_t nsigs = 0;
+
+        for (size_t ti = 0; ti < HYBRID_SIG_ALG_COUNT; ti++)
+            if (hybrid_sig_pq_is_default_builtin(ti))
+                sig_algorithms[nsigs++] = hybrid_sig_table[ti].hybrid_name;
 
         for (size_t i = 0; i < nsigs; i++) {
             const char *alg = sig_algorithms[i];

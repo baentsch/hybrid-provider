@@ -27,6 +27,8 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/bio.h>
+#include <openssl/core_names.h>
+#include "hybrid_prov.h"      /* HYBRID_ALG_NAME_MAX (advertised-name buffer) */
 
 static int tests, passed, failed;
 #define TEST_START(n) do { tests++; printf("  %s ... ", n); fflush(stdout); } while (0)
@@ -157,24 +159,91 @@ end:
     return ret;
 }
 
+/*
+ * Runtime derivation of the group set (issue #78 follow-up). Rather than
+ * hand-maintain the list, enumerate oqsprovider's live TLS-GROUP advertisement
+ * and keep exactly the groups that exercise the private component context.
+ */
+#define HYBRID_MAX_GROUPS 128
+static struct { char name[HYBRID_ALG_NAME_MAX]; int min_tls; } adv[HYBRID_MAX_GROUPS];
+static int nadv;
+
+/* Capability callback: record each advertised (group name -> min TLS version).
+ * oqsprovider encodes "enable_tls: false" (e.g. BIKE-L1) as min_tls == -1. */
+static int collect_groups(const OSSL_PARAM params[], void *arg)
+{
+    const OSSL_PARAM *pn =
+        OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_NAME);
+    const OSSL_PARAM *pm =
+        OSSL_PARAM_locate_const(params, OSSL_CAPABILITY_TLS_GROUP_MIN_TLS);
+    const char *name = NULL;
+    int mn = 0;
+
+    (void)arg;
+    if (pn != NULL && OSSL_PARAM_get_utf8_string_ptr(pn, &name)
+            && nadv < HYBRID_MAX_GROUPS) {
+        if (pm != NULL)
+            OSSL_PARAM_get_int(pm, &mn);
+        snprintf(adv[nadv].name, sizeof(adv[nadv].name), "%s", name);
+        adv[nadv].min_tls = mn;
+        nadv++;
+    }
+    return 1;
+}
+
+/* True iff the group name fetches as a KEM served by the hybrid provider. */
+static int resolves_to_hybrid(OSSL_LIB_CTX *ctx, const char *name)
+{
+    EVP_KEM *k = EVP_KEM_fetch(ctx, name, NULL);
+    int yes = k != NULL
+        && strcmp(OSSL_PROVIDER_get0_name(EVP_KEM_get0_provider(k)), "hybrid") == 0;
+
+    EVP_KEM_free(k);
+    ERR_clear_error();
+    return yes;
+}
+
+/* True iff a keypair for the group can actually be generated in ctx. In a
+ * default-only component context this succeeds for ML-KEM hybrids (default
+ * serves ML-KEM) but fails for Frodo/BIKE/HQC (PQ base only in oqsprovider). */
+static int can_keygen(OSSL_LIB_CTX *ctx, const char *name)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, name, NULL);
+    EVP_PKEY *k = NULL;
+    int ok = c != NULL && EVP_PKEY_keygen_init(c) > 0
+        && EVP_PKEY_generate(c, &k) > 0;
+
+    EVP_PKEY_free(k);
+    EVP_PKEY_CTX_free(c);
+    ERR_clear_error();
+    return ok;
+}
+
 int main(void)
 {
-    OSSL_LIB_CTX *app = NULL, *oqs = NULL;
+    OSSL_LIB_CTX *app = NULL, *oqs = NULL, *defonly = NULL;
     OSSL_PROVIDER *od = NULL, *oq = NULL;
     /*
-     * Representative Frodo/BIKE/HQC groups (PQ base only in oqsprovider).
-     * BIKE-L1 (p256_bikel1 etc.) is intentionally omitted: the oqsprovider peer
-     * does not negotiate BIKE-L1 groups over TLS in this build (its own
-     * client/server report "no suitable groups" / "no suitable key share"),
-     * while BIKE-L3/L5 do. BIKE-L1 KEM interop itself is covered in
-     * hybrid_oqs_test.
+     * The group set is derived at runtime from oqsprovider's own TLS-GROUP
+     * advertisement (issue #78) — NOT hand-maintained. A group qualifies when
+     * all three hold:
+     *   1. oqsprovider advertises it with min_tls != -1, i.e. it is actually
+     *      TLS-negotiable. oqsprovider encodes "enable_tls: false" as -1, so
+     *      BIKE-L1 (p256_bikel1, x25519_bikel1) drops out here automatically —
+     *      no hand-coded exclusion. (Its KEM interop is covered by hybrid_oqs_test.)
+     *   2. it resolves to the hybrid provider in the app ctx (a group we own).
+     *   3. its keypair cannot be generated from the default provider alone
+     *      (checked in `defonly` below) — this keeps the ML-KEM hybrids out
+     *      (default serves ML-KEM, so they would NOT exercise the private
+     *      component context) while keeping Frodo/BIKE/HQC in.
+     * The result follows an upstream rename/addition/re-point by itself. It is
+     * NOT a probe that drops groups which fail to handshake: membership is
+     * decided by the advertisement, so an advertised-usable group that fails to
+     * negotiate stays in the set and fails the test — the regression signal the
+     * old hand-curated contract existed to catch is preserved.
      */
-    static const char *groups[] = {
-        "p256_frodo640aes", "x25519_frodo640aes", "p384_frodo976aes",
-        "x448_bikel3", "p521_bikel5",
-        "p256_hqc1", "p384_hqc3", "p521_hqc5",
-    };
-    size_t i, n = sizeof(groups) / sizeof(groups[0]);
+    const char *groups[HYBRID_MAX_GROUPS];
+    size_t i, n = 0;
 
     module_dir = getenv("OPENSSL_MODULES");
     if (module_dir == NULL)
@@ -195,6 +264,48 @@ int main(void)
         ERR_clear_error();
         return 0;
     }
+
+    /* Enumerate oqsprovider's advertised TLS groups (name + min TLS version). */
+    OSSL_PROVIDER_get_capabilities(oq, "TLS-GROUP", collect_groups, NULL);
+
+    /*
+     * Default-only component context, built programmatically (NO config file):
+     * with no "component-providers" set, the hybrid provider uses its parent
+     * libctx -- default only -- for components. Built programmatically rather
+     * than from a second cnf because loading a second hybrid-provider config in
+     * this process trips OpenSSL's "recursive section reference" (the hybrid
+     * init re-enters provider-config parsing to build its component ctx); `app`
+     * is the one config-driven hybrid load. A group whose keypair generates here
+     * is served by the default provider and therefore does not exercise the
+     * private component context, so it is excluded.
+     */
+    defonly = OSSL_LIB_CTX_new();
+    if (defonly == NULL
+            || OSSL_PROVIDER_load(defonly, "default") == NULL
+            || OSSL_PROVIDER_load(defonly, "hybrid") == NULL) {
+        fprintf(stderr, "default-only probe context setup failed\n");
+        ERR_print_errors_fp(stderr);
+        return 1;
+    }
+    for (i = 0; i < (size_t)nadv; i++) {
+        if (adv[i].min_tls == -1)                   /* not TLS-enabled (BIKE-L1) */
+            continue;
+        if (!resolves_to_hybrid(app, adv[i].name))  /* not a hybrid-owned group */
+            continue;
+        if (can_keygen(defonly, adv[i].name))       /* default serves it (ML-KEM) */
+            continue;
+        groups[n++] = adv[i].name;                  /* adv[] outlives this scope */
+    }
+    OSSL_LIB_CTX_free(defonly);
+    defonly = NULL;
+
+    /* A non-empty derived set is part of the contract: an empty set would make
+     * every assertion below vacuous and hide a broken advertisement or probe. */
+    TEST_START("derived a non-empty private-ctx group set from oqsprovider");
+    if (n > 0)
+        TEST_PASS();
+    else
+        TEST_FAIL("no private-ctx hybrid groups derived");
 
     /* The hybrid provider must have loaded oqsprovider into its private ctx; if
      * not (module not found), Frodo keygen fails and the tests below report it. */
