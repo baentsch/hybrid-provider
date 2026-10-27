@@ -176,19 +176,24 @@ asserts the version contract per running OpenSSL:
   experimental composite KEMs are served; `composite_kem_prov_test` self-skips the
   rows it cannot serve on a given version.
 
-Composite ML-KEM is also exercised as a CMS `EnvelopedData` KEMRI recipient
-(RFC 9629, `hybrid_cms_kem_test`): per standardized combo, an in-process
+The provider's encodable KEMs are also exercised as CMS `EnvelopedData` KEMRI
+recipients (RFC 9629, `hybrid_cms_kem_test`): per composite combo, an in-process
 encrypt → DER → decrypt round-trip plus a wrong-key negative, with the recipient
 cert issued under a default-provider Ed25519 signer (a KEM key cannot self-sign).
 No provider change is needed — OpenSSL's CMS layer auto-selects the KEM recipient
 by probing `EVP_PKEY_encapsulate_init`. That auto-selection shipped with KEMRI in
 OpenSSL **3.6.0** (3.5's CMS defaults a KEM key to key transport), so the whole
 suite self-skips below 3.6 via a runtime capability probe rather than a version
-check. KEMRI is **KEM-generic**, not composite-specific: any KEM with an X.509
-SPKI encoding can be a CMS recipient — plain native ML-KEM is the simplest case
-(and is what the capability probe uses), composite ML-KEM is just one such family,
-and our MLX/X-Wing TLS-group hybrids are excluded only because they have no
-standalone X.509 key encoding (a serialization limit, not a KEM one).
+check. KEMRI is **KEM-generic**, not composite- or ML-KEM-specific: any KEM with an
+X.509 SPKI encoding can be a CMS recipient — plain native ML-KEM is the simplest
+case (and is what the capability probe uses). The test therefore runs **both**
+composite tiers to prove the path is primitive-generic: the standardized ML-KEM
+combos (OIDs `.55..66`, PQ from the default provider on 3.5+) **and** the
+experimental Frodo/BIKE/HQC combos (private OID arc, PQ from oqsprovider — loaded
+optionally, so they self-skip when it is absent), exercising the same SPKI + KEMRI
+path over non-ML-KEM PQ. Our MLX/X-Wing/SM2 TLS-group hybrids are excluded only
+because they have no standalone X.509 key encoding (a serialization limit, not a
+KEM one).
 
 `test/pqc_kem_cms_interop.sh` carries this cross-implementation, **both ways** and
 fully locally, against [kemri_toy](https://github.com/carl-wallace/kemri_toy)

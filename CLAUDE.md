@@ -89,7 +89,7 @@ hybrid-provider/
     ├── hybrid_kem_encode_test.c   ← KEM key-file round-trips (HYBRID_KEM_ENCODERS)
     ├── hybrid_param_test.c        ← raw-param (OSSL_PARAM) round-trips
     ├── hybrid_cms_test.c          ← CMS SignedData
-    ├── hybrid_cms_kem_test.c      ← composite ML-KEM as CMS KEMRI recipient (RFC 9629)
+    ├── hybrid_cms_kem_test.c      ← composite KEM (both tiers) as CMS KEMRI recipient (RFC 9629)
     ├── hybrid_capability_test.c   ← TLS code-point parity vs default/oqsprovider
     ├── hybrid_config_test.c       ← cnf-driven component selection
     ├── hybrid_compctx_test.c      ← private component context (Frodo/BIKE/HQC)

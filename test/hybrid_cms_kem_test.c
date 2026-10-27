@@ -2,57 +2,66 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Composite ML-KEM as a CMS EnvelopedData KEMRI recipient (issue #108).
+ * An encodable (SPKI) provider KEM as a CMS EnvelopedData KEMRI recipient
+ * (issue #108).
  *
- * RFC 9629 defines KEMRecipientInfo (KEMRI) for CMS; draft-ietf-lamps-pq-
- * composite-kem explicitly targets "X.509 and CMS". The composite ML-KEM family
- * is registered as a provider KEM keytype with SPKI encoders, so no new crypto
- * is needed here: OpenSSL's CMS layer is provider-generic. CMS_encrypt resolves
- * the recipient type via ossl_cms_pkey_get_ri_type(), which — because our keymgmt
- * does not advertise OSSL_PKEY_PARAM_CMS_RI_TYPE and the key is neither EC/RSA/DH
- * — falls through to probing EVP_PKEY_encapsulate_init(ctx, NULL); that succeeds
- * for our composite KEM, so the recipient is auto-selected as CMS_RECIPINFO_KEM.
+ * RFC 9629 KEMRI is KEM-GENERIC, NOT composite- or ML-KEM-specific: ANY KEM whose
+ * public key has an X.509 SPKI encoding can be a CMS recipient — nothing about the
+ * CMS path is tied to the primitive inside. OpenSSL's CMS layer is provider-
+ * generic: CMS_encrypt resolves the recipient type via ossl_cms_pkey_get_ri_type(),
+ * which — because our keymgmt does not advertise OSSL_PKEY_PARAM_CMS_RI_TYPE and
+ * the key is neither EC/RSA/DH — falls through to probing
+ * EVP_PKEY_encapsulate_init(ctx, NULL); that succeeds for any KEM, so the recipient
+ * is auto-selected as CMS_RECIPINFO_KEM. No new crypto is needed.
+ * cms_kemri_supported() below demonstrates exactly this with plain native
+ * ML-KEM-768 (the default provider's) as its capability probe — naked ML-KEM KEMRI
+ * rides the same generic path before this test touches any our-provider key.
  *
- * NOTE — KEMRI is KEM-generic, NOT composite-specific: ANY KEM whose public key
- * has an X.509 SPKI encoding can be a CMS recipient. Plain native ML-KEM is the
- * simplest example and is in fact what cms_kemri_supported() below uses as its
- * capability probe, so this test exercises naked-ML-KEM KEMRI before it touches a
- * composite key. Composite ML-KEM is simply one KEM family that happens to carry
- * an X.509 key OID + SPKI encoder. (Our MLX/X-Wing TLS-group hybrids are KEMs too
- * but have no standalone X.509 key encoding, so they cannot be CMS recipients —
- * the limit is key serialization, not the KEM.)
+ * What this test adds on top of that generic path is coverage of THIS provider's
+ * encodable KEMs as recipients. The KEMs our provider serves with a standalone
+ * X.509 key encoding are the composite KEM family (draft-ietf-lamps-pq-composite-
+ * kem): our MLX/X-Wing/SM2 TLS-group hybrids are KEMs too, but have no standalone
+ * SPKI encoding and so cannot be CMS recipients (the limit is key serialization,
+ * not the KEM). We run BOTH composite tiers to prove the path is primitive-generic:
+ *   - the standardized ML-KEM tier (IANA/LAMPS OIDs 1.3.6.1.5.5.7.6.55..66); and
+ *   - the experimental tier (Frodo/BIKE/HQC + ECDH, private OID arc 1.3.9999.99.x),
+ *     which carries the same SPKI encoder and thus rides the same KEMRI path —
+ *     exercising it over NON-ML-KEM PQ, the strongest evidence that KEMRI cares
+ *     only about encapsulate-ability + SPKI, not the underlying KEM.
  *
- * For each STANDARDIZED composite KEM combo (OIDs 1.3.6.1.5.5.7.6.55..66) we:
- *   1. generate a composite-KEM keypair via the provider (provider=hybrid);
+ * For each such combo we:
+ *   1. generate the KEM keypair via the provider (provider=hybrid);
  *   2. issue a recipient cert for it — a KEM key cannot self-sign, so a separate
  *      default-provider Ed25519 issuer signs the cert (keeps the test minimal),
- *      with X509_set_pubkey() driving the composite-KEM SPKI encoder;
+ *      with X509_set_pubkey() driving the KEM's SPKI encoder;
  *   3. CMS_encrypt to that cert (AES-256-CBC -> EnvelopedData; the CEK is wrapped
  *      under the KEM-derived KEK via OpenSSL's default HKDF-SHA256 + AES-wrap);
  *   4. round-trip the CMS through DER (libctx-bound decode, as the KEM algorithm
  *      is resolved by name from the ContentInfo's own library context);
- *   5. CMS_decrypt with the composite-KEM private key and assert the plaintext is
+ *   5. CMS_decrypt with the KEM private key and assert the plaintext is
  *      recovered byte-for-byte;
  *   6. negative: decrypt the same message with a DIFFERENT key of the same type
  *      bound to the same cert identity -> wrong KEK -> AES key-unwrap integrity
  *      check fails -> CMS_decrypt must fail.
  *
- * Floors: the composite-KEM keytype needs the ML-KEM seed API (3.5+), but
- * *driving a KEM recipient through CMS* needs 3.6.0+ — OpenSSL 3.5's
+ * Floors: *driving a KEM recipient through CMS* needs 3.6.0+ — OpenSSL 3.5's
  * ossl_cms_pkey_get_ri_type() knows only RSA/EC/DH and defaults a KEM key to key
  * transport. KEMRI (RFC 9629) and its KEM auto-selection landed in 3.6.0 (commit
  * d0899abb, PR 27681). So the whole suite self-skips via a runtime capability
- * probe (not a version check), and each combo additionally self-skips if its
- * ML-KEM component is missing. No provider change is required: the CMS layer
- * auto-probes EVP_PKEY_encapsulate_init() and selects our KEM recipient on its
- * own (the OSSL_PKEY_PARAM_CMS_RI_TYPE provider hint is a later 4.0 addition and
- * is not needed).
+ * probe (not a version check), and each combo additionally self-skips if its PQ
+ * component is missing. No provider change is required: the CMS layer auto-probes
+ * EVP_PKEY_encapsulate_init() and selects our KEM recipient on its own (the
+ * OSSL_PKEY_PARAM_CMS_RI_TYPE provider hint is a later 4.0 addition, not needed).
  *
  * The algorithm set is driven off the master composite_kem_table (no hardcoded
- * name list). cede-to-default is irrelevant here (the default provider does not
- * serve composite OIDs) but forced off in CMakeLists per convention. The
- * experimental tier (Frodo/BIKE/HQC) needs oqsprovider for the PQ half and is out
- * of scope for this standardized-tier test.
+ * name list), both tiers. cede-to-default is irrelevant here (the default provider
+ * does not serve composite OIDs) but forced off in CMakeLists per convention. The
+ * standardized tier's ML-KEM half comes from the default provider on 3.5+ (seed
+ * API); the experimental tier's Frodo/BIKE/HQC half needs oqsprovider — loaded
+ * optionally, so those combos self-skip when it is absent. (The test is built
+ * under the 3.5+ seed-API gate, but that costs the experimental tier nothing: its
+ * 3.6.0 KEMRI floor already implies 3.5, and the experimental keytype itself does
+ * not use the seed API.)
  *
  * In-process self-interop only. Cross-implementation interop (both ways, against
  * kemri_toy, plus the IETF Hackathon pqc-certificates cms_v3 corpus) lives in the
@@ -82,7 +91,8 @@ static int have_alg(OSSL_LIB_CTX *ctx, const char *name)
     return ok;
 }
 
-/* Generate a composite-KEM keypair through the provider, by registered name. */
+/* Generate a provider KEM keypair through the hybrid provider, by registered
+ * name (a composite combo from either tier). */
 static EVP_PKEY *gen_kem(OSSL_LIB_CTX *ctx, const char *name)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, name, "provider=hybrid");
@@ -95,10 +105,11 @@ static EVP_PKEY *gen_kem(OSSL_LIB_CTX *ctx, const char *name)
 }
 
 /*
- * Issue a recipient cert carrying the composite-KEM public key (via the SPKI
- * encoder) and signed by a separate default-provider Ed25519 issuer — a KEM key
- * cannot sign its own trust anchor. The issuer key is not returned; the cert is
- * self-named for a minimal standalone recipient.
+ * Issue a recipient cert carrying the KEM public key (via its SPKI encoder) and
+ * signed by a separate default-provider Ed25519 issuer — a KEM key cannot sign its
+ * own trust anchor. Generic over the KEM: used both for the composite recipients
+ * under test and for the native ML-KEM key in the capability probe. The issuer key
+ * is not returned; the cert is self-named for a minimal standalone recipient.
  */
 static int make_kem_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *kem, X509 **cert_out)
 {
@@ -117,7 +128,7 @@ static int make_kem_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *kem, X509 **cert_out)
             || !ASN1_INTEGER_set(X509_get_serialNumber(cert), 1)
             || X509_gmtime_adj(X509_getm_notBefore(cert), 0) == NULL
             || X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) == NULL
-            || !X509_set_pubkey(cert, kem)          /* composite-KEM SPKI encoder */
+            || !X509_set_pubkey(cert, kem)          /* drives the KEM SPKI encoder */
             || !X509_set_subject_name(cert, name)
             || !X509_set_issuer_name(cert, name)
             || X509_sign(cert, ca, NULL) == 0)      /* Ed25519: one-shot, md NULL */
@@ -254,7 +265,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
     STACK_OF(X509) *certs = NULL;
     unsigned char *der = NULL, *recovered = NULL;
     long derlen = 0, reclen = 0;
-    const unsigned char content[] = "composite ML-KEM CMS EnvelopedData payload";
+    const unsigned char content[] = "composite KEM CMS EnvelopedData payload";
 
     tests++;
     printf("  %-22s CMS EnvelopedData encrypt/decrypt ... ", info->name);
@@ -277,7 +288,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
         goto done;
     }
 
-    /* Encrypt: CMS_encrypt auto-selects KEMRI for the composite-KEM recipient.
+    /* Encrypt: CMS_encrypt auto-selects KEMRI for the KEM recipient.
      * AES-256-CBC content cipher -> EnvelopedData (the CEK is key-wrapped under
      * the KEM-derived KEK; OpenSSL defaults the KDF to HKDF-SHA256 + AES-wrap). */
     certs = sk_X509_new_null();
@@ -338,18 +349,20 @@ int main(void)
         OSSL_LIB_CTX_free(ctx);
         return 1;
     }
+    OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental-tier PQ */
     ERR_clear_error();
 
     kemri_supported = cms_kemri_supported(ctx);
 
-    printf("composite ML-KEM in CMS EnvelopedData (KEMRI, RFC 9629)\n");
-    printf("=======================================================\n");
+    printf("composite KEM in CMS EnvelopedData (KEMRI, RFC 9629)\n");
+    printf("====================================================\n");
     printf("  CMS KEMRI driveable by this OpenSSL (needs 3.6.0+): %s\n",
            kemri_supported ? "yes" : "no");
-    /* Standardized tier only (ML-KEM + classical, draft-18 OIDs .55..66). */
+    /* Both tiers: standardized ML-KEM combos (draft-18 OIDs .55..66, PQ from the
+     * default provider on 3.5+) and experimental Frodo/BIKE/HQC combos (private
+     * OID arc, PQ from oqsprovider) — the same SPKI+KEMRI path over different PQ. */
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
-        if (composite_kem_table[i].tier == COMPOSITE_KEM_TIER_STANDARD)
-            check(ctx, &composite_kem_table[i], kemri_supported);
+        check(ctx, &composite_kem_table[i], kemri_supported);
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
