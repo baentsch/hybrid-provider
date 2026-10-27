@@ -208,8 +208,18 @@ are internally consistent (a draft-12/-18 difference, not a fault — our output
 re-checked for self-validity so a real regression still fails), and `SKIP` for
 combos kemri_toy has not implemented (it cannot generate X25519/X448 recipients).
 A representative local run: 7 OK, 1 SKEW (`.56`), 2 SKIP (`.58`/`.65`), 0 FAIL.
-The same artifacts also verify one-way against the IETF Hackathon pqc-certificates
-`cms_v3` corpus (draft-18, OID arc `.55..66`, KDF pinned to HKDF-SHA256).
+
+`test/pqc_kem_cms_certificates_interop.sh` adds a one-way, multi-peer read against
+the IETF Hackathon pqc-certificates **`cms_v3`** corpus: per peer it downloads
+`artifacts_cms_v3.zip` and, for every composite-KEM OID that ships a KEMRI
+`EnvelopedData` (HKDF-SHA256, draft-18, arc `.55..66`), decrypts it with
+hybrid-provider and checks the recovered plaintext equals the peer's
+`expected_plaintext.txt` — "third party generated, we read", including the
+brainpool combos (`.61`/`.64`) that kemri_toy cannot produce. It self-skips (exit
+0) below OpenSSL 3.6.0 or when a peer zip is unreachable, and FAILs only on a real
+mismatch. A representative local run: **12/12 from each of two independent
+draft-18 impls** (`composite-crypto`, `bc`), 0 FAIL. This is the CMS companion to
+`test/pqc_kem_certificates_interop.sh` (which reads the raw decaps vectors).
 
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).

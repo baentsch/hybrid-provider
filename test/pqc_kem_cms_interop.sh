@@ -139,7 +139,8 @@ MSG_B="$WORK/msgB.txt"; printf '%s' "$MSG" >"$MSG_B"
 #   SKEW  they diverge BUT both sides are internally consistent (kemri_toy self-
 #         round-trips AND our own provider decrypts our own output) — a draft-12
 #         vs -18 difference, not a fault. draft-18 correctness is asserted
-#         elsewhere (hybrid_cms_kem_test + the pqc-certificates cms_v3 corpus).
+#         elsewhere (hybrid_cms_kem_test + pqc_kem_cms_certificates_interop.sh,
+#         which reads the IETF Hackathon pqc-certificates cms_v3 corpus).
 #   SKIP  kemri_toy cannot do the combo at all.
 # The run FAILS only if OUR output is not even self-valid (a real regression) or a
 # step on our side errors — never merely because the older-draft peer disagrees.

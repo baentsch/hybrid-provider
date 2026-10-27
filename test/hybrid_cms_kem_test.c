@@ -63,9 +63,10 @@
  * 3.6.0 KEMRI floor already implies 3.5, and the experimental keytype itself does
  * not use the seed API.)
  *
- * In-process self-interop only. Cross-implementation interop (both ways, against
- * kemri_toy, plus the IETF Hackathon pqc-certificates cms_v3 corpus) lives in the
- * opt-in test/pqc_kem_cms_interop.sh.
+ * In-process self-interop only. Cross-implementation interop lives in two opt-in
+ * harnesses: test/pqc_kem_cms_interop.sh (both ways against kemri_toy) and
+ * test/pqc_kem_cms_certificates_interop.sh (one-way read of the IETF Hackathon
+ * pqc-certificates cms_v3 EnvelopedData corpus).
  */
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>

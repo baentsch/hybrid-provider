@@ -101,3 +101,31 @@ test/pqc_kem_certificates_interop.sh \
     --module-dir build \
     all
 ```
+
+## CMS companion — the `cms_v3` EnvelopedData corpus (RFC 9629 / KEMRI)
+
+The decaps vectors above exercise the raw composite KEM. The same corpus also
+carries, per provider, a CMS `EnvelopedData` whose single recipient is a
+`KEMRecipientInfo` (RFC 9629) — the composite ML-KEM used as a CMS key-transport
+recipient (issue #108). [`test/pqc_kem_cms_certificates_interop.sh`](../test/pqc_kem_cms_certificates_interop.sh)
+downloads each peer's `artifacts_cms_v3.zip` and, for every composite-KEM OID that
+ships a `..._kemri_id-alg-hkdf-with-sha256.der` (HKDF-SHA256, the draft-18
+default) plus a `..._priv.der`, decrypts it with hybrid-provider and checks the
+recovered plaintext equals the peer's `expected_plaintext.txt`.
+
+- **Floor:** OpenSSL **3.6.0+** (CMS KEM-recipient auto-selection; see issue #108);
+  self-skips (exit 0) below that or when a peer zip is unreachable.
+- **Result:** **12/12 composite-KEM OIDs** — the full standardized matrix incl.
+  brainpool `.61`/`.64` (which kemri_toy cannot generate) — decrypted from **each
+  of two independent draft-18 implementations** (`composite-crypto`, `bc`), 0 FAIL.
+- **Scope:** one-way read only (the authenticated `_kemri_auth*` and
+  user-keying-material `_ukm` variants are out of scope). The live both-way check
+  against carl-wallace/kemri_toy lives in
+  [`test/pqc_kem_cms_interop.sh`](../test/pqc_kem_cms_interop.sh).
+
+```sh
+test/pqc_kem_cms_certificates_interop.sh \
+    --openssl /path/to/openssl-3.6+/bin/openssl \
+    --libpath /path/to/openssl-3.6+/lib \
+    --module-dir build
+```
