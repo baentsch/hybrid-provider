@@ -176,6 +176,36 @@ asserts the version contract per running OpenSSL:
   experimental composite KEMs are served; `composite_kem_prov_test` self-skips the
   rows it cannot serve on a given version.
 
+Composite ML-KEM is also exercised as a CMS `EnvelopedData` KEMRI recipient
+(RFC 9629, `hybrid_cms_kem_test`): per standardized combo, an in-process
+encrypt → DER → decrypt round-trip plus a wrong-key negative, with the recipient
+cert issued under a default-provider Ed25519 signer (a KEM key cannot self-sign).
+No provider change is needed — OpenSSL's CMS layer auto-selects the KEM recipient
+by probing `EVP_PKEY_encapsulate_init`. That auto-selection shipped with KEMRI in
+OpenSSL **3.6.0** (3.5's CMS defaults a KEM key to key transport), so the whole
+suite self-skips below 3.6 via a runtime capability probe rather than a version
+check. KEMRI is **KEM-generic**, not composite-specific: any KEM with an X.509
+SPKI encoding can be a CMS recipient — plain native ML-KEM is the simplest case
+(and is what the capability probe uses), composite ML-KEM is just one such family,
+and our MLX/X-Wing TLS-group hybrids are excluded only because they have no
+standalone X.509 key encoding (a serialization limit, not a KEM one).
+
+`test/pqc_kem_cms_interop.sh` carries this cross-implementation, **both ways** and
+fully locally, against [kemri_toy](https://github.com/carl-wallace/kemri_toy)
+(an independent RustCrypto-based RFC 9629 tool): per combo, kemri_toy encrypts →
+we decrypt, and we encrypt → kemri_toy decrypts, with recovered plaintext checked
+each way. It is opt-in (not wired into `ctest` — needs a 3.6.0+ `openssl` and a
+`kemri_toy` binary) and self-skips cleanly when either is absent. kemri_toy pins
+composite-kem **draft-12** while we implement **-18**, so the script classifies
+honestly: a combo is in scope only if kemri_toy round-trips it itself; among those
+it reports `OK` when both directions agree, `SKEW` when they differ yet both sides
+are internally consistent (a draft-12/-18 difference, not a fault — our output is
+re-checked for self-validity so a real regression still fails), and `SKIP` for
+combos kemri_toy has not implemented (it cannot generate X25519/X448 recipients).
+A representative local run: 7 OK, 1 SKEW (`.56`), 2 SKIP (`.58`/`.65`), 0 FAIL.
+The same artifacts also verify one-way against the IETF Hackathon pqc-certificates
+`cms_v3` corpus (draft-18, OID arc `.55..66`, KDF pinned to HKDF-SHA256).
+
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).
 
