@@ -130,6 +130,27 @@ static int kem_handled_by_provider(OSSL_LIB_CTX *libctx, const char *propq,
     return ok;
 }
 
+/*
+ * Does `provider` genuinely serve this KEM in `ctx`? Keeps the hybrid<->peer
+ * interop loop to groups the peer provider actually serves: a row can be
+ * ML-KEM + not default-builtin yet not served by a given PQ provider —
+ * curveSM2MLKEM768 is a default-provider group whose SM2 component exists only
+ * in OpenSSL 4.0+, so below 4.0 nobody serves it. Quiet (unlike
+ * kem_handled_by_provider): a miss here is a legitimate skip, not a diagnostic.
+ */
+static int kem_served_by_provider(OSSL_LIB_CTX *ctx, const char *alg,
+                                  const char *provider)
+{
+    EVP_KEM *kem = EVP_KEM_fetch(ctx, alg, NULL);
+    const char *got = kem != NULL
+        ? OSSL_PROVIDER_get0_name(EVP_KEM_get0_provider(kem)) : NULL;
+    int ok = got != NULL && strcmp(got, provider) == 0;
+
+    EVP_KEM_free(kem);
+    ERR_clear_error();
+    return ok;
+}
+
 /* Generate an ephemeral EC P-256 self-signed cert in the given libctx. */
 static int make_self_signed(OSSL_LIB_CTX *libctx, EVP_PKEY **pkey_out,
                             X509 **cert_out)
@@ -604,6 +625,11 @@ int main(void)
                     continue;
                 name = hybrid_kem_table[g].hybrid_name;
                 codepoint = hybrid_kem_table[g].tls_codepoint;
+
+                /* Only groups oqsprovider actually serves belong here (skips
+                 * curveSM2MLKEM768 below OpenSSL 4.0 — served by nobody there). */
+                if (!kem_served_by_provider(oqs_ctx, name, "oqsprovider"))
+                    continue;
 
                 snprintf(t, sizeof(t), "%s: hybrid server <-> oqs client", name);
                 TEST_START(t);

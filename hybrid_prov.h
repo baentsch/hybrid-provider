@@ -252,6 +252,18 @@ typedef struct hybrid_key_st {
       "MLKEM768",  1, 0x11eb, 192, "P-256+ML-KEM-768", NULL)\
   X(secp384r1mlkem1024,"SecP384r1MLKEM1024", "EC",     "P-384",         0,    \
       "MLKEM1024", 1, 0x11ed, 256, "P-384+ML-KEM-1024", "1.3.6.1.4.1.42235.6")\
+  /* curveSM2+ML-KEM-768 (RFC 8998 SM2 curve), a default-provider MLX group    \
+   * added in OpenSSL 4.0 (code point 0x11ee/4590). The classical half is the   \
+   * dedicated EVP keytype "curveSM2" (NOT the generic "EC" keytype nor the      \
+   * "SM2" signature type — both reject EVP_PKEY_derive_init), present only in   \
+   * the default provider of OpenSSL 4.0+ and absent under FIPS. The row is      \
+   * therefore naturally runtime-gated: the operability probe in hybrid_caps.c   \
+   * declines to advertise it (and keygen fails) wherever "curveSM2" is not      \
+   * fetchable — exactly like the oqsprovider-only research KEMs below. slot=1    \
+   * (classical first) matches OpenSSL's ECDH_VINFO ml_kem_slot. No key-file     \
+   * encoder (like X448MLKEM1024), hence oid = NULL. */                         \
+  X(curvesm2mlkem768,  "curveSM2MLKEM768",   "curveSM2", "SM2",         0,    \
+      "MLKEM768",  1, 0x11ee, 192, "curveSM2+ML-KEM-768", NULL)\
   /* --- oqsprovider OQS-legacy ML-KEM hybrids --- */                         \
   /* mlkem512 P-256/X25519 code points follow                                 \
    * draft-rosomakho-tls-ecdhe-mlkem512-00 (0x11e9/0x11ea, adopted by          \
@@ -401,6 +413,7 @@ static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
     { 56,56,56,56, 1568,3168,32,1568, 0,0 },        /* X448MLKEM1024 */
     { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* SecP256r1MLKEM768 */
     { 97,48,48,97, 1568,3168,32,1568, 0,0 },        /* SecP384r1MLKEM1024 */
+    { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* curveSM2MLKEM768 */
     { 32,32,32,32, 800,1632,32,768, 0,0 },          /* x25519_mlkem512 */
     { 65,32,32,65, 800,1632,32,768, 0,0 },          /* SecP256r1MLKEM512 */
     { 65,32,32,65, 800,1632,32,768, 0,0 },          /* bp256_mlkem512 */
@@ -494,14 +507,21 @@ static const int hybrid_kem_combiner[HYBRID_KEM_ALG_COUNT] = {
  * This set is a pure function of OPENSSL_VERSION_NUMBER: OpenSSL never adds
  * features to a released branch, so each version's built-in MLX family is fixed
  * and known at compile time — no runtime probe, no generated file. Native MLX
- * landed in 3.5. Edit this list ONLY when adding support for a newer OpenSSL
- * release that grew the family (e.g. 4.0 added curveSM2MLKEM768 — serving it,
- * and a default-provider coverage guard, are tracked separately). NULL-terminated
- * so the array is never zero-length on a pre-3.5 build.
+ * landed in 3.5; 4.0 grew the family by one group, curveSM2MLKEM768 (which we
+ * serve via its own HYBRID_KEM_LIST row above). Edit this list ONLY when adding
+ * support for a newer OpenSSL release that grew the family. This list records
+ * what the DEFAULT provider ships (so the interop tests know which hybrids can
+ * keygen from the default alone); hybrid_coverage_test independently scans the
+ * default provider's live advertisement and fails if it grows a group we have
+ * not mirrored. NULL-terminated so the array is never zero-length on a pre-3.5
+ * build.
  */
 static const char *const hybrid_default_builtin_kems[] = {
 #if OPENSSL_VERSION_NUMBER >= 0x30500000L
     "X25519MLKEM768", "SecP256r1MLKEM768", "X448MLKEM1024", "SecP384r1MLKEM1024",
+#endif
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L
+    "curveSM2MLKEM768",
 #endif
     NULL
 };
@@ -830,10 +850,12 @@ int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
  * VALUE alone (not by algorithm name), and hybrid_capability_test asserts that
  * for every table entry:
  *   - IANA-assigned span: the ML-KEM-hybrid NamedGroups, registered as the
- *     contiguous span 0x11E9..0x11ED. 0x11EB..0x11ED are RFC 10024
+ *     contiguous span 0x11E9..0x11EE. 0x11EB..0x11ED are RFC 10024
  *     (ex draft-ietf-tls-ecdhe-mlkem; ML-KEM 768/1024); 0x11E9..0x11EA are the ML-KEM-512 tier added by
- *     draft-rosomakho-tls-ecdhe-mlkem512-00 (adopted by oqsprovider #802). The
- *     only standards-track values we use; taken verbatim from the assignments.
+ *     draft-rosomakho-tls-ecdhe-mlkem512-00 (adopted by oqsprovider #802); 0x11EE
+ *     is curveSM2MLKEM768, the RFC 8998 SM2 group OpenSSL 4.0 added at the top of
+ *     the span. The only standards-track values we use; taken verbatim from the
+ *     assignments (OpenSSL's internal/tlsgroups.h).
  *   - Provisional: everything else, inherited from oqsprovider for on-the-wire
  *     interop — either oqsprovider's experimental ML-KEM-hybrid block
  *     (0x2F00..0x2FFF) or the TLS private-use range (0xFE00..0xFFFF, which
@@ -846,7 +868,7 @@ int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
 #define HYBRID_TLS_OQS_EXPERIMENTAL_MIN 0x2F00u
 #define HYBRID_TLS_OQS_EXPERIMENTAL_MAX 0x2FFFu
 #define HYBRID_TLS_IANA_ASSIGNED_MIN    0x11E9u   /* 0x11E9..0x11EA: draft-rosomakho */
-#define HYBRID_TLS_IANA_ASSIGNED_MAX    0x11EDu   /* 0x11EB..0x11ED: RFC 10024 (ex draft-ietf-tls-ecdhe-mlkem) */
+#define HYBRID_TLS_IANA_ASSIGNED_MAX    0x11EEu   /* 0x11EB..0x11ED: RFC 10024 (ex draft-ietf-tls-ecdhe-mlkem); 0x11EE: curveSM2MLKEM768 (OpenSSL 4.0) */
 
 static inline int hybrid_codepoint_is_provisional(unsigned int cp)
 {

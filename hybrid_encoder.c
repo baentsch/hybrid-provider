@@ -17,6 +17,7 @@
 #include "hybrid_asn1_compat.h"
 #include <openssl/x509.h>
 #include <openssl/pem.h>
+#include <openssl/bn.h>
 #include <openssl/encoder.h>
 
 /* OID string for a key; NULL when the algorithm has no assigned OID (most
@@ -56,11 +57,37 @@ static int get_component_priv(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
         return 1;
     }
     ERR_clear_error();
-    if ((dlen = i2d_PrivateKey(pkey, &der)) <= 0)
-        return 0;
-    *buf = der;
-    *len = (size_t)dlen;
-    return 1;
+    if ((dlen = i2d_PrivateKey(pkey, &der)) > 0) {
+        *buf = der;
+        *len = (size_t)dlen;
+        return 1;
+    }
+    /*
+     * Some provider keytypes can keygen but ship no type-specific i2d encoder —
+     * notably the default provider's curveSM2 ("No encoders were found"). For the
+     * text dump (the only path that reaches this for such a NULL-OID hybrid; the
+     * key-file encoders need an OID and are gated out), fall back to the raw
+     * private scalar so the classical component still renders. For EC-family keys
+     * the private key is a BIGNUM param (not an octet), so read it as one. Only
+     * reached once both the raw-key and i2d encodings have failed, so EC/RSA/
+     * X25519 output is unchanged.
+     */
+    ERR_clear_error();
+    {
+        BIGNUM *bn = NULL;
+        int blen;
+
+        if (EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_PRIV_KEY, &bn) <= 0)
+            return 0;
+        blen = BN_num_bytes(bn);
+        if (blen <= 0 || (*buf = OPENSSL_malloc((size_t)blen)) == NULL) {
+            BN_clear_free(bn);
+            return 0;
+        }
+        *len = (size_t)BN_bn2bin(bn, *buf);
+        BN_clear_free(bn);
+        return 1;
+    }
 }
 
 /*

@@ -188,6 +188,13 @@ The MLX hybrids below match the OpenSSL default provider's wire format
 | X448MLKEM1024        | X448 (KX)   | ML-KEM-1024   | ML-KEM first       |
 | SecP256r1MLKEM768    | EC P-256    | ML-KEM-768    | EC first           |
 | SecP384r1MLKEM1024   | EC P-384    | ML-KEM-1024   | EC first           |
+| curveSM2MLKEM768     | curveSM2    | ML-KEM-768    | curveSM2 first     |
+
+`curveSM2MLKEM768` (RFC 8998 SM2 curve) is a default-provider group added in
+OpenSSL 4.0. Its classical half is the dedicated `curveSM2` EVP keytype, present
+only in the default provider of OpenSSL 4.0+ and absent under FIPS, so the row is
+runtime-gated by the capability operability probe (like the oqsprovider-only
+research KEMs): advertised and serveable only where `curveSM2` is fetchable.
 
 Beyond these, the provider registers the full oqsprovider-compatible hybrid-KEM
 matrix — ML-KEM (incl. brainpool curves), FrodoKEM, BIKE and HQC combinations —
@@ -487,6 +494,7 @@ exactly. From analysis of `mlx_kem.c`:
 | X448MLKEM1024      | 0           | mlkem_ct ‖ x448_pub            | mlkem_ss ‖ x448_ss          |
 | SecP256r1MLKEM768  | 1           | ec_pub ‖ mlkem_ct              | ec_ss ‖ mlkem_ss            |
 | SecP384r1MLKEM1024 | 1           | ec_pub ‖ mlkem_ct              | ec_ss ‖ mlkem_ss            |
+| curveSM2MLKEM768   | 1           | sm2_pub ‖ mlkem_ct             | sm2_ss ‖ mlkem_ss           |
 
 ## Operation: Signature
 
@@ -596,11 +604,11 @@ when built, composite) signatures are usable for TLS authentication. Every hybri
 whose table row carries a non-zero `tls_codepoint` is advertised: the three MLX
 groups with standardized codepoints (RFC 10024 —
 `X25519MLKEM768` 0x11EC, `SecP256r1MLKEM768` 0x11EB, `SecP384r1MLKEM1024`
-0x11ED) plus the oqsprovider-assigned code points for the OQS-legacy KEM and
-signature hybrids. `X448MLKEM1024` has no TLS codepoint and is reachable only via
-the KEM API. The code points are kept in lockstep with their origins by
-`hybrid_capability_test`, which compares them against the live default/oqsprovider
-capabilities.
+0x11ED), the default-provider `curveSM2MLKEM768` 0x11EE (OpenSSL 4.0+), plus the
+oqsprovider-assigned code points for the OQS-legacy KEM and signature hybrids.
+`X448MLKEM1024` has no TLS codepoint and is reachable only via the KEM API. The
+code points are kept in lockstep with their origins by `hybrid_capability_test`,
+which compares them against the live default/oqsprovider capabilities.
 
 The **standardized composite signatures** (`composite_caps.c`) are the one
 exception to "code points match their origin". `draft-reddy-tls-composite-mldsa`
