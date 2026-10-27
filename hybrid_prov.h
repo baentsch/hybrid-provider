@@ -378,7 +378,25 @@ typedef struct hybrid_key_st {
   X(xwing_x448_mlkem1024,      "xwing_x448_mlkem1024",      "X448",   NULL,  0,  \
       "MLKEM1024",    0, 0x0000, 256, "X-Wing-style X448+ML-KEM-1024", NULL)\
   X(xwing_x25519_efrodo640aes, "xwing_x25519_efrodo640aes", "X25519", NULL,  0,  \
-      "efrodo640aes", 0, 0x0000, 128, "X-Wing-style X25519+eFrodoKEM-640-AES", NULL)
+      "efrodo640aes", 0, 0x0000, 128, "X-Wing-style X25519+eFrodoKEM-640-AES", NULL)\
+  /* --- Experimental key-file-encodable hybrid KEM (issue #108 follow-up) ---    \
+   * A plain CONCATENATION hybrid (NOT a LAMPS composite, NOT X-Wing) that, unlike \
+   * every other hybrid-KEM row, carries a PRIVATE-arc X.509 key OID. That single  \
+   * difference makes it key-file-encodable (SPKI/PKCS8, under HYBRID_KEM_ENCODERS) \
+   * and therefore usable as a CMS EnvelopedData / KEMRecipientInfo (RFC 9629)     \
+   * recipient — the first hybrid-family KEM that can be (the MLX/X-Wing rows have \
+   * oid = NULL, TLS-only). PQ half is FrodoKEM-640-AES from oqsprovider, proving  \
+   * the hybrid path is generic over the PQ provider (not just ML-KEM); classical  \
+   * half P-256. Research only: private-use OID in the same 1.3.9999.99 arc as the \
+   * composite experimental tier (disjoint from it), NO TLS code point (never      \
+   * advertised, cannot be mistaken for a standard), combiner left implicit CONCAT.\
+   * Keygen needs oqsprovider for the PQ half and self-skips without it; the OID-  \
+   * keyed encoders only materialize when the build enables HYBRID_KEM_ENCODERS.   \
+   * No oqsprovider counterpart owns this private OID, so the cross-provider        \
+   * encode round-trip test skips it (provider_has(...oqsprovider) is false). */   \
+  X(exphyb_p256_frodo640aes, "exphyb_p256_frodo640aes", "EC", "P-256",       0,   \
+      "frodo640aes", 1, 0x0000, 128, "Experimental P-256+FrodoKEM-640-AES (CMS)", \
+      "1.3.9999.99.70")
 
 /* Generate the info table from the master list. */
 #define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)       \
@@ -462,6 +480,10 @@ static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
     { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* xwing_p256_mlkem768 */
     { 56,56,56,56, 1568,3168,32,1568, 0,0 },        /* xwing_x448_mlkem1024 */
     { 32,32,32,32, 9616,19888,16,9720, 0,0 },       /* xwing_x25519_efrodo640aes */
+    { 65,32,32,65, 9616,19888,16,9752, 0,0 },        /* exphyb_p256_frodo640aes
+                                                      * (= p256_frodo640aes:
+                                                      * same P-256 + FrodoKEM-640-
+                                                      * AES components) */
 };
 
 /*

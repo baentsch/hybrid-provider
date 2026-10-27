@@ -78,6 +78,7 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include "composite_kem_prov.h"
+#include "hybrid_prov.h"   /* hybrid_kem_table: the (non-composite) hybrid family */
 
 static int tests, passed, failed, skipped;
 
@@ -256,7 +257,10 @@ end:
     return ok;
 }
 
-static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
+/* Generic over any provider KEM with a cert-representable public key: `name` is
+ * the registered algorithm, `pq_alg` the PQ component to probe for availability
+ * (the ML-KEM variant for composite, the alg2 PQ KEM for a hybrid row). */
+static void check(OSSL_LIB_CTX *ctx, const char *name, const char *pq_alg,
                   int kemri_supported)
 {
     EVP_PKEY *kem = NULL, *kem_wrong = NULL;
@@ -269,7 +273,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
     const unsigned char content[] = "composite KEM CMS EnvelopedData payload";
 
     tests++;
-    printf("  %-22s CMS EnvelopedData encrypt/decrypt ... ", info->name);
+    printf("  %-22s CMS EnvelopedData encrypt/decrypt ... ", name);
     fflush(stdout);
 
     if (!kemri_supported) {
@@ -277,12 +281,12 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
         skipped++; tests--;
         return;
     }
-    if (!have_alg(ctx, info->pq_alg)) {
-        printf("SKIP (%s unavailable)\n", info->pq_alg);
+    if (!have_alg(ctx, pq_alg)) {
+        printf("SKIP (%s unavailable)\n", pq_alg);
         skipped++; tests--;
         return;
     }
-    if ((kem = gen_kem(ctx, info->name)) == NULL
+    if ((kem = gen_kem(ctx, name)) == NULL
             || !make_kem_cert(ctx, kem, &cert)) {
         printf("SKIP (keygen/cert failed)\n");
         skipped++; tests--; ERR_clear_error();
@@ -309,7 +313,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
     /* Negative: a different key of the same type, same cert identity. The
      * recipient matches by issuer/serial, decapsulation yields a different KEK,
      * and the AES key-unwrap integrity check rejects it -> decrypt must fail. */
-    if ((kem_wrong = gen_kem(ctx, info->name)) == NULL)
+    if ((kem_wrong = gen_kem(ctx, name)) == NULL)
         goto fail;
     if (cms_decrypt_der(ctx, der, derlen, kem_wrong, cert, NULL, NULL)) {
         printf("FAIL (decrypt succeeded with wrong key)\n");
@@ -350,7 +354,10 @@ int main(void)
         OSSL_LIB_CTX_free(ctx);
         return 1;
     }
-    OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental-tier PQ */
+    /* Optional: both experimental tiers below take their PQ half (Frodo/BIKE/HQC)
+     * from oqsprovider — the composite experimental combos and the experimental
+     * hybrid-family rows alike; absent it, those rows self-skip. */
+    (void)OSSL_PROVIDER_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     kemri_supported = cms_kemri_supported(ctx);
@@ -363,7 +370,31 @@ int main(void)
      * default provider on 3.5+) and experimental Frodo/BIKE/HQC combos (private
      * OID arc, PQ from oqsprovider) — the same SPKI+KEMRI path over different PQ. */
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
-        check(ctx, &composite_kem_table[i], kemri_supported);
+        check(ctx, composite_kem_table[i].name,
+              composite_kem_table[i].pq_alg, kemri_supported);
+
+    /* Experiment: a *hybrid*-family KEM (concatenation, NOT a LAMPS composite)
+     * can equally be a CMS KEMRI recipient — the limit was never the KEM, only a
+     * cert-representable key. Exercise every hybrid row that carries an X.509 key
+     * OID but no TLS group (oid != NULL && tls_codepoint == 0): the experimental
+     * private-arc rows meant as standalone-key hybrids. These self-skip unless the
+     * build enabled HYBRID_KEM_ENCODERS (else X509_set_pubkey has no SPKI encoder
+     * -> keygen/cert step fails -> SKIP) and oqsprovider supplies the PQ half.
+     *
+     * This exercises the in-process path (X509_set_pubkey holds the live key; the
+     * recipient pubkey is never re-decoded). KNOWN GAP for full parity: loading a
+     * hybrid-KEM recipient from a standalone SPKI/cert FILE via OpenSSL's generic
+     * OID-driven decode does NOT yet resolve the keytype (it works only when the
+     * keytype is named, as in hybrid_kem_encode_test, and works generically for the
+     * composite family) — so `openssl cms -encrypt -recip <hybrid-cert>` from a
+     * file is not yet possible. Making the hybrid SPKI decoder OID-discoverable is
+     * the follow-up to turn this prototype into a complete feature. */
+    printf("  -- experimental hybrid-family KEMs (HYBRID_KEM_ENCODERS) --\n");
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+        if (hybrid_kem_table[i].oid != NULL
+                && hybrid_kem_table[i].tls_codepoint == 0)
+            check(ctx, hybrid_kem_table[i].hybrid_name,
+                  hybrid_kem_table[i].alg2_name, kemri_supported);
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
