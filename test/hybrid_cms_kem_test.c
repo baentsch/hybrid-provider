@@ -112,13 +112,25 @@ static EVP_PKEY *gen_kem(OSSL_LIB_CTX *ctx, const char *name)
  * own trust anchor. Generic over the KEM: used both for the composite recipients
  * under test and for the native ML-KEM key in the capability probe. The issuer key
  * is not returned; the cert is self-named for a minimal standalone recipient.
+ *
+ * The finished cert is round-tripped through DER (i2d, then d2i into an X509
+ * preallocated via X509_new_ex(ctx)) so the recipient public key the caller gets
+ * is reconstructed from its
+ * SubjectPublicKeyInfo via OpenSSL's generic, OID-driven decode — exactly as
+ * `openssl cms -encrypt -recip <cert-file>` loads a recipient from a file, NOT from
+ * the live in-process key. For the composite and experimental hybrid rows alike,
+ * this proves the keytype resolves from the SPKI OID (the hybrid KEMs rely on the
+ * provider's OID<->name registration for it); the native ML-KEM probe rides the
+ * same path.
  */
 static int make_kem_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *kem, X509 **cert_out)
 {
     EVP_PKEY *ca = EVP_PKEY_Q_keygen(ctx, "provider=default", "ED25519");
-    X509 *cert = NULL;
+    X509 *cert = NULL, *rt = NULL;
     X509_NAME *name = X509_NAME_new();
-    int ok = 0;
+    unsigned char *der = NULL;
+    const unsigned char *p;
+    int derlen, ok = 0;
 
     if (ca == NULL || name == NULL)
         goto end;                                   /* no Ed25519: give up */
@@ -135,9 +147,21 @@ static int make_kem_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *kem, X509 **cert_out)
             || !X509_set_issuer_name(cert, name)
             || X509_sign(cert, ca, NULL) == 0)      /* Ed25519: one-shot, md NULL */
         goto end;
-    *cert_out = cert; cert = NULL;
+    /* File-based recipient: re-decode so the pubkey comes from the SPKI OID.
+     * d2i into an X509 preallocated via X509_new_ex(ctx) keeps the decode (and the
+     * cert's lazy pubkey resolution) bound to ctx, so the hybrid provider is in
+     * scope — exactly as loading the cert from a file would be. */
+    if ((derlen = i2d_X509(cert, &der)) <= 0)
+        goto end;
+    p = der;
+    if ((rt = X509_new_ex(ctx, NULL)) == NULL
+            || d2i_X509(&rt, &p, derlen) == NULL)
+        goto end;
+    *cert_out = rt; rt = NULL;
     ok = 1;
 end:
+    OPENSSL_free(der);
+    X509_free(rt);
     EVP_PKEY_free(ca);
     X509_NAME_free(name);
     X509_free(cert);
@@ -381,14 +405,13 @@ int main(void)
      * build enabled HYBRID_KEM_ENCODERS (else X509_set_pubkey has no SPKI encoder
      * -> keygen/cert step fails -> SKIP) and oqsprovider supplies the PQ half.
      *
-     * This exercises the in-process path (X509_set_pubkey holds the live key; the
-     * recipient pubkey is never re-decoded). KNOWN GAP for full parity: loading a
-     * hybrid-KEM recipient from a standalone SPKI/cert FILE via OpenSSL's generic
-     * OID-driven decode does NOT yet resolve the keytype (it works only when the
-     * keytype is named, as in hybrid_kem_encode_test, and works generically for the
-     * composite family) — so `openssl cms -encrypt -recip <hybrid-cert>` from a
-     * file is not yet possible. Making the hybrid SPKI decoder OID-discoverable is
-     * the follow-up to turn this prototype into a complete feature. */
+     * The recipient cert is file-based: make_kem_cert() round-trips it through DER
+     * so the recipient pubkey is rebuilt from its SubjectPublicKeyInfo via the
+     * generic OID-driven decode — the same path `openssl cms -encrypt -recip
+     * <hybrid-cert-file>` uses. That resolves the hybrid keytype from the SPKI OID
+     * because the provider registers the hybrid KEM OID<->name mapping
+     * (hybrid_prov.c); the standalone SPKI/PKCS8 decode itself is covered directly
+     * by hybrid_kem_encode_test's hybrid->hybrid self round-trip. */
     printf("  -- experimental hybrid-family KEMs (HYBRID_KEM_ENCODERS) --\n");
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         if (hybrid_kem_table[i].oid != NULL
