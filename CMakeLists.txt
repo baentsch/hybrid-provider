@@ -615,6 +615,22 @@ if(HYBRID_COMPOSITE)
     set_tests_properties(composite_kem_kat_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
+
+    # An encodable (SPKI) provider KEM as a CMS EnvelopedData KEMRI recipient
+    # (RFC 9629, issue #108): in-process encrypt->DER->decrypt round-trip +
+    # wrong-key negative, per composite combo across BOTH tiers (standardized
+    # ML-KEM + experimental Frodo/BIKE/HQC; the latter's PQ half needs oqsprovider,
+    # loaded optionally, so those combos self-skip when it is absent). cede-to-
+    # default is a no-op here (default serves no composite OID) but forced off per
+    # the default+hybrid test convention.
+    add_executable(hybrid_cms_kem_test test/hybrid_cms_kem_test.c)
+    target_include_directories(hybrid_cms_kem_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(hybrid_cms_kem_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(hybrid_cms_kem_test hybrid-provider)
+    add_test(NAME hybrid_cms_kem_test COMMAND hybrid_cms_kem_test)
+    set_tests_properties(hybrid_cms_kem_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_CEDE_TO_DEFAULT=0"
+    )
     endif()   # SEED_API (standardized-tier tests, 3.5+)
 
     # Certificate benchmark: self-signed X.509 cert size + cert-gen/verify time

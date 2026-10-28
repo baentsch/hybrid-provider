@@ -176,6 +176,59 @@ asserts the version contract per running OpenSSL:
   experimental composite KEMs are served; `composite_kem_prov_test` self-skips the
   rows it cannot serve on a given version.
 
+The provider's encodable KEMs are also exercised as CMS `EnvelopedData` KEMRI
+recipients (RFC 9629, `hybrid_cms_kem_test`): per composite combo, an in-process
+encrypt → DER → decrypt round-trip plus a wrong-key negative, with the recipient
+cert issued under a default-provider Ed25519 signer (a KEM key cannot self-sign).
+No provider change is needed — OpenSSL's CMS layer auto-selects the KEM recipient
+by probing `EVP_PKEY_encapsulate_init`. That auto-selection shipped with KEMRI in
+OpenSSL **3.6.0** (3.5's CMS defaults a KEM key to key transport), so the whole
+suite self-skips below 3.6 via a runtime capability probe rather than a version
+check. KEMRI is **KEM-generic**, not composite- or ML-KEM-specific: any KEM with an
+X.509 SPKI encoding can be a CMS recipient — plain native ML-KEM is the simplest
+case (and is what the capability probe uses). The test therefore runs **both**
+composite tiers to prove the path is primitive-generic: the standardized ML-KEM
+combos (OIDs `.55..66`, PQ from the default provider on 3.5+) **and** the
+experimental Frodo/BIKE/HQC combos (private OID arc, PQ from oqsprovider — loaded
+optionally, so they self-skip when it is absent), exercising the same SPKI + KEMRI
+path over non-ML-KEM PQ. Our MLX/X-Wing/SM2 TLS-group hybrids are excluded only
+because they have no standalone X.509 key encoding (a serialization limit, not a
+KEM one).
+
+Cross-implementation interop for the composite KEM lives in **opt-in harnesses**
+— not wired into `ctest`, because each needs resources `ctest` cannot assume (a
+peer binary, network access, an external corpus, and — for the CMS harnesses —
+OpenSSL **3.6.0+**). Each self-skips cleanly (exit 0) when its prerequisites are
+absent, and FAILs only on a real mismatch:
+
+- **`test/pqc_kem_cms_interop.sh`** — **both-way** CMS KEMRI interop against
+  [kemri_toy](https://github.com/carl-wallace/kemri_toy) (an independent
+  RustCrypto RFC 9629 tool), fully local. It drives the **full standardized matrix
+  that the provider serves** (discovered at run time — no frozen combo list that
+  could go stale as kemri_toy evolves), handing kemri_toy our cert/key so it needs
+  no `--kem` name: per combo kemri_toy encrypts → we decrypt, and we encrypt →
+  kemri_toy decrypts. kemri_toy pins composite-kem **draft-12** vs our **-18**, so
+  it classifies honestly: `OK` (both agree), `SKEW` (differ yet our output is
+  re-checked self-valid, so a real regression still fails), `SKIP` (kemri_toy
+  errors on the combo — `*` if its `--help` advertises the combo yet it still
+  errored, so the discrepancy stays visible). Representative run: 7 OK, 1 SKEW
+  (`.56`), 4 SKIP (`.61`/`.64` absent; `.58`/`.65` advertised-but-errored), 0 FAIL.
+- **`test/pqc_kem_cms_certificates_interop.sh`** — multi-peer read of the IETF
+  Hackathon pqc-certificates **`cms_v3`** EnvelopedData corpus: per peer it
+  downloads `artifacts_cms_v3.zip` and, for every composite-KEM OID shipping a
+  KEMRI blob (HKDF-SHA256, draft-18, arc `.55..66`), decrypts it with
+  hybrid-provider and checks the recovered plaintext equals the peer's
+  `expected_plaintext.txt` — "third party generated, we read", including the
+  brainpool combos (`.61`/`.64`) kemri_toy cannot produce. Representative run:
+  **12/12 from each of two independent draft-18 impls** (`composite-crypto`,
+  `bc`), 0 FAIL. Like the decaps companion it also has a `generate` mode that
+  emits our own `cms_v3` artifacts (+ self-verify) for a potential
+  `providers/hybrid-provider/` submission (none made yet).
+- **`test/pqc_kem_certificates_interop.sh`** — the KEM-decapsulation companion to
+  the two above: reads the corpus's raw composite-KEM decaps vectors
+  (`_ciphertext.bin` + `_ss.bin`) instead of CMS (3.5+; details in
+  [docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)).
+
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).
 

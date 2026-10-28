@@ -213,6 +213,10 @@ done
 [ -n "$COMMAND" ] || { usage; exit 2; }
 
 [ -x "$OPENSSL_BIN" ] || { echo "openssl not executable: $OPENSSL_BIN" >&2; exit 2; }
+# Absolutize MODULE_DIR: a relative `module =` in a provider cnf is resolved
+# relative to OPENSSL_MODULES, so a relative --module-dir makes OpenSSL look for
+# <dir>/<dir>/hybrid.so and silently skip the provider. Canonicalize up front.
+[ -d "$MODULE_DIR" ] && MODULE_DIR="$(cd "$MODULE_DIR" && pwd)"
 export LD_LIBRARY_PATH="$OPENSSL_LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export OPENSSL_MODULES="$MODULE_DIR"
 
@@ -295,6 +299,25 @@ run_ossl() {  # args: openssl subcommand and its args
         OPENSSL_CONF=/dev/null "$OPENSSL_BIN" "$@"
     fi
 }
+
+# Guard: when the hybrid provider is expected, confirm it actually activates.
+# OpenSSL drops a provider that fails to load silently (lazy, non-fatal: exit 0,
+# nothing on stderr), whether named via -provider flags or a cnf module= path, so
+# a bad --module-dir / ABI mismatch would otherwise surface only as empty algo
+# lists and mystery handshake failures. Probe through run_ossl so the check uses
+# the same load path the commands do; `config` only prints the cnf, so it is exempt.
+case " $ALL_PROVIDERS " in
+    *" hybrid "*)
+        # shellcheck disable=SC2046,SC2086
+        if [ "$COMMAND" != "config" ] \
+           && ! run_ossl list -providers $(prov_flags "$ALL_PROVIDERS") 2>/dev/null \
+                | grep -q 'name: hybrid-provider'; then
+            echo "ERROR: hybrid provider requested but did not activate from" >&2
+            echo "       $MODULE_DIR under $OPENSSL_BIN ($("$OPENSSL_BIN" version 2>/dev/null))." >&2
+            echo "       Check hybrid.$SOEXT exists there and matches the OpenSSL ABI." >&2
+            exit 1
+        fi;;
+esac
 
 # ========================================================================
 # info
