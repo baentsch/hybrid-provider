@@ -22,6 +22,10 @@
 # key-derivation — the draft-18 default), <label>-<oid>_priv.der (the recipient
 # key) and a shared expected_plaintext.txt. The authenticated (_kemri_auth*) and
 # user-keying-material (_ukm) variants are out of scope for this one-way read.
+# These two are CMS framing, not PQ: _kemri_auth wraps the same KEMRI (RFC 9629)
+# in AuthEnvelopedData (RFC 5083, AEAD content-encryption) vs our plain
+# EnvelopedData (RFC 5652), and _ukm is RFC 9629's UserKeyingMaterial fed to the
+# KDF — both KEM-agnostic, so skipping them drops no composite-ML-KEM coverage.
 #
 # Modes (mirroring pqc_kem_certificates_interop.sh): `verify` (default) reads the
 # peers' corpus; `generate` writes THIS provider's composite-KEM KEMRI
@@ -103,6 +107,11 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
     esac
 done
+# Absolutize MODULE_DIR: the provider cnf's `module =` value is resolved relative
+# to OPENSSL_MODULES when not absolute, so a relative --module-dir makes OpenSSL
+# look for <dir>/<dir>/hybrid.so, silently skip the provider, and then NOTHING
+# owns the composite-KEM OIDs → every decrypt "fails". Canonicalize up front.
+[ -d "$MODULE_DIR" ] && MODULE_DIR="$(cd "$MODULE_DIR" && pwd)"
 : "${OUTDIR:=$MODULE_DIR/pqc-kem-cms-artifacts}"
 
 [ -n "$OPENSSL_LIBPATH" ] && export LD_LIBRARY_PATH="$OPENSSL_LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -151,6 +160,19 @@ EOF
 
 ARC='1\.3\.6\.1\.5\.5\.7\.6\.(5[5-9]|6[0-6])'   # LAMPS composite-KEM OID arc
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
+
+# Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
+# (lazy, non-fatal activation — exit 0, nothing on stderr). Without the hybrid
+# provider active, NOTHING owns the composite-KEM OIDs and every decrypt just
+# "fails" with no hint why. The hybrid.$SOEXT file was already found above, so a
+# load failure here is a real fault (bad ABI, missing component dep, ...), not a
+# clean self-skip: fail loudly with the one diagnostic OpenSSL won't give us.
+if ! oss list -providers 2>/dev/null | grep -q 'name: hybrid-provider'; then
+    echo "ERROR: hybrid provider present at $MODULE_DIR/hybrid.$SOEXT but did not" >&2
+    echo "       activate under $OPENSSL_BIN ($ver). Likely an ABI/libcrypto" >&2
+    echo "       mismatch or a missing component dependency." >&2
+    exit 1
+fi
 # generate needs `x509 -new`, which misreads the provider cnf's [default] section
 # as cert extensions; drive those commands with a null cnf + explicit -provider
 # flags instead (same workaround as pqc_kem_cms_interop.sh).
@@ -196,7 +218,11 @@ verify_peer() {   # $1 = provider dir name
         note "$peer: no composite-KEM ($ARC) KEMRI artifacts in cms_$VER"
     else
         local dist; dist=$(sort -u "$WORKDIR/$peer.oids" | wc -l)
-        ok "$peer: $dist/12 composite-KEM OIDs decrypted to the peer's plaintext ($p/$n blobs)"
+        local msg="$peer: $dist/12 composite-KEM OIDs decrypted to the peer's plaintext ($p/$n blobs)"
+        # Each failed blob already raised its own FAIL; the peer-summary line is a
+        # PASS only when every found blob decrypted (p==n), else it would mask a
+        # total failure behind a green "0/12 ... PASS".
+        if [ "$p" -eq "$n" ]; then ok "$msg"; else no "$msg"; fi
     fi
 }
 

@@ -84,6 +84,10 @@ while [ $# -gt 0 ]; do
 done
 : "${OUTDIR:=$MODULE_DIR/pqc-artifacts}"
 
+# Absolutize MODULE_DIR: a relative `module =` in the provider cnf is resolved
+# relative to OPENSSL_MODULES, so a relative --module-dir makes OpenSSL look for
+# <dir>/<dir>/hybrid.so and silently skip the provider. Canonicalize up front.
+[ -d "$MODULE_DIR" ] && MODULE_DIR="$(cd "$MODULE_DIR" && pwd)"
 [ -n "$OPENSSL_LIBPATH" ] && export LD_LIBRARY_PATH="$OPENSSL_LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export OPENSSL_MODULES="$MODULE_DIR"
 
@@ -123,6 +127,19 @@ EOF
 
 ARC='1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'          # LAMPS composite-signature OID arc
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
+
+# Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
+# (lazy, non-fatal activation — exit 0, nothing on stderr). Without the hybrid
+# provider active NOTHING owns the composite OIDs and every verify just "fails"
+# with no hint why. The hybrid.$SOEXT file was already found above, so a load
+# failure here is a real fault (bad ABI, missing component dep, ...): fail loudly
+# with the one diagnostic OpenSSL won't give us.
+if ! oss list -providers 2>/dev/null | grep -q 'name: hybrid-provider'; then
+    echo "ERROR: hybrid provider present at $MODULE_DIR/hybrid.$SOEXT but did not" >&2
+    echo "       activate under $OPENSSL_BIN ($("$OPENSSL_BIN" version 2>/dev/null))." >&2
+    echo "       Likely an ABI/libcrypto mismatch or a missing component dependency." >&2
+    exit 1
+fi
 
 # ---- verify: third-party artifacts read + verified by hybrid-provider --------
 verify_peer() {   # $1 = provider dir name
