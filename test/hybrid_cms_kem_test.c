@@ -150,7 +150,14 @@ static int make_kem_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *kem, X509 **cert_out)
     /* File-based recipient: re-decode so the pubkey comes from the SPKI OID.
      * d2i into an X509 preallocated via X509_new_ex(ctx) keeps the decode (and the
      * cert's lazy pubkey resolution) bound to ctx, so the hybrid provider is in
-     * scope — exactly as loading the cert from a file would be. */
+     * scope — exactly as loading the cert from a file would be.
+     *
+     * Ownership/cleanup: `rt` is freed exactly once. On success it is handed to
+     * *cert_out and cleared, so the X509_free(rt) at `end:` is a no-op. On a d2i
+     * decode failure d2i_X509() frees the reused object AND sets rt = NULL itself
+     * (ASN1_item_ex_free), so again the cleanup free is a no-op — never a
+     * double-free, and `cert` (the pre-encode original) is the separately-owned
+     * object freed alongside it. */
     if ((derlen = i2d_X509(cert, &der)) <= 0)
         goto end;
     p = der;
@@ -283,7 +290,8 @@ end:
 
 /* Generic over any provider KEM with a cert-representable public key: `name` is
  * the registered algorithm, `pq_alg` the PQ component to probe for availability
- * (the ML-KEM variant for composite, the alg2 PQ KEM for a hybrid row). */
+ * (ML-KEM for a standardized composite, Frodo/BIKE/HQC for an experimental
+ * composite, or the alg2 PQ KEM for a hybrid row). */
 static void check(OSSL_LIB_CTX *ctx, const char *name, const char *pq_alg,
                   int kemri_supported)
 {
