@@ -195,31 +195,34 @@ path over non-ML-KEM PQ. Our MLX/X-Wing/SM2 TLS-group hybrids are excluded only
 because they have no standalone X.509 key encoding (a serialization limit, not a
 KEM one).
 
-`test/pqc_kem_cms_interop.sh` carries this cross-implementation, **both ways** and
-fully locally, against [kemri_toy](https://github.com/carl-wallace/kemri_toy)
-(an independent RustCrypto-based RFC 9629 tool): per combo, kemri_toy encrypts →
-we decrypt, and we encrypt → kemri_toy decrypts, with recovered plaintext checked
-each way. It is opt-in (not wired into `ctest` — needs a 3.6.0+ `openssl` and a
-`kemri_toy` binary) and self-skips cleanly when either is absent. kemri_toy pins
-composite-kem **draft-12** while we implement **-18**, so the script classifies
-honestly: a combo is in scope only if kemri_toy round-trips it itself; among those
-it reports `OK` when both directions agree, `SKEW` when they differ yet both sides
-are internally consistent (a draft-12/-18 difference, not a fault — our output is
-re-checked for self-validity so a real regression still fails), and `SKIP` for
-combos kemri_toy has not implemented (it cannot generate X25519/X448 recipients).
-A representative local run: 7 OK, 1 SKEW (`.56`), 2 SKIP (`.58`/`.65`), 0 FAIL.
+Cross-implementation interop for the composite KEM lives in **opt-in harnesses**
+— not wired into `ctest`, because each needs resources `ctest` cannot assume (a
+peer binary, network access, an external corpus, and — for the CMS harnesses —
+OpenSSL **3.6.0+**). Each self-skips cleanly (exit 0) when its prerequisites are
+absent, and FAILs only on a real mismatch:
 
-`test/pqc_kem_cms_certificates_interop.sh` adds a one-way, multi-peer read against
-the IETF Hackathon pqc-certificates **`cms_v3`** corpus: per peer it downloads
-`artifacts_cms_v3.zip` and, for every composite-KEM OID that ships a KEMRI
-`EnvelopedData` (HKDF-SHA256, draft-18, arc `.55..66`), decrypts it with
-hybrid-provider and checks the recovered plaintext equals the peer's
-`expected_plaintext.txt` — "third party generated, we read", including the
-brainpool combos (`.61`/`.64`) that kemri_toy cannot produce. It self-skips (exit
-0) below OpenSSL 3.6.0 or when a peer zip is unreachable, and FAILs only on a real
-mismatch. A representative local run: **12/12 from each of two independent
-draft-18 impls** (`composite-crypto`, `bc`), 0 FAIL. This is the CMS companion to
-`test/pqc_kem_certificates_interop.sh` (which reads the raw decaps vectors).
+- **`test/pqc_kem_cms_interop.sh`** — **both-way** CMS KEMRI interop against
+  [kemri_toy](https://github.com/carl-wallace/kemri_toy) (an independent
+  RustCrypto RFC 9629 tool), fully local: per combo kemri_toy encrypts → we
+  decrypt, and we encrypt → kemri_toy decrypts, plaintext checked each way.
+  kemri_toy pins composite-kem **draft-12** vs our **-18**, so it classifies
+  honestly: `OK` (both agree), `SKEW` (differ yet each self-consistent — our
+  output is re-checked for self-validity so a real regression still fails), `SKIP`
+  (combo kemri_toy lacks, e.g. it cannot generate X25519/X448 recipients).
+  Representative run: 7 OK, 1 SKEW (`.56`), 2 SKIP (`.58`/`.65`), 0 FAIL.
+- **`test/pqc_kem_cms_certificates_interop.sh`** — **one-way**, multi-peer read of
+  the IETF Hackathon pqc-certificates **`cms_v3`** EnvelopedData corpus: per peer
+  it downloads `artifacts_cms_v3.zip` and, for every composite-KEM OID shipping a
+  KEMRI blob (HKDF-SHA256, draft-18, arc `.55..66`), decrypts it with
+  hybrid-provider and checks the recovered plaintext equals the peer's
+  `expected_plaintext.txt` — "third party generated, we read", including the
+  brainpool combos (`.61`/`.64`) kemri_toy cannot produce. Representative run:
+  **12/12 from each of two independent draft-18 impls** (`composite-crypto`,
+  `bc`), 0 FAIL.
+- **`test/pqc_kem_certificates_interop.sh`** — the KEM-decapsulation companion to
+  the two above: reads the corpus's raw composite-KEM decaps vectors
+  (`_ciphertext.bin` + `_ss.bin`) instead of CMS (3.5+; details in
+  [docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)).
 
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).
