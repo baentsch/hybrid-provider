@@ -210,15 +210,17 @@ absent, and FAILs only on a real mismatch:
   output is re-checked for self-validity so a real regression still fails), `SKIP`
   (combo kemri_toy lacks, e.g. it cannot generate X25519/X448 recipients).
   Representative run: 7 OK, 1 SKEW (`.56`), 2 SKIP (`.58`/`.65`), 0 FAIL.
-- **`test/pqc_kem_cms_certificates_interop.sh`** — **one-way**, multi-peer read of
-  the IETF Hackathon pqc-certificates **`cms_v3`** EnvelopedData corpus: per peer
-  it downloads `artifacts_cms_v3.zip` and, for every composite-KEM OID shipping a
+- **`test/pqc_kem_cms_certificates_interop.sh`** — multi-peer read of the IETF
+  Hackathon pqc-certificates **`cms_v3`** EnvelopedData corpus: per peer it
+  downloads `artifacts_cms_v3.zip` and, for every composite-KEM OID shipping a
   KEMRI blob (HKDF-SHA256, draft-18, arc `.55..66`), decrypts it with
   hybrid-provider and checks the recovered plaintext equals the peer's
   `expected_plaintext.txt` — "third party generated, we read", including the
   brainpool combos (`.61`/`.64`) kemri_toy cannot produce. Representative run:
   **12/12 from each of two independent draft-18 impls** (`composite-crypto`,
-  `bc`), 0 FAIL.
+  `bc`), 0 FAIL. Like the decaps companion it also has a `generate` mode that
+  emits our own `cms_v3` artifacts (+ self-verify) for a potential
+  `providers/hybrid-provider/` submission (none made yet).
 - **`test/pqc_kem_certificates_interop.sh`** — the KEM-decapsulation companion to
   the two above: reads the corpus's raw composite-KEM decaps vectors
   (`_ciphertext.bin` + `_ss.bin`) instead of CMS (3.5+; details in

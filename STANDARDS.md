@@ -113,6 +113,15 @@ test vectors (`composite_kat_test`). ML-DSA only. Message-representative
 construction `M' = prefix || label || len(ctx) || ctx || PH(M)`, raw-concat
 serialization. **Normative** (byte-exact vs. BouncyCastle / future OpenSSL-native).
 
+This family *can* take part in the IETF Hackathon
+[`pqc-certificates`](https://github.com/IETF-Hackathon/pqc-certificates)
+multi-vendor interop in both roles via
+[`test/pqc_certificates_interop.sh`](test/pqc_certificates_interop.sh) (see
+[docs/pqc-certificates-interop.md](docs/pqc-certificates-interop.md)): it
+reads/validates peers' composite-signature certs and can `generate` ours in the
+`providers/hybrid-provider/` submission layout. No artifacts have been submitted
+to the corpus yet — the capability is in place, participation would be opt-in.
+
 | Tier | Algorithms |
 |---|---|
 | ML-DSA-44 | `mldsa44_rsa2048_pss`, `mldsa44_rsa2048_pkcs15`, `mldsa44_ed25519`, `mldsa44_ecdsa_p256` |
@@ -129,11 +138,26 @@ provider assigns **private-use** points `0xFFE0…` (RFC 8446 §4.2.3) instead. 
 
 LAMPS standards-track (combiner stable since -14). Full **12-combo standardized
 matrix**, OIDs `1.3.6.1.5.5.7.6.55 … .66`, verified against the draft's reference
-vectors (`composite_kem_kat_test`) and interop-tested against the LAMPS reference
-implementation (see
-[docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)).
+vectors (`composite_kem_kat_test`) and interop-tested against independent
+implementations in both PKI roles: as X.509 recipients (raw composite-KEM decaps)
+and as CMS `EnvelopedData` / `KEMRecipientInfo` recipients (RFC 9629, issue #108).
 Single fixed KDF combiner `ss = SHA3-256(mlkemSS || tradSS || tradCT || tradPK || Label)`.
 PKI/CMS only — **no** TLS key-exchange code point. **Normative.**
+
+This family *can* take part in the IETF Hackathon
+[`pqc-certificates`](https://github.com/IETF-Hackathon/pqc-certificates)
+multi-vendor interop in both roles:
+[`test/pqc_kem_certificates_interop.sh`](test/pqc_kem_certificates_interop.sh)
+(raw decaps vectors) and
+[`test/pqc_kem_cms_certificates_interop.sh`](test/pqc_kem_cms_certificates_interop.sh)
+(CMS `cms_v3` `EnvelopedData`) each read/validate peers' artifacts and can
+`generate` ours in the `providers/hybrid-provider/` submission layout (see
+[docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)). No
+artifacts have been submitted to the corpus yet — the capability is in place,
+participation would be opt-in. Beyond the static corpus, the CMS KEMRI wire format
+is also checked **live, both ways** against the independent
+[kemri_toy](https://github.com/carl-wallace/kemri_toy) implementation by
+[`test/pqc_kem_cms_interop.sh`](test/pqc_kem_cms_interop.sh).
 
 | ML-KEM level | Algorithms |
 |---|---|

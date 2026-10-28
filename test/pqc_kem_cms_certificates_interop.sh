@@ -23,6 +23,11 @@
 # key) and a shared expected_plaintext.txt. The authenticated (_kemri_auth*) and
 # user-keying-material (_ukm) variants are out of scope for this one-way read.
 #
+# Modes (mirroring pqc_kem_certificates_interop.sh): `verify` (default) reads the
+# peers' corpus; `generate` writes THIS provider's composite-KEM KEMRI
+# EnvelopedData in the same cms_v3 layout (+ self-verify) for a
+# providers/hybrid-provider/ submission so others can decrypt us; `all` does both.
+#
 # Peers: providers that publish draft-18 composite-KEM KEMRI artifacts on the
 # .55..66 arc. composite-crypto and bc are two independent, conformant impls (each
 # a full 12/12). Others can be added with --peers; note carl-redhound tracks an
@@ -51,7 +56,10 @@ VER="${VER:-v3}"
 # widening the list is harmless (but an older-draft peer may FAIL on skew).
 PEERS="${PEERS:-composite-crypto bc}"
 RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/master/providers"
+OUTDIR=""
+MODE="verify"
 KEEP=0
+PLAINTEXT="${PLAINTEXT:-Hello, World!}"   # our generated EnvelopedData payload
 
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
@@ -61,7 +69,13 @@ esac
 
 usage() { sed -n '3,45p' "$0" | sed 's/^# \{0,1\}//'; cat <<EOF
 
-Usage: $(basename "$0") [options]
+Usage: $(basename "$0") [options] [verify|generate|all]
+
+  verify    (default) decrypt each peer's cms_v3 EnvelopedData corpus.
+  generate  produce THIS provider's composite-KEM KEMRI EnvelopedData in the
+            cms_v3 corpus layout (+ self-verify) for a providers/hybrid-provider/
+            submission so others can decrypt us.
+  all       verify, then generate.
 
 Options:
   --openssl PATH    openssl binary (must be 3.6.0+)   (default: $OPENSSL_BIN)
@@ -69,6 +83,7 @@ Options:
   --module-dir DIR  OPENSSL_MODULES with hybrid.$SOEXT (default: $MODULE_DIR)
   --peers "a b c"   provider dirs to verify           (default: $PEERS)
   --version V       cms corpus version (artifacts_cms_<V>.zip) (default: $VER)
+  --outdir DIR      generate output dir   (default: <module-dir>/pqc-kem-cms-artifacts)
   --keep            keep the temp work dir
   -h, --help        this help
 EOF
@@ -81,11 +96,14 @@ while [ $# -gt 0 ]; do
         --module-dir) MODULE_DIR="$2"; shift 2;;
         --peers)      PEERS="$2"; shift 2;;
         --version)    VER="$2"; shift 2;;
+        --outdir)     OUTDIR="$2"; shift 2;;
         --keep)       KEEP=1; shift;;
         -h|--help)    usage; exit 0;;
+        verify|generate|all) MODE="$1"; shift;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
     esac
 done
+: "${OUTDIR:=$MODULE_DIR/pqc-kem-cms-artifacts}"
 
 [ -n "$OPENSSL_LIBPATH" ] && export LD_LIBRARY_PATH="$OPENSSL_LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export OPENSSL_MODULES="$MODULE_DIR"
@@ -133,6 +151,11 @@ EOF
 
 ARC='1\.3\.6\.1\.5\.5\.7\.6\.(5[5-9]|6[0-6])'   # LAMPS composite-KEM OID arc
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
+# generate needs `x509 -new`, which misreads the provider cnf's [default] section
+# as cert extensions; drive those commands with a null cnf + explicit -provider
+# flags instead (same workaround as pqc_kem_cms_interop.sh).
+ossp() { local sub="$1"; shift
+         OPENSSL_CONF=/dev/null "$OPENSSL_BIN" "$sub" -provider default -provider hybrid "$@"; }
 
 # ---- verify: third-party EnvelopedData decrypted by hybrid-provider ----------
 verify_peer() {   # $1 = provider dir name
@@ -177,15 +200,80 @@ verify_peer() {   # $1 = provider dir name
     fi
 }
 
-hdr "Read/verify: pqc-certificates composite ML-KEM CMS (KEMRI) decrypted by hybrid-provider"
-echo "  corpus: cms_$VER   openssl: $ver"
-: > "$WORKDIR/verified_oids"
-for peer in $PEERS; do verify_peer "$peer"; done
-if [ -s "$WORKDIR/verified_oids" ]; then
-    echo "  distinct composite-KEM OIDs decrypted from >=1 peer: \
+cmd_verify() {
+    hdr "Read/verify: pqc-certificates composite ML-KEM CMS (KEMRI) decrypted by hybrid-provider"
+    echo "  corpus: cms_$VER   openssl: $ver"
+    : > "$WORKDIR/verified_oids"
+    local peer
+    for peer in $PEERS; do verify_peer "$peer"; done
+    if [ -s "$WORKDIR/verified_oids" ]; then
+        echo "  distinct composite-KEM OIDs decrypted from >=1 peer: \
 $(sort -u "$WORKDIR/verified_oids" | wc -l)/12"
-fi
+    fi
+}
 
-hdr "Summary"
+# ---- generate: THIS provider's cms_v3 KEMRI artifacts (+ self-verify) --------
+# Mirrors the generate mode of pqc_kem_certificates_interop.sh, but emits a CMS
+# EnvelopedData per OID instead of a raw decaps vector. Identify composites by the
+# LAMPS OID arc (not a name convention): iterate the provider's KEM algorithms and
+# keep those whose public key encodes to a composite-arc OID (the concat MLX/oqs
+# hybrid KEMs have no SPKI OID and drop; experimental private-arc combos are
+# outside the standardized arc and drop too).
+cmd_generate() {
+    hdr "Generate: hybrid-provider composite ML-KEM CMS KEMRI artifacts (cms_v3 layout) + self-verify"
+    mkdir -p "$OUTDIR"
+    local ca="$WORKDIR/ca.key" cacrt="$WORKDIR/ca.crt" alg n=0 p=0
+    # Ed25519 CA to sign the EE certs (a KEM key cannot self-sign).
+    if ! ossp genpkey -algorithm ED25519 -out "$ca" >/dev/null 2>&1 \
+            || ! ossp x509 -new -key "$ca" -subj "/CN=hybrid-cms-kem-ca" -days 3650 \
+                    -out "$cacrt" >/dev/null 2>&1; then
+        note "cannot create Ed25519 CA cert"; return
+    fi
+    printf '%s' "$PLAINTEXT" > "$OUTDIR/expected_plaintext.txt"
+    for alg in $(ossp list -kem-algorithms 2>/dev/null \
+            | awk '/@ *hybrid/ { gsub(/^ +/,""); sub(/ .*/,""); print }'); do
+        local key="$WORKDIR/$alg.key" pub="$WORKDIR/$alg.pub" oid base
+        ossp genpkey -algorithm "$alg" -out "$key" 2>/dev/null || continue
+        ossp pkey -in "$key" -pubout -outform DER -out "$pub" 2>/dev/null || continue
+        # asn1parse is not provider-aware (rejects -provider); it only needs to
+        # read the DER SPKI, so call it plainly with a null cnf.
+        oid="$(OPENSSL_CONF=/dev/null "$OPENSSL_BIN" asn1parse -inform DER -in "$pub" \
+               2>/dev/null | grep -oE "$ARC" | head -1)"
+        [ -z "$oid" ] && continue     # OID outside the composite-KEM arc
+        n=$((n+1)); base="$OUTDIR/id-$alg-$oid"
+        ossp pkey -in "$key" -outform DER -out "${base}_priv.der" 2>/dev/null
+        # EE cert carrying the composite-KEM public key, signed by the Ed25519 CA.
+        if ! ossp x509 -new -force_pubkey "$pub" -CA "$cacrt" -CAkey "$ca" \
+                -subj "/CN=ee-$oid" -days 365 -out "${base}_ee.der" -outform DER 2>/dev/null \
+           || ! ossp cms -encrypt -recip "${base}_ee.der" -aes-256-cbc -binary \
+                -in "$OUTDIR/expected_plaintext.txt" -outform DER \
+                -out "${base}_kemri_id-alg-hkdf-with-sha256.der" 2>/dev/null; then
+            no "$alg ($oid) could not produce EE cert / EnvelopedData"; continue
+        fi
+        # Self-verify: decrypting our own EnvelopedData must recover the plaintext.
+        if [ "$(ossp cms -decrypt -inform DER \
+                    -in "${base}_kemri_id-alg-hkdf-with-sha256.der" \
+                    -inkey "${base}_priv.der" -keyform DER 2>/dev/null)" = "$PLAINTEXT" ]; then
+            p=$((p+1))
+        else
+            no "$alg ($oid) self-decrypt of generated EnvelopedData"
+        fi
+    done
+    if [ "$n" -eq 0 ]; then
+        note "no composite-KEM algorithms available (needs OpenSSL 3.5+ ML-KEM + composite build)"
+    else
+        ok "generated + self-verified $p/$n composite-KEM CMS artifacts -> $OUTDIR"
+        echo "       (submit these under providers/hybrid-provider/ as"
+        echo "        artifacts_cms_$VER.zip so peers can decrypt our EnvelopedData)"
+    fi
+}
+
+case "$MODE" in
+    verify)   cmd_verify;;
+    generate) cmd_generate;;
+    all)      cmd_verify; cmd_generate;;
+esac
+
+hdr "Summary ($MODE)"
 echo "  passed: $pass   failed: $fail   skipped: $skip"
 [ "$fail" -eq 0 ]

@@ -118,14 +118,21 @@ recovered plaintext equals the peer's `expected_plaintext.txt`.
 - **Result:** **12/12 composite-KEM OIDs** — the full standardized matrix incl.
   brainpool `.61`/`.64` (which kemri_toy cannot generate) — decrypted from **each
   of two independent draft-18 implementations** (`composite-crypto`, `bc`), 0 FAIL.
-- **Scope:** one-way read only (the authenticated `_kemri_auth*` and
-  user-keying-material `_ukm` variants are out of scope). The live both-way check
-  against carl-wallace/kemri_toy lives in
-  [`test/pqc_kem_cms_interop.sh`](../test/pqc_kem_cms_interop.sh).
+- **Modes:** like the decaps script it has `verify` (default, read peers), a
+  `generate` mode that writes THIS provider's composite-KEM KEMRI `EnvelopedData`
+  (+ EE cert + PKCS#8 key + `expected_plaintext.txt`) in the same `cms_v3` layout
+  and self-verifies by decrypting each, and `all`. The `generate` output is
+  suitable for a `providers/hybrid-provider/` submission — **no artifacts have
+  been submitted to the corpus yet**; the capability is in place.
+- **Scope:** the authenticated `_kemri_auth*` and user-keying-material `_ukm`
+  variants are out of scope. The live both-way check against carl-wallace/kemri_toy
+  lives in [`test/pqc_kem_cms_interop.sh`](../test/pqc_kem_cms_interop.sh).
 
 ```sh
+# verify peers (default) — or `generate` ours / `all`
 test/pqc_kem_cms_certificates_interop.sh \
     --openssl /path/to/openssl-3.6+/bin/openssl \
     --libpath /path/to/openssl-3.6+/lib \
-    --module-dir build
+    --module-dir build \
+    all
 ```
