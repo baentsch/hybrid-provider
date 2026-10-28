@@ -104,8 +104,20 @@ minor="$(printf '%s' "$ver" | sed -nE 's/^OpenSSL [0-9]+\.([0-9]+)\..*/\1/p')"
     || { [ "$major" -eq 3 ] && [ "${minor:-0}" -ge 6 ]; } 2>/dev/null; } \
     || skip "need OpenSSL 3.6.0+ for CMS KEMRI (have: ${ver:-unknown})"
 [ -f "$MODULE_DIR/hybrid.$SOEXT" ] || skip "hybrid.$SOEXT not in $MODULE_DIR"
+# The module file is present, so a failure to ACTIVATE here is a real fault (bad
+# ABI, missing component dep, ...), not a clean skip -- and OpenSSL drops an
+# unloadable provider silently (exit 0, nothing on stderr). Fail loudly with the
+# one diagnostic OpenSSL won't give us.
+ossl list -providers -provider hybrid 2>/dev/null | grep -q 'name: hybrid-provider' || {
+    echo "ERROR: hybrid provider present at $MODULE_DIR/hybrid.$SOEXT but did not" >&2
+    echo "       activate under $OPENSSL_BIN ($ver). Likely an ABI/libcrypto" >&2
+    echo "       mismatch or a missing component dependency." >&2
+    exit 1
+}
+# Loaded fine but serves no composite KEM (e.g. built without -DHYBRID_COMPOSITE,
+# or OpenSSL < 3.5): that is a legitimate self-skip, not a fault.
 ossl list -kem-algorithms -provider hybrid 2>/dev/null | grep -q "mlkem768_p256" \
-    || skip "hybrid provider does not load / serve composite KEMs"
+    || skip "hybrid provider loaded but does not serve composite KEMs"
 command -v "$KEMRI_TOY" >/dev/null 2>&1 || [ -x "$KEMRI_TOY" ] \
     || skip "kemri_toy not found ($KEMRI_TOY) — build github.com/carl-wallace/kemri_toy"
 
