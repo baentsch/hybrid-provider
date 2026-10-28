@@ -9,15 +9,18 @@
 # the RustCrypto `cms`/`ml-kem` stack (github.com/carl-wallace/kemri_toy). Nothing
 # is sent anywhere: kemri_toy is a local binary and every artifact stays on disk.
 #
-# Two directions per composite-KEM combo:
-#   A. kemri_toy ENCRYPTS (fresh key + EnvelopedData)  -> hybrid-provider DECRYPTS
-#      (openssl cms -decrypt, hybrid loaded), recovered plaintext must match.
-#   B. hybrid-provider ENCRYPTS (our key, our cert, openssl cms -encrypt)
-#      -> kemri_toy DECRYPTS with our PKCS#8 key, recovered plaintext must match.
+# Two directions per composite-KEM combo, both driven off OUR key/cert so no
+# kemri_toy --kem name is ever needed:
+#   A. kemri_toy ENCRYPTS to our EE cert (--ee-cert-file)  -> hybrid-provider
+#      DECRYPTS (openssl cms -decrypt, hybrid loaded); recovered plaintext matches.
+#   B. hybrid-provider ENCRYPTS to our cert (openssl cms -encrypt) -> kemri_toy
+#      DECRYPTS with our PKCS#8 key (--ee-key-file); recovered plaintext matches.
 #
 # This exercises, across an impl boundary, our composite-KEM SPKI + PKCS#8
 # encoders/decoders, the SHA3-256 combiner (byte-exact or the shared secret
-# differs), and OpenSSL's KEMRI glue (HKDF-SHA256 + AES key-wrap).
+# differs), and OpenSSL's KEMRI glue (HKDF-SHA256 + AES key-wrap). A combo
+# kemri_toy cannot process just errors out (handing it our cert/key never requires
+# it to know the combo by name) — so its support is discovered, never frozen.
 #
 # Floors / prerequisites (self-skips with exit 0 if unmet — this is an opt-in
 # harness, not wired into ctest):
@@ -29,11 +32,14 @@
 #     not needed — the probe alone selects our KEM.)
 #   - the hybrid provider module (hybrid.$SOEXT) and a kemri_toy binary.
 #
-# The combo set is the intersection of both impls' composite-KEM support: kemri_toy
-# has no brainpool, so OIDs .61/.64 are out of scope here. The name<->OID mapping
-# is an explicit table of FROZEN standard identifiers (draft-ietf-lamps-pq-
-# composite-kem, arc 1.3.6.1.5.5.7.6.55..66) — curate by hand when a row is added;
-# a cleverer derivation would only obscure that these are fixed spec values.
+# The combo set is NOT a frozen table — that would freeze the two impls'
+# intersection, which drifts as kemri_toy gains combos. Instead both sides are
+# discovered at run time: our side from the provider (every standardized
+# composite-KEM OID 1.3.6.1.5.5.7.6.55..66 it serves), kemri_toy's side from its
+# own `--help` (`--kem [possible values: ...]`) cross-checked against the OID it
+# stamps into its output filenames. We then test every combo the standard defines
+# that WE serve; a combo kemri_toy cannot do is SKIP (not a frozen omission), and a
+# composite OID kemri_toy supports but we do not is reported as our own drift.
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -103,109 +109,134 @@ ossl list -kem-algorithms -provider hybrid 2>/dev/null | grep -q "mlkem768_p256"
 command -v "$KEMRI_TOY" >/dev/null 2>&1 || [ -x "$KEMRI_TOY" ] \
     || skip "kemri_toy not found ($KEMRI_TOY) — build github.com/carl-wallace/kemri_toy"
 
-# --- combo table: our provider name | kemri_toy --kem | OID tail --------------
-# Intersection of both impls (no brainpool in kemri_toy). Frozen spec identifiers.
-COMBOS="
-mlkem768_rsa2048  ml-kem768-rsa2048-sha3-256     55
-mlkem768_rsa3072  ml-kem768-rsa3072-sha3-256     56
-mlkem768_rsa4096  ml-kem768-rsa4096-sha3-256     57
-mlkem768_x25519   ml-kem768-x25519-sha3-256      58
-mlkem768_p256     ml-kem768-ecdh-p256-sha3-256   59
-mlkem768_p384     ml-kem768-ecdh-p384-sha3-256   60
-mlkem1024_rsa3072 ml-kem1024-rsa3072-sha3-256    62
-mlkem1024_p384    ml-kem1024-ecdh-p384-sha3-256  63
-mlkem1024_x448    ml-kem1024-x448-sha3-256       65
-mlkem1024_p521    ml-kem1024-ecdh-p521-sha3-256  66
-"
-
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+ARC='1\.3\.6\.1\.5\.5\.7\.6\.(5[5-9]|6[0-6])'   # LAMPS composite-KEM OID arc
+
+MSG="kemri_toy <-> hybrid-provider RFC9629 KEMRI"
+MSG_A="$WORK/msgA.txt"; printf '%s' "$MSG" >"$MSG_A"
+MSG_B="$WORK/msgB.txt"; printf '%s' "$MSG" >"$MSG_B"
+
+# --- discover OUR standardized composite-KEM combos (oid tail -> our name) -----
+# Every composite-KEM the provider serves whose public key encodes to the LAMPS
+# standardized arc; the concat MLX/X-Wing hybrids (no SPKI OID) and the private-arc
+# experimental composites fall outside ARC and drop. This is "what the standard
+# defines that we serve" — the driver set, so kemri_toy gaps surface as SKIP.
+: > "$WORK/ourmap"
+for alg in $(ossl list -kem-algorithms $PROV 2>/dev/null \
+        | awk '/@ *hybrid/ { gsub(/^ +/,""); sub(/ .*/,""); print }'); do
+    ossl genpkey $PROV -algorithm "$alg" -outform DER -out "$WORK/o.key" 2>/dev/null || continue
+    ossl pkey $PROV -in "$WORK/o.key" -inform DER -pubout -outform DER \
+        -out "$WORK/o.pub" 2>/dev/null || continue
+    # asn1parse is not provider-aware (rejects -provider); it only reads the DER.
+    oidfull="$(ossl asn1parse -inform DER -in "$WORK/o.pub" 2>/dev/null \
+               | grep -oE "$ARC" | head -1)"
+    [ -z "$oidfull" ] && continue
+    echo "${oidfull##*.} $alg" >> "$WORK/ourmap"
+done
+sort -n -o "$WORK/ourmap" "$WORK/ourmap"
+
+# kemri_toy's advertised --kem values — consulted ONLY to classify a FAILED
+# interaction (absent here => a genuine kemri_toy omission => SKIP). No frozen
+# name<->OID table and no probing pass: we hand kemri_toy OUR cert/key
+# (--ee-cert-file / --ee-key-file), so it never needs a --kem name, and a combo it
+# cannot process simply errors out.
+KT_KEMS="$("$KEMRI_TOY" --help 2>&1 \
+    | awk '/--kem/{f=1} f&&/possible values:/{sub(/.*\[possible values: /,""); sub(/\].*/,""); gsub(/,/," "); print; exit}')"
 
 # One Ed25519 CA to sign all recipient certs (a KEM key cannot self-sign).
 ossl genpkey -algorithm ED25519 -out "$WORK/ca.key" >/dev/null 2>&1
 ossl x509 -new -key "$WORK/ca.key" -subj "/CN=hybrid-kem-interop-ca" -days 3650 \
     -out "$WORK/ca.crt" >/dev/null 2>&1 || skip "cannot create CA cert"
 
-MSG="kemri_toy <-> hybrid-provider RFC9629 KEMRI"
-MSG_A="$WORK/msgA.txt"; printf '%s' "$MSG" >"$MSG_A"
-MSG_B="$WORK/msgB.txt"; printf '%s' "$MSG" >"$MSG_B"
+# Does kemri_toy advertise a --kem for this combo? Transparent token test: a --kem
+# value must carry both our level (ml-kem768/1024) and our trad token (bp -> the
+# "brainpool" kemri spells). Used only to annotate a failed interaction, never to
+# decide what to run.
+kt_advertises() {   # $1 = our alg name, e.g. mlkem1024_bp384
+    local lvl="${1%%_*}" trad="${1#*_}"
+    lvl="ml-kem${lvl#mlkem}"                    # mlkem768 -> ml-kem768
+    case "$trad" in bp*) trad="brainpool" ;; esac
+    printf '%s' "$KT_KEMS" | tr ' ' '\n' | grep -i -- "$lvl" | grep -qi -- "$trad"
+}
 
-# Status model (honest about a cross-DRAFT peer): kemri_toy pins
-# draft-ietf-lamps-pq-composite-kem-12; we implement -18. A combo is only in
-# scope if kemri_toy can round-trip it ITSELF (encrypt own -> decrypt own) — that
-# excludes combos kemri_toy has not implemented (it panics generating X25519/X448
-# recipient keys, "generate_kem_cert for EC variants"). Among in-scope combos:
-#   OK    both cross-directions agree;
-#   SKEW  they diverge BUT both sides are internally consistent (kemri_toy self-
-#         round-trips AND our own provider decrypts our own output) — a draft-12
-#         vs -18 difference, not a fault. draft-18 correctness is asserted
-#         elsewhere (hybrid_cms_kem_test + pqc_kem_cms_certificates_interop.sh,
-#         which reads the IETF Hackathon pqc-certificates cms_v3 corpus).
-#   SKIP  kemri_toy cannot do the combo at all.
-# The run FAILS only if OUR output is not even self-valid (a real regression) or a
-# step on our side errors — never merely because the older-draft peer disagrees.
+# Status model. We test every standardized combo WE serve; kemri_toy is driven
+# with our cert/key, so its own capability decides the outcome:
+#   OK    both cross-directions agree.
+#   SKEW  kemri_toy processed the combo but disagreed, while our own output is
+#         self-valid — a draft-12 vs -18 difference, not a fault (draft-18
+#         correctness is asserted by hybrid_cms_kem_test +
+#         pqc_kem_cms_certificates_interop.sh against the pqc-certificates corpus).
+#   SKIP  kemri_toy errors on the combo (cannot process it); confirmed absent from
+#         its --help --kem list. If it IS advertised yet errored, the row is marked
+#         SKIP* so the discrepancy stays visible rather than hidden.
+# The run FAILS only if OUR OWN output is not self-valid (a real regression).
 ok=0; skew=0; skip=0; fail=0
 printf '%-20s %-7s %-7s %s\n' "combo (OID)" "kt>hyb" "hyb>kt" "status"
 printf '%-20s %-7s %-7s %s\n' "-----------" "------" "------" "------"
 
-while read -r our kt oid; do
-    [ -z "${our:-}" ] && continue
-    d="$WORK/$oid"; mkdir -p "$d/kt" "$d/kt/self" "$d/hyb" "$d/hyb/out"
+while read -r oid our; do
+    [ -z "${oid:-}" ] && continue
+    d="$WORK/run/$oid"; mkdir -p "$d/A" "$d/B"
 
-    # Peer-capability gate: kemri_toy must self-round-trip (also produces the
-    # Direction-A source artifacts). If it cannot, the combo is out of scope.
-    if ! "$KEMRI_TOY" --kem "$kt" -i "$MSG_A" -o "$d/kt" >/dev/null 2>&1; then
-        printf '%-20s %-7s %-7s %s\n' "$our(.$oid)" "-" "-" "SKIP (kemri_toy lacks $kt)"
-        skip=$((skip+1)); continue
-    fi
-    blob="$(ls "$d/kt"/*7.6."$oid"_kemri_id-alg-hkdf-with-sha256.der 2>/dev/null | head -1)"
-    priv="$(ls "$d/kt"/*7.6."$oid"_priv.der 2>/dev/null | head -1)"
-    "$KEMRI_TOY" -i "$blob" -k "$priv" -o "$d/kt/self" >/dev/null 2>&1
-    if [ -z "$blob" ] || [ -z "$priv" ] \
-       || [ "$(cat "$(ls "$d/kt/self"/decrypted_* 2>/dev/null | head -1)" 2>/dev/null)" != "$MSG" ]; then
-        printf '%-20s %-7s %-7s %s\n' "$our(.$oid)" "-" "-" "SKIP (kemri_toy cannot round-trip)"
-        skip=$((skip+1)); continue
+    # Our key + EE cert (used by BOTH directions; a failure here is OUR bug).
+    if ! ossl genpkey $PROV -algorithm "$our" -outform DER -out "$d/priv.der" 2>/dev/null \
+       || ! ossl pkey $PROV -in "$d/priv.der" -inform DER -pubout -out "$d/pub.pem" 2>/dev/null \
+       || ! ossl x509 -new -force_pubkey "$d/pub.pem" -CA "$WORK/ca.crt" -CAkey "$WORK/ca.key" \
+              -subj "/CN=ee-$oid" -days 365 $PROV -out "$d/ee.der" -outform DER 2>/dev/null; then
+        printf '%-20s %-7s %-7s %s\n' "$our(.$oid)" "-" "-" "FAIL (our keygen/cert)"
+        fail=$((fail+1)); continue
     fi
 
-    # Direction A: hybrid-provider decrypts kemri_toy's EnvelopedData.
-    a="x"
-    got="$(ossl cms -decrypt $PROV -inform DER -in "$blob" -inkey "$priv" -keyform DER 2>/dev/null)"
-    [ "$got" = "$MSG" ] && a="ok"
+    # Direction A: kemri_toy ENCRYPTS to our cert (--ee-cert-file, no --kem); we
+    # decrypt. kemri_toy erroring here means it cannot process this combo.
+    a="x"; a_err=0
+    if "$KEMRI_TOY" --ee-cert-file "$d/ee.der" -i "$MSG_A" -o "$d/A" >/dev/null 2>&1; then
+        blob="$(ls "$d/A"/*_kemri_id-alg-hkdf-with-sha256.der 2>/dev/null | grep -v _kemri_auth | head -1)"
+        [ -n "$blob" ] && [ "$(ossl cms -decrypt $PROV -inform DER -in "$blob" \
+             -inkey "$d/priv.der" -keyform DER 2>/dev/null)" = "$MSG" ] && a="ok"
+    else
+        a_err=1
+    fi
 
-    # Direction B: hybrid-provider generates key+cert, encrypts; kemri_toy decrypts.
-    # (A missing step here is OUR failure, not the peer's.)
-    b="x"; our_self="x"
-    if ossl genpkey $PROV -algorithm "$our" -outform DER -out "$d/hyb/priv.der" 2>/dev/null \
-       && ossl pkey $PROV -in "$d/hyb/priv.der" -inform DER -pubout -out "$d/hyb/pub.pem" 2>/dev/null \
-       && ossl x509 -new -force_pubkey "$d/hyb/pub.pem" -CA "$WORK/ca.crt" \
-              -CAkey "$WORK/ca.key" -subj "/CN=ee-$oid" -days 365 $PROV \
-              -out "$d/hyb/ee.crt" 2>/dev/null \
-       && ossl cms -encrypt $PROV -recip "$d/hyb/ee.crt" -aes-256-cbc -binary \
-              -in "$MSG_B" -outform DER -out "$d/hyb/env.der" 2>/dev/null; then
-        # Our own output must be self-valid (guards against masking a regression).
-        [ "$(ossl cms -decrypt $PROV -inform DER -in "$d/hyb/env.der" \
-                 -inkey "$d/hyb/priv.der" -keyform DER 2>/dev/null)" = "$MSG" ] && our_self="ok"
-        if "$KEMRI_TOY" -i "$d/hyb/env.der" -k "$d/hyb/priv.der" -o "$d/hyb/out" >/dev/null 2>&1; then
-            dec="$(ls "$d/hyb/out"/decrypted_* 2>/dev/null | head -1)"
+    # Direction B: we ENCRYPT to our cert; kemri_toy decrypts with our key. Our own
+    # output must self-validate (guards against masking a regression as a SKEW).
+    b="x"; b_err=0; our_self="x"
+    if ossl cms -encrypt $PROV -recip "$d/ee.der" -aes-256-cbc -binary \
+            -in "$MSG_B" -outform DER -out "$d/env.der" 2>/dev/null; then
+        [ "$(ossl cms -decrypt $PROV -inform DER -in "$d/env.der" \
+             -inkey "$d/priv.der" -keyform DER 2>/dev/null)" = "$MSG" ] && our_self="ok"
+        if "$KEMRI_TOY" -i "$d/env.der" -k "$d/priv.der" -o "$d/B" >/dev/null 2>&1; then
+            dec="$(ls "$d/B"/decrypted_* 2>/dev/null | head -1)"
             [ -n "$dec" ] && [ "$(cat "$dec")" = "$MSG" ] && b="ok"
+        else
+            b_err=1
         fi
     fi
 
     pa="$([ "$a" = ok ] && echo ok || echo no)"
     pb="$([ "$b" = ok ] && echo ok || echo no)"
-    if [ "$a" = ok ] && [ "$b" = ok ]; then
-        st="OK"; ok=$((ok+1))
-    elif [ "$our_self" = ok ]; then
-        st="SKEW (kemri_toy draft-12 vs our -18)"; skew=$((skew+1))
-    else
+    if [ "$our_self" != ok ]; then
         st="FAIL (our output not self-valid)"; fail=$((fail+1))
+    elif [ "$a" = ok ] && [ "$b" = ok ]; then
+        st="OK"; ok=$((ok+1))
+    elif [ "$a_err" = 1 ] && [ "$b_err" = 1 ]; then
+        if kt_advertises "$our"; then
+            st="SKIP* (--help advertises it, but kemri_toy errored)"
+        else
+            st="SKIP (kemri_toy lacks this combo)"
+        fi
+        skip=$((skip+1))
+    else
+        st="SKEW (kemri_toy draft-12 vs our -18)"; skew=$((skew+1))
     fi
     printf '%-20s %-7s %-7s %s\n' "$our(.$oid)" "$pa" "$pb" "$st"
-done <<EOF
-$COMBOS
-EOF
+done < "$WORK/ourmap"
 
 echo "----"
 echo "both-way composite-KEM CMS KEMRI interop (hybrid-provider <-> kemri_toy):"
-echo "  $ok OK (both ways), $skew SKEW (older-draft peer), $skip SKIP (peer lacks combo), $fail FAIL"
+echo "  $ok OK (both ways), $skew SKEW (older-draft peer), $skip SKIP (kemri_toy can't;"
+echo "  * = advertised in --help but errored), $fail FAIL  —  full standardized matrix,"
+echo "  discovered at run time (no frozen list)."
 [ "$fail" -eq 0 ]

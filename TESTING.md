@@ -203,13 +203,16 @@ absent, and FAILs only on a real mismatch:
 
 - **`test/pqc_kem_cms_interop.sh`** — **both-way** CMS KEMRI interop against
   [kemri_toy](https://github.com/carl-wallace/kemri_toy) (an independent
-  RustCrypto RFC 9629 tool), fully local: per combo kemri_toy encrypts → we
-  decrypt, and we encrypt → kemri_toy decrypts, plaintext checked each way.
-  kemri_toy pins composite-kem **draft-12** vs our **-18**, so it classifies
-  honestly: `OK` (both agree), `SKEW` (differ yet each self-consistent — our
-  output is re-checked for self-validity so a real regression still fails), `SKIP`
-  (combo kemri_toy lacks, e.g. it cannot generate X25519/X448 recipients).
-  Representative run: 7 OK, 1 SKEW (`.56`), 2 SKIP (`.58`/`.65`), 0 FAIL.
+  RustCrypto RFC 9629 tool), fully local. It drives the **full standardized matrix
+  that the provider serves** (discovered at run time — no frozen combo list that
+  could go stale as kemri_toy evolves), handing kemri_toy our cert/key so it needs
+  no `--kem` name: per combo kemri_toy encrypts → we decrypt, and we encrypt →
+  kemri_toy decrypts. kemri_toy pins composite-kem **draft-12** vs our **-18**, so
+  it classifies honestly: `OK` (both agree), `SKEW` (differ yet our output is
+  re-checked self-valid, so a real regression still fails), `SKIP` (kemri_toy
+  errors on the combo — `*` if its `--help` advertises the combo yet it still
+  errored, so the discrepancy stays visible). Representative run: 7 OK, 1 SKEW
+  (`.56`), 4 SKIP (`.61`/`.64` absent; `.58`/`.65` advertised-but-errored), 0 FAIL.
 - **`test/pqc_kem_cms_certificates_interop.sh`** — multi-peer read of the IETF
   Hackathon pqc-certificates **`cms_v3`** EnvelopedData corpus: per peer it
   downloads `artifacts_cms_v3.zip` and, for every composite-KEM OID shipping a
