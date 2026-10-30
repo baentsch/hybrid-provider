@@ -113,6 +113,15 @@ test vectors (`composite_kat_test`). ML-DSA only. Message-representative
 construction `M' = prefix || label || len(ctx) || ctx || PH(M)`, raw-concat
 serialization. **Normative** (byte-exact vs. BouncyCastle / future OpenSSL-native).
 
+These composite signatures are also exercised through CMS `SignedData` — the
+binding `draft-ietf-lamps-cms-composite-sigs` (WG `-00`, Jan 2026) — in both
+SignerInfo modes (signed attributes and `-noattr`) by `composite_cms_test` (issue
+#109), the signature counterpart to the composite ML-KEM KEMRI coverage in §2.4.
+The `-noattr` (md-less content-signing) path needed the signer to implement the
+message-signature EVP API (`sign_message`/`verify_message_*`), which the provider
+now does; it engages from OpenSSL **3.6.0** (3.5.x lacks md-less CMS content-signing
+even for native ML-DSA) and self-skips below that, probed at runtime.
+
 This family *can* take part in the IETF Hackathon
 [`pqc-certificates`](https://github.com/IETF-Hackathon/pqc-certificates)
 multi-vendor interop in both roles via
@@ -304,8 +313,6 @@ yet implemented**. Candidates, strongest fit first:
 
 | Spec | What it adds | Why it fits |
 |---|---|---|
-| **Composite ML-DSA in CMS** — `draft-ietf-lamps-cms-composite-sigs` | CMS binding of the §2.3 composite signatures | We already have `hybrid_cms_test.c` (SignedData) and the composite signers |
-| **Composite ML-KEM in CMS / KEMRI** — **RFC 9629** (Using KEMs with CMS) + the composite-kem CMS binding | `EnvelopedData` driven by the §2.4 composite KEM | **No new crypto needed** — OpenSSL's CMS KEMRI path is provider-generic (auto-routes any `EVP_PKEY_encapsulate`-capable key to `KEMRI`) and our composite KEM already exposes the full KEM interface + SPKI encoders. The gap is a KEMRI round-trip **test** and **recipient-cert issuance** (a KEM key can't self-sign; issue the cert with a signing key). 3.5+ floor matches composite's. |
 | **Dual / parallel hybrid X.509** — `draft-truskovsky-lamps-pq-hybrid-x509`, `draft-sun-lamps-hybrid-scheme`, ITU-T X.509 "catalyst" (`subjectAltPublicKeyInfo` / `altSignature*`) | Two independent signatures in one certificate | The *other* hybrid-cert philosophy vs. our single composite signature; architecturally adjacent |
 
 Each candidate above is tracked as a GitHub issue for later implementation (see
@@ -323,8 +330,6 @@ Each future-work item above is tracked as an issue:
 
 | Issue | Scope |
 |---|---|
-| [#108](https://github.com/baentsch/hybrid-provider/issues/108) CMS KEMRI (RFC 9629) for composite ML-KEM | `EnvelopedData` round-trip test + recipient-cert issuance; KDF/key-wrap pinning for cross-impl interop |
-| [#109](https://github.com/baentsch/hybrid-provider/issues/109) Composite ML-DSA signatures in CMS SignedData | Verify/extend `hybrid_cms_test.c` to the composite keytype (`draft-ietf-lamps-cms-composite-sigs`), attr + `-noattr` |
 | [#111](https://github.com/baentsch/hybrid-provider/issues/111) Dual / parallel hybrid X.509 certificates | Scope decision + prototype for `subjectAltPublicKeyInfo` / catalyst-style dual-sig certs |
 | [#112](https://github.com/baentsch/hybrid-provider/issues/112) Runtime "define-a-hybrid" config mechanism | cnf-declared experimental hybrids for arbitrary component pairs (operation-only; private IDs optional; §3.4) |
 
