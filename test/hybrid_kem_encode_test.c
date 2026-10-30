@@ -4,17 +4,21 @@
  *
  * KEM key-file interop test (gated by HYBRID_KEM_ENCODERS, mirroring
  * oqsprovider's OQS_KEM_ENCODERS). For each hybrid KEM that has an assigned OID,
- * round-trips SPKI (public) and PKCS8 (private) key files between the hybrid
- * provider and oqsprovider, in both directions, and proves the reconstructed key
- * works by completing a cross-provider encapsulate/decapsulate whose shared
- * secrets must match.
+ * round-trips SPKI (public) and PKCS8 (private) key files and proves the
+ * reconstructed key works by completing an encapsulate/decapsulate whose shared
+ * secrets must match. Rows that oqsprovider also owns are round-tripped BOTH ways
+ * between the hybrid provider and oqsprovider; experimental private-arc rows that
+ * only this provider owns are round-tripped hybrid->hybrid (self).
  *
  * Self-skips when the hybrid provider was built without KEM encoders, or when
  * oqsprovider is unavailable / built without OQS_KEM_ENCODERS.
  *
- * The three encodable hybrid KEMs cover both component orderings and classical
- * key encodings: SecP256r1MLKEM512 (EC, forward), SecP384r1MLKEM1024 (EC, forward),
- * x25519_mlkem512 (X25519 raw, reverse-share).
+ * The oqsprovider-shared encodable KEMs cover both component orderings and
+ * classical key encodings: SecP256r1MLKEM512 (EC, forward), SecP384r1MLKEM1024
+ * (EC, forward), x25519_mlkem512 (X25519 raw, reverse-share). The self round-trip
+ * additionally covers the experimental standalone-key hybrids (private OID arc),
+ * whose keytype-agnostic (OID-driven) SPKI decode had no coverage before and is
+ * what cert/CMS file workflows (`cms -encrypt -recip <hybrid-cert>`) depend on.
  */
 #include <stdio.h>
 #include <string.h>
@@ -34,8 +38,9 @@ static int tests, passed, failed;
  * provider implements the MLX KEMs as TLS groups only and has NO key-file
  * encoders for them, so oqsprovider is the sole peer that both owns and
  * serializes these keys. SecP384r1MLKEM1024 is owned+encoded by oqsprovider on
- * OpenSSL < 3.5 but ceded to default (which can't encode it) on >= 3.5; the
- * per-alg peer check below then skips it rather than failing.
+ * OpenSSL < 3.5 but ceded to default (which can't encode it) on >= 3.5; on >= 3.5
+ * the per-alg peer check below then has no oqsprovider peer and falls back to a
+ * hybrid->hybrid self round-trip rather than skipping.
  */
 #define KEM_IS_ENCODABLE(i) (hybrid_kem_table[(i)].oid != NULL)
 
@@ -247,8 +252,19 @@ int main(void)
         if (!KEM_IS_ENCODABLE(i))
             continue;
         if (!provider_has(ctx, alg, "provider=oqsprovider")) {
-            printf("  %-22s SKIPPED (oqsprovider does not provide it here)\n",
-                   alg);
+            /*
+             * No oqsprovider peer: an experimental private-arc hybrid that only
+             * this provider owns (e.g. exphyb_p256_frodo640aes, OID 1.3.9999.99.x).
+             * Exercise our OWN encode + decode with a hybrid->hybrid self round-
+             * trip. decode() uses a keytype-agnostic OSSL_DECODER (keytype NULL),
+             * so this drives the OID-driven generic SPKI decode -- the path that
+             * `cms -encrypt -recip <hybrid-cert-file>` relies on and that had NO
+             * coverage before (the cross-provider peer check skipped these rows,
+             * which is exactly how the decode gap went unnoticed). It works only
+             * because the provider registers the hybrid KEM OID<->name mapping
+             * (hybrid_prov.c), so OpenSSL resolves the SPKI OID to our keytype. */
+            one_dir(ctx, alg, "hybrid->hybrid self", "provider=hybrid",
+                    "provider=hybrid");
             continue;
         }
         one_dir(ctx, alg, "hybrid->oqs", "provider=hybrid",

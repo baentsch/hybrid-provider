@@ -907,6 +907,27 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
         (void)c_obj_add_sigid(handle, nm, "", nm);
         HYBRID_SIG_LIST(HYBRID_SIG_OID_REG)
 #undef HYBRID_SIG_OID_REG
+        {   /* Hybrid KEMs: register the OID<->name mapping for the few rows that
+             * carry an X.509 key OID (the experimental standalone-key hybrids; the
+             * MLX/X-Wing TLS groups have none). Without this, OpenSSL's generic
+             * SubjectPublicKeyInfo decoder names the keytype from the
+             * AlgorithmIdentifier OID via OBJ_obj2txt() and — for an OID it does
+             * not know — yields the raw dotted string instead of our keytype name,
+             * so our decoder (registered under the name) is never selected and the
+             * key cannot be loaded from a cert/SPKI file (blocking e.g.
+             * `cms -encrypt -recip <hybrid-cert>`). Registering OID<->name lets the
+             * X.509 / CLI layers map the SPKI OID back to the algorithm, exactly
+             * like the composite-KEM block below. A KEM is not a signature, so no
+             * add_sigid. Only meaningful when the key-file encoders/decoders are
+             * built, but harmless otherwise. */
+            size_t ki;
+
+            for (ki = 0; ki < HYBRID_KEM_ALG_COUNT; ki++)
+                if (hybrid_kem_table[ki].oid != NULL)
+                    (void)c_obj_create(handle, hybrid_kem_table[ki].oid,
+                                       hybrid_kem_table[ki].hybrid_name,
+                                       hybrid_kem_table[ki].hybrid_name);
+        }
 #ifdef HYBRID_COMPOSITE
         {   /* composite signatures: register OID<->name for the rows we serve.
              * Skip rows with no OID, and — below 3.5, where the standardized tier

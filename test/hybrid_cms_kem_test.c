@@ -78,6 +78,7 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include "composite_kem_prov.h"
+#include "hybrid_prov.h"   /* hybrid_kem_table: the (non-composite) hybrid family */
 
 static int tests, passed, failed, skipped;
 
@@ -111,13 +112,25 @@ static EVP_PKEY *gen_kem(OSSL_LIB_CTX *ctx, const char *name)
  * own trust anchor. Generic over the KEM: used both for the composite recipients
  * under test and for the native ML-KEM key in the capability probe. The issuer key
  * is not returned; the cert is self-named for a minimal standalone recipient.
+ *
+ * The finished cert is round-tripped through DER (i2d, then d2i into an X509
+ * preallocated via X509_new_ex(ctx)) so the recipient public key the caller gets
+ * is reconstructed from its
+ * SubjectPublicKeyInfo via OpenSSL's generic, OID-driven decode — exactly as
+ * `openssl cms -encrypt -recip <cert-file>` loads a recipient from a file, NOT from
+ * the live in-process key. For the composite and experimental hybrid rows alike,
+ * this proves the keytype resolves from the SPKI OID (the hybrid KEMs rely on the
+ * provider's OID<->name registration for it); the native ML-KEM probe rides the
+ * same path.
  */
 static int make_kem_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *kem, X509 **cert_out)
 {
     EVP_PKEY *ca = EVP_PKEY_Q_keygen(ctx, "provider=default", "ED25519");
-    X509 *cert = NULL;
+    X509 *cert = NULL, *rt = NULL;
     X509_NAME *name = X509_NAME_new();
-    int ok = 0;
+    unsigned char *der = NULL;
+    const unsigned char *p;
+    int derlen, ok = 0;
 
     if (ca == NULL || name == NULL)
         goto end;                                   /* no Ed25519: give up */
@@ -134,9 +147,28 @@ static int make_kem_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *kem, X509 **cert_out)
             || !X509_set_issuer_name(cert, name)
             || X509_sign(cert, ca, NULL) == 0)      /* Ed25519: one-shot, md NULL */
         goto end;
-    *cert_out = cert; cert = NULL;
+    /* File-based recipient: re-decode so the pubkey comes from the SPKI OID.
+     * d2i into an X509 preallocated via X509_new_ex(ctx) keeps the decode (and the
+     * cert's lazy pubkey resolution) bound to ctx, so the hybrid provider is in
+     * scope — exactly as loading the cert from a file would be.
+     *
+     * Ownership/cleanup: `rt` is freed exactly once. On success it is handed to
+     * *cert_out and cleared, so the X509_free(rt) at `end:` is a no-op. On a d2i
+     * decode failure d2i_X509() frees the reused object AND sets rt = NULL itself
+     * (ASN1_item_ex_free), so again the cleanup free is a no-op — never a
+     * double-free, and `cert` (the pre-encode original) is the separately-owned
+     * object freed alongside it. */
+    if ((derlen = i2d_X509(cert, &der)) <= 0)
+        goto end;
+    p = der;
+    if ((rt = X509_new_ex(ctx, NULL)) == NULL
+            || d2i_X509(&rt, &p, derlen) == NULL)
+        goto end;
+    *cert_out = rt; rt = NULL;
     ok = 1;
 end:
+    OPENSSL_free(der);
+    X509_free(rt);
     EVP_PKEY_free(ca);
     X509_NAME_free(name);
     X509_free(cert);
@@ -256,7 +288,11 @@ end:
     return ok;
 }
 
-static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
+/* Generic over any provider KEM with a cert-representable public key: `name` is
+ * the registered algorithm, `pq_alg` the PQ component to probe for availability
+ * (ML-KEM for a standardized composite, Frodo/BIKE/HQC for an experimental
+ * composite, or the alg2 PQ KEM for a hybrid row). */
+static void check(OSSL_LIB_CTX *ctx, const char *name, const char *pq_alg,
                   int kemri_supported)
 {
     EVP_PKEY *kem = NULL, *kem_wrong = NULL;
@@ -269,7 +305,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
     const unsigned char content[] = "composite KEM CMS EnvelopedData payload";
 
     tests++;
-    printf("  %-22s CMS EnvelopedData encrypt/decrypt ... ", info->name);
+    printf("  %-22s CMS EnvelopedData encrypt/decrypt ... ", name);
     fflush(stdout);
 
     if (!kemri_supported) {
@@ -277,12 +313,12 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
         skipped++; tests--;
         return;
     }
-    if (!have_alg(ctx, info->pq_alg)) {
-        printf("SKIP (%s unavailable)\n", info->pq_alg);
+    if (!have_alg(ctx, pq_alg)) {
+        printf("SKIP (%s unavailable)\n", pq_alg);
         skipped++; tests--;
         return;
     }
-    if ((kem = gen_kem(ctx, info->name)) == NULL
+    if ((kem = gen_kem(ctx, name)) == NULL
             || !make_kem_cert(ctx, kem, &cert)) {
         printf("SKIP (keygen/cert failed)\n");
         skipped++; tests--; ERR_clear_error();
@@ -309,7 +345,7 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info,
     /* Negative: a different key of the same type, same cert identity. The
      * recipient matches by issuer/serial, decapsulation yields a different KEK,
      * and the AES key-unwrap integrity check rejects it -> decrypt must fail. */
-    if ((kem_wrong = gen_kem(ctx, info->name)) == NULL)
+    if ((kem_wrong = gen_kem(ctx, name)) == NULL)
         goto fail;
     if (cms_decrypt_der(ctx, der, derlen, kem_wrong, cert, NULL, NULL)) {
         printf("FAIL (decrypt succeeded with wrong key)\n");
@@ -350,7 +386,10 @@ int main(void)
         OSSL_LIB_CTX_free(ctx);
         return 1;
     }
-    OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental-tier PQ */
+    /* Optional: both experimental tiers below take their PQ half (Frodo/BIKE/HQC)
+     * from oqsprovider — the composite experimental combos and the experimental
+     * hybrid-family rows alike; absent it, those rows self-skip. */
+    (void)OSSL_PROVIDER_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     kemri_supported = cms_kemri_supported(ctx);
@@ -363,7 +402,30 @@ int main(void)
      * default provider on 3.5+) and experimental Frodo/BIKE/HQC combos (private
      * OID arc, PQ from oqsprovider) — the same SPKI+KEMRI path over different PQ. */
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
-        check(ctx, &composite_kem_table[i], kemri_supported);
+        check(ctx, composite_kem_table[i].name,
+              composite_kem_table[i].pq_alg, kemri_supported);
+
+    /* Experiment: a *hybrid*-family KEM (concatenation, NOT a LAMPS composite)
+     * can equally be a CMS KEMRI recipient — the limit was never the KEM, only a
+     * cert-representable key. Exercise every hybrid row that carries an X.509 key
+     * OID but no TLS group (oid != NULL && tls_codepoint == 0): the experimental
+     * private-arc rows meant as standalone-key hybrids. These self-skip unless the
+     * build enabled HYBRID_KEM_ENCODERS (else X509_set_pubkey has no SPKI encoder
+     * -> keygen/cert step fails -> SKIP) and oqsprovider supplies the PQ half.
+     *
+     * The recipient cert is file-based: make_kem_cert() round-trips it through DER
+     * so the recipient pubkey is rebuilt from its SubjectPublicKeyInfo via the
+     * generic OID-driven decode — the same path `openssl cms -encrypt -recip
+     * <hybrid-cert-file>` uses. That resolves the hybrid keytype from the SPKI OID
+     * because the provider registers the hybrid KEM OID<->name mapping
+     * (hybrid_prov.c); the standalone SPKI/PKCS8 decode itself is covered directly
+     * by hybrid_kem_encode_test's hybrid->hybrid self round-trip. */
+    printf("  -- experimental hybrid-family KEMs (HYBRID_KEM_ENCODERS) --\n");
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+        if (hybrid_kem_table[i].oid != NULL
+                && hybrid_kem_table[i].tls_codepoint == 0)
+            check(ctx, hybrid_kem_table[i].hybrid_name,
+                  hybrid_kem_table[i].alg2_name, kemri_supported);
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
