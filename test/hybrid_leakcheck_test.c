@@ -170,10 +170,10 @@ static void exercise_sig(OSSL_LIB_CTX *ctx, const char *name)
     EVP_PKEY_free(k);
 }
 
-/* Full battery for a KEM key type. Silent skip if not operable. `xwing` is 1 for
- * rows wired to the X-Wing SHA3-256 combiner, which must collapse to one 32-byte
- * digest (see the round-trip block). */
-static void exercise_kem(OSSL_LIB_CTX *ctx, const char *name, int xwing)
+/* Full battery for a KEM key type. Silent skip if not operable. `combiner` is the
+ * row's HYBRID_COMBINER_* value; X-Wing-combiner rows must collapse to one 32-byte
+ * digest (checked in the round-trip block). */
+static void exercise_kem(OSSL_LIB_CTX *ctx, const char *name, int combiner)
 {
     EVP_PKEY *k = keygen(ctx, name), *k2 = NULL, *spki = NULL, *p8 = NULL;
     EVP_PKEY_CTX *ec = NULL, *dc = NULL;
@@ -216,7 +216,7 @@ static void exercise_kem(OSSL_LIB_CTX *ctx, const char *name, int xwing)
          * entry would silently fall back to raw concatenation — a longer secret
          * that still round-trips — so the agreement check above would not catch
          * it; assert the combined length too. */
-        if (xwing)
+        if (combiner == HYBRID_COMBINER_XWING)
             ok &= (sslen == HYBRID_XWING_SS_LEN);
     } else {
         ok = 0;
@@ -262,13 +262,14 @@ int main(void)
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         exercise_sig(ctx, hybrid_sig_table[i].hybrid_name);
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
-        exercise_kem(ctx, hybrid_kem_table[i].hybrid_name,
-                     hybrid_kem_combiner[i] == HYBRID_COMBINER_XWING);
+        exercise_kem(ctx, hybrid_kem_table[i].hybrid_name, hybrid_kem_combiner[i]);
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
         exercise_sig(ctx, composite_sig_table[i].name);
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
-        exercise_kem(ctx, composite_kem_table[i].name, 0);
+        /* Composite KEMs have their own fixed combiner, not a hybrid_kem_combiner[]
+         * row; pass CONCAT so the X-Wing length check does not apply. */
+        exercise_kem(ctx, composite_kem_table[i].name, HYBRID_COMBINER_CONCAT);
 #endif
 
     /* Unload-clean shutdown: unload every provider we loaded so teardown runs
