@@ -89,8 +89,9 @@ over a
 PQ-only [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 (`hybrid_replace_test`, below), and — with `-DHYBRID_COMPOSITE` — the composite
 combiner, provider and draft-19 KAT tests (`composite_sig_test`,
-`composite_test`, `composite_kat_test`). Each self-skips cleanly when its
-prerequisites are absent.
+`composite_test`, `composite_kat_test`) plus composite CMS `SignedData`
+(`composite_cms_test`, below). Each self-skips cleanly when its prerequisites are
+absent.
 
 ### Cross-provider methodology (`hybrid_methodology_test`)
 
@@ -194,6 +195,22 @@ optionally, so they self-skip when it is absent), exercising the same SPKI + KEM
 path over non-ML-KEM PQ. Our MLX/X-Wing/SM2 TLS-group hybrids are excluded only
 because they have no standalone X.509 key encoding (a serialization limit, not a
 KEM one).
+
+The composite **signature** family gets the `SignedData` counterpart in
+`composite_cms_test` (issue #109, the sibling of `hybrid_cms_test` for the
+concat family and of the KEMRI test above): per composite combo — both the
+standardized ML-DSA tier and the experimental tier — a self-signed cert →
+`SignedData` sign → verify round-trip plus a tampered-content negative, in **both**
+SignerInfo modes (signed attributes and `-noattr`). Unlike KEMRI, this needed a
+small provider addition: the composite signer now implements the
+message-signature EVP API (`sign_message`/`verify_message_*`), which is what
+OpenSSL's md-less CMS content-signing (`cms -sign -noattr`) drives — mirroring the
+concat family's wiring. The `-noattr` cases self-skip below the base library's
+md-less CMS content-signing floor (native ML-DSA fails identically on 3.5.x; the
+path works from **3.6.0**), probed at runtime rather than by version; the provider
+entry points themselves are proven regardless by a direct streaming round-trip, so
+there is real coverage on 3.5.x too. Signing binds to the composite key
+(`provider=hybrid` at keygen), so a co-loaded oqsprovider cannot shadow it.
 
 Cross-implementation interop for the composite KEM lives in **opt-in harnesses**
 — not wired into `ctest`, because each needs resources `ctest` cannot assume (a

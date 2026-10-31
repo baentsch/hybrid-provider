@@ -561,6 +561,21 @@ if(HYBRID_COMPOSITE)
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )
 
+    # CMS SignedData with composite signatures (issue #109): self-signed cert ->
+    # SignedData sign -> verify, both SignerInfo modes (signed attrs + -noattr),
+    # for every composite combo, plus the direct message-signature API round-trip.
+    # Signing is bound to our provider via the composite pkey (provider=hybrid at
+    # keygen), so a co-loaded oqsprovider cannot shadow it; the -noattr path self-
+    # skips below the base library's md-less CMS content-signing floor (3.6).
+    add_executable(composite_cms_test test/composite_cms_test.c)
+    target_include_directories(composite_cms_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(composite_cms_test PRIVATE OpenSSL::Crypto)
+    add_dependencies(composite_cms_test hybrid-provider)
+    add_test(NAME composite_cms_test COMMAND composite_cms_test)
+    set_tests_properties(composite_cms_test PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    )
+
     # Composite ML-KEM provider round-trip: keygen/encaps/decaps + SPKI + PKCS8
     # for every combo, driven through EVP by name (provider=hybrid). Runs on all
     # versions: the standardized rows self-skip below 3.5 (not registered), the
