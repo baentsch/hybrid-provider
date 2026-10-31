@@ -379,6 +379,19 @@ typedef struct hybrid_key_st {
       "MLKEM1024",    0, 0x0000, 256, "X-Wing-style X448+ML-KEM-1024", NULL)\
   X(xwing_x25519_efrodo640aes, "xwing_x25519_efrodo640aes", "X25519", NULL,  0,  \
       "efrodo640aes", 0, 0x0000, 128, "X-Wing-style X25519+eFrodoKEM-640-AES", NULL)\
+  /* First PQ/PQ row (RFC 9794 terminology): BOTH slots are native KEMs           \
+   * (alg1_is_kem = 1), so this is the forcing case for the component-agnostic     \
+   * alg1-is-KEM path in hybrid_kem.c — every other row has a key-exchange alg1,   \
+   * leaving that branch otherwise unexercised. ML-KEM-768 is alg1 (its ct + pk    \
+   * are folded into the SHA3-256 combiner); HQC-3 is alg2, the anchor whose       \
+   * IND-CCA shared secret binds its own ciphertext (so the combiner need not fold \
+   * it). No PQ/PQ KEM is standardized anywhere — Chempat and                      \
+   * draft-irtf-cfrg-hybrid-kems are both PQ/T by construction — so this is        \
+   * operation-only §3.4 experimentation: NO TLS code point, NO OID, no interop    \
+   * peer and no KAT (unlike the real X-Wing row above). HQC needs oqsprovider;    \
+   * ML-KEM-768 resolves from default (3.5+) or oqsprovider. */                    \
+  X(xwing_mlkem768_hqc3,       "xwing_mlkem768_hqc3",       "MLKEM768", NULL, 1,   \
+      "hqc3",         1, 0x0000, 192, "X-Wing-style ML-KEM-768+HQC-3 (PQ/PQ)", NULL)\
   /* --- Experimental key-file-encodable hybrid KEM (issue #108 follow-up) ---    \
    * A plain CONCATENATION hybrid (NOT a LAMPS composite, NOT X-Wing) that, unlike \
    * every other hybrid-KEM row, carries a PRIVATE-arc X.509 key OID. That single  \
@@ -480,6 +493,8 @@ static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
     { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* xwing_p256_mlkem768 */
     { 56,56,56,56, 1568,3168,32,1568, 0,0 },        /* xwing_x448_mlkem1024 */
     { 32,32,32,32, 9616,19888,16,9720, 0,0 },       /* xwing_x25519_efrodo640aes */
+    /* PQ/PQ: alg1 = ML-KEM-768 (pub/prv/ss/ct), alg2 = HQC-3 (pub/prv/ss/ct). */
+    { 1184,2400,32,1088, 4514,4602,32,8978, 0,0 },  /* xwing_mlkem768_hqc3 */
     { 65,32,32,65, 9616,19888,16,9752, 0,0 },        /* exphyb_p256_frodo640aes
                                                       * (= p256_frodo640aes:
                                                       * same P-256 + FrodoKEM-640-
@@ -514,6 +529,7 @@ static const int hybrid_kem_combiner[HYBRID_KEM_ALG_COUNT] = {
     [HYBRID_KEM_IDX_xwing_p256_mlkem768]       = HYBRID_COMBINER_XWING,
     [HYBRID_KEM_IDX_xwing_x448_mlkem1024]      = HYBRID_COMBINER_XWING,
     [HYBRID_KEM_IDX_xwing_x25519_efrodo640aes] = HYBRID_COMBINER_XWING,
+    [HYBRID_KEM_IDX_xwing_mlkem768_hqc3]       = HYBRID_COMBINER_XWING, /* PQ/PQ */
 };
 
 /*
