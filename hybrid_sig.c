@@ -15,6 +15,7 @@
  */
 
 #include "hybrid_prov.h"
+#include "hybrid_msg_accum.h"
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 #include <openssl/proverr.h>
@@ -65,24 +66,12 @@ typedef struct {
     unsigned char *ctxstr;
     size_t ctxstrlen;
     /*
-     * Streaming message-signature buffer (item 14). The hybrid signature is
-     * inherently one-shot (the PQ half signs the raw message; the classical half
-     * digests then signs), but OpenSSL's CMS content-signing path — `openssl cms
-     * -sign -noattr` — drives the message-signature API (sign_message_init +
-     * update* + final) rather than digest-sign. We satisfy it by accumulating the
-     * update() bytes here and running the one-shot over the whole buffer in
-     * final(). Owned here; freed in freectx, deep-copied in dupctx.
+     * Streaming message-signature buffers (item 14), driven by the CMS content-
+     * signing path (`cms -sign -noattr`). Mechanics shared with composite_sig.c
+     * via HYBRID_MSG_ACCUM (issue #121); the hybrid combiner runs one-shot over
+     * the accumulated message in final(). Freed in freectx, deep-copied in dupctx.
      */
-    unsigned char *msg;
-    size_t msglen;
-    /*
-     * The signature to check, for the streaming verify-message path. Per the
-     * provider API, verify_message_final() takes only the ctx — the signature
-     * is supplied out-of-band via the OSSL_SIGNATURE_PARAM_SIGNATURE ctx-param
-     * (set through set_ctx_params). Owned here; freed in freectx, copied in dup.
-     */
-    unsigned char *sigbuf;
-    size_t sigbuflen;
+    HYBRID_MSG_ACCUM stream;
 } HYBRID_SIG_CTX;
 
 static void *hybrid_sig_newctx(void *provctx, const char *propq)
@@ -96,8 +85,7 @@ static void hybrid_sig_freectx(void *vctx)
 
     if (ctx != NULL) {
         OPENSSL_free(ctx->ctxstr);
-        OPENSSL_free(ctx->msg);
-        OPENSSL_free(ctx->sigbuf);
+        hybrid_msg_accum_reset(&ctx->stream);
     }
     OPENSSL_free(ctx);
 }
@@ -110,19 +98,14 @@ static void *hybrid_sig_dupctx(void *vctx)
     if ((ret = OPENSSL_zalloc(sizeof(*ret))) == NULL)
         return NULL;
     *ret = *ctx;
-    /* Deep-copy the owned buffers so each ctx frees its own copy. Null the
+    /* Deep-copy the owned buffers so each ctx frees its own copy. Drop the
      * aliases first so a partial-copy error path frees only what it allocated. */
     ret->ctxstr = NULL;
-    ret->msg = NULL;
-    ret->sigbuf = NULL;
+    hybrid_msg_accum_init(&ret->stream);
     if (ctx->ctxstr != NULL
             && (ret->ctxstr = OPENSSL_memdup(ctx->ctxstr, ctx->ctxstrlen)) == NULL)
         goto err;
-    if (ctx->msg != NULL
-            && (ret->msg = OPENSSL_memdup(ctx->msg, ctx->msglen)) == NULL)
-        goto err;
-    if (ctx->sigbuf != NULL
-            && (ret->sigbuf = OPENSSL_memdup(ctx->sigbuf, ctx->sigbuflen)) == NULL)
+    if (!hybrid_msg_accum_dup(&ret->stream, &ctx->stream))
         goto err;
     return ret;
 err:
@@ -164,30 +147,11 @@ static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
         ctx->ctxstrlen = len;
     }
 # ifdef HYBRID_HAVE_MSG_SIG
-    /*
-     * The signature to check for the streaming verify-message path (item 14):
-     * verify_message_final() takes only the ctx, so libcrypto delivers the
-     * signature here as an octet string before calling it.
-     */
-    p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_SIGNATURE);
-    if (p != NULL) {
-        void *buf = NULL;
-        size_t len = 0;
-
-        if (p->data_type != OSSL_PARAM_OCTET_STRING) {
-            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
-                           "signature parameter must be an octet string");
-            return 0;
-        }
-        if (!OSSL_PARAM_get_octet_string(p, &buf, 0, &len)) {
-            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
-                           "cannot read the signature parameter");
-            return 0;
-        }
-        OPENSSL_free(ctx->sigbuf);
-        ctx->sigbuf = buf;
-        ctx->sigbuflen = len;
-    }
+    /* The signature to check for the streaming verify-message path (item 14):
+     * verify_message_final() takes only the ctx, so libcrypto delivers it here as
+     * an octet string before calling it (shared mechanics, issue #121). */
+    if (!hybrid_msg_accum_set_sig_param(&ctx->stream, params))
+        return 0;
 # endif
 #else
     (void)ctx;
@@ -490,26 +454,12 @@ err:
  * callers drive for no-digest algorithms. sign/verify are one-shot; the streaming
  * update/final variants buffer the message and defer to the one-shot in final.
  */
-/* Drop any buffers left from a prior streaming op so a reused (or dup'd) ctx
- * starts each message-signature operation clean — both the accumulated message
- * and any signature delivered for a previous verify. */
-static void
-hybrid_sig_reset_stream(HYBRID_SIG_CTX *ctx)
-{
-    OPENSSL_free(ctx->msg);
-    ctx->msg = NULL;
-    ctx->msglen = 0;
-    OPENSSL_free(ctx->sigbuf);
-    ctx->sigbuf = NULL;
-    ctx->sigbuflen = 0;
-}
-
 static int
 hybrid_sig_sign_message_init(void *vctx, void *vkey, const OSSL_PARAM params[])
 {
     HYBRID_SIG_CTX *ctx = vctx;
 
-    hybrid_sig_reset_stream(ctx);
+    hybrid_msg_accum_reset(&ctx->stream);
     return hybrid_sig_digest_sign_init(vctx, NULL, vkey, params);
 }
 
@@ -518,7 +468,7 @@ hybrid_sig_verify_message_init(void *vctx, void *vkey, const OSSL_PARAM params[]
 {
     HYBRID_SIG_CTX *ctx = vctx;
 
-    hybrid_sig_reset_stream(ctx);
+    hybrid_msg_accum_reset(&ctx->stream);
     return hybrid_sig_digest_verify_init(vctx, NULL, vkey, params);
 }
 
@@ -528,25 +478,8 @@ hybrid_sig_signverify_message_update(void *vctx, const unsigned char *data,
                                      size_t datalen)
 {
     HYBRID_SIG_CTX *ctx = vctx;
-    unsigned char *grown;
 
-    if (datalen == 0)
-        return 1;
-    /* Guard the running total against size_t wrap before it sizes the realloc:
-     * a wrapped (small) allocation would be overflowed by the memcpy below. */
-    if (datalen > SIZE_MAX - ctx->msglen) {
-        ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
-                       "streamed message length overflow");
-        return 0;
-    }
-    if ((grown = OPENSSL_realloc(ctx->msg, ctx->msglen + datalen)) == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
-        return 0;
-    }
-    ctx->msg = grown;
-    memcpy(ctx->msg + ctx->msglen, data, datalen);
-    ctx->msglen += datalen;
-    return 1;
+    return hybrid_msg_accum_append(&ctx->stream, data, datalen);
 }
 
 /* Finish a streaming sign: one-shot over the accumulated message. */
@@ -557,7 +490,7 @@ hybrid_sig_sign_message_final(void *vctx, unsigned char *sig, size_t *siglen,
     HYBRID_SIG_CTX *ctx = vctx;
 
     return hybrid_sig_digest_sign(vctx, sig, siglen, sigsize,
-                                  ctx->msg, ctx->msglen);
+                                  ctx->stream.msg, ctx->stream.msglen);
 }
 
 /*
@@ -569,14 +502,15 @@ hybrid_sig_verify_message_final(void *vctx)
 {
     HYBRID_SIG_CTX *ctx = vctx;
 
-    if (ctx->sigbuf == NULL) {
+    if (ctx->stream.sigbuf == NULL) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
                        "no signature set for the streaming verify (expected the "
                        "OSSL_SIGNATURE_PARAM_SIGNATURE ctx-param)");
         return 0;
     }
-    return hybrid_sig_digest_verify(vctx, ctx->sigbuf, ctx->sigbuflen,
-                                    ctx->msg, ctx->msglen);
+    return hybrid_sig_digest_verify(vctx, ctx->stream.sigbuf,
+                                    ctx->stream.sigbuflen,
+                                    ctx->stream.msg, ctx->stream.msglen);
 }
 #endif /* HYBRID_HAVE_MSG_SIG */
 

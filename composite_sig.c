@@ -26,6 +26,7 @@
  *    a follow-up if such a combo is ever added.
  */
 #include "composite_prov.h"
+#include "hybrid_msg_accum.h"
 #include <openssl/evp.h>
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
@@ -280,20 +281,12 @@ end:
 typedef struct {
     COMPOSITE_KEY *key;
     /*
-     * Streaming message-signature buffers (issue #109). The composite signature
-     * is inherently one-shot — the combiner builds M' over the whole message —
-     * but OpenSSL's CMS content-signing path (`openssl cms -sign -noattr`) drives
-     * the message-signature API (sign_message_init + update* + final) rather than
-     * digest-sign. We satisfy it by accumulating the update() bytes in msg and
-     * running the one-shot over the whole buffer in final(). sigbuf holds the
-     * signature to check for the streaming verify path, delivered out-of-band via
-     * the OSSL_SIGNATURE_PARAM_SIGNATURE ctx-param before verify_message_final().
-     * All owned here; freed in freectx, deep-copied in dupctx.
+     * Streaming message-signature buffers (issue #109), driven by the CMS content-
+     * signing path (`cms -sign -noattr`). Mechanics shared with hybrid_sig.c via
+     * HYBRID_MSG_ACCUM (issue #121); the combiner builds M' over the accumulated
+     * message in final(). Freed in freectx, deep-copied in dupctx.
      */
-    unsigned char *msg;
-    size_t msglen;
-    unsigned char *sigbuf;
-    size_t sigbuflen;
+    HYBRID_MSG_ACCUM stream;
 } COMPOSITE_SIGCTX;
 
 static void *composite_sig_newctx(void *provctx, const char *propq)
@@ -305,10 +298,8 @@ static void composite_sig_freectx(void *vctx)
 {
     COMPOSITE_SIGCTX *c = vctx;
 
-    if (c != NULL) {
-        OPENSSL_free(c->msg);
-        OPENSSL_free(c->sigbuf);
-    }
+    if (c != NULL)
+        hybrid_msg_accum_reset(&c->stream);
     OPENSSL_free(c);
 }
 
@@ -320,15 +311,10 @@ static void *composite_sig_dupctx(void *vctx)
     if (c == NULL)
         return NULL;
     *c = *src;
-    /* Deep-copy the owned buffers so each ctx frees its own copy. Null the
+    /* Deep-copy the owned buffers so each ctx frees its own copy. Drop the
      * aliases first so a partial-copy error path frees only what it allocated. */
-    c->msg = NULL;
-    c->sigbuf = NULL;
-    if (src->msg != NULL
-            && (c->msg = OPENSSL_memdup(src->msg, src->msglen)) == NULL)
-        goto err;
-    if (src->sigbuf != NULL
-            && (c->sigbuf = OPENSSL_memdup(src->sigbuf, src->sigbuflen)) == NULL)
+    hybrid_msg_accum_init(&c->stream);
+    if (!hybrid_msg_accum_dup(&c->stream, &src->stream))
         goto err;
     return c;
 err:
@@ -415,34 +401,25 @@ static int composite_sig_digest_verify(void *vctx, const unsigned char *sig,
  * (it builds M' over the whole message) — and are what OpenSSL's CMS content-
  * signing path (`cms -sign -noattr`) drives for no-digest algorithms. sign/verify
  * are inherently one-shot; the streaming update/final variants buffer the message
- * and defer to the one-shot in final. Mirrors hybrid_sig.c's item-14 wiring; the
- * duplicated streaming-buffer mechanics are tracked for dedup in #121.
+ * and defer to the one-shot in final. The streaming-buffer mechanics are shared
+ * with hybrid_sig.c's item-14 wiring via HYBRID_MSG_ACCUM (issue #121).
  */
-
-/* Drop any buffers left from a prior streaming op so a reused (or dup'd) ctx
- * starts each message-signature operation clean — both the accumulated message
- * and any signature delivered for a previous verify. */
-static void composite_sig_reset_stream(COMPOSITE_SIGCTX *c)
-{
-    OPENSSL_free(c->msg);
-    c->msg = NULL;
-    c->msglen = 0;
-    OPENSSL_free(c->sigbuf);
-    c->sigbuf = NULL;
-    c->sigbuflen = 0;
-}
 
 static int composite_sig_sign_message_init(void *vctx, void *vkey,
                                            const OSSL_PARAM params[])
 {
-    composite_sig_reset_stream(vctx);
+    COMPOSITE_SIGCTX *c = vctx;
+
+    hybrid_msg_accum_reset(&c->stream);
     return composite_sig_sign_init(vctx, NULL, vkey, params);
 }
 
 static int composite_sig_verify_message_init(void *vctx, void *vkey,
                                              const OSSL_PARAM params[])
 {
-    composite_sig_reset_stream(vctx);
+    COMPOSITE_SIGCTX *c = vctx;
+
+    hybrid_msg_accum_reset(&c->stream);
     return composite_sig_verify_init(vctx, NULL, vkey, params);
 }
 
@@ -452,25 +429,8 @@ static int composite_sig_signverify_message_update(void *vctx,
                                                     size_t datalen)
 {
     COMPOSITE_SIGCTX *c = vctx;
-    unsigned char *grown;
 
-    if (datalen == 0)
-        return 1;
-    /* Guard the running total against size_t wrap before it sizes the realloc:
-     * a wrapped (small) allocation would be overflowed by the memcpy below. */
-    if (datalen > SIZE_MAX - c->msglen) {
-        ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
-                       "streamed message length overflow");
-        return 0;
-    }
-    if ((grown = OPENSSL_realloc(c->msg, c->msglen + datalen)) == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
-        return 0;
-    }
-    c->msg = grown;
-    memcpy(c->msg + c->msglen, data, datalen);
-    c->msglen += datalen;
-    return 1;
+    return hybrid_msg_accum_append(&c->stream, data, datalen);
 }
 
 /* Finish a streaming sign: one-shot over the accumulated message. */
@@ -480,7 +440,7 @@ static int composite_sig_sign_message_final(void *vctx, unsigned char *sig,
     COMPOSITE_SIGCTX *c = vctx;
 
     return composite_sig_digest_sign(vctx, sig, siglen, sigsize,
-                                     c->msg, c->msglen);
+                                     c->stream.msg, c->stream.msglen);
 }
 
 /*
@@ -491,14 +451,14 @@ static int composite_sig_verify_message_final(void *vctx)
 {
     COMPOSITE_SIGCTX *c = vctx;
 
-    if (c->sigbuf == NULL) {
+    if (c->stream.sigbuf == NULL) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
                        "no signature set for the streaming verify (expected the "
                        "OSSL_SIGNATURE_PARAM_SIGNATURE ctx-param)");
         return 0;
     }
-    return composite_sig_digest_verify(vctx, c->sigbuf, c->sigbuflen,
-                                       c->msg, c->msglen);
+    return composite_sig_digest_verify(vctx, c->stream.sigbuf, c->stream.sigbuflen,
+                                       c->stream.msg, c->stream.msglen);
 }
 
 /*
@@ -510,29 +470,10 @@ static int composite_sig_verify_message_final(void *vctx)
 static int composite_sig_set_ctx_params(void *vctx, const OSSL_PARAM params[])
 {
     COMPOSITE_SIGCTX *c = vctx;
-    const OSSL_PARAM *p;
-    void *buf = NULL;
-    size_t len = 0;
 
     if (params == NULL)
         return 1;
-    p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_SIGNATURE);
-    if (p != NULL) {
-        if (p->data_type != OSSL_PARAM_OCTET_STRING) {
-            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
-                           "signature parameter must be an octet string");
-            return 0;
-        }
-        if (!OSSL_PARAM_get_octet_string(p, &buf, 0, &len)) {
-            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
-                           "cannot read the signature parameter");
-            return 0;
-        }
-        OPENSSL_free(c->sigbuf);
-        c->sigbuf = buf;
-        c->sigbuflen = len;
-    }
-    return 1;
+    return hybrid_msg_accum_set_sig_param(&c->stream, params);
 }
 
 static const OSSL_PARAM *composite_sig_settable_ctx_params(void *vctx,
