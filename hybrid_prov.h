@@ -18,9 +18,11 @@
 #include <openssl/param_build.h>
 #include <string.h>
 
-/* Config-section keys for selecting component sub-algorithm providers. */
-#define HYBRID_CONF_PQ_PROPQUERY       "pq-propquery"
-#define HYBRID_CONF_CLASSIC_PROPQUERY  "classic-propquery"
+/* Config-section keys for selecting component sub-algorithm providers. The keys
+ * are positional (alg1 / alg2), not "classical"/"PQ", so they stay correct when
+ * either slot is post-quantum (a PQ/PQ row, §3.4). */
+#define HYBRID_CONF_ALG1_PROPQUERY      "alg1-propquery"
+#define HYBRID_CONF_ALG2_PROPQUERY      "alg2-propquery"
 /*
  * Optional private component context. When "component-providers" is set (a
  * space-separated list of provider module names, e.g. "default oqsprovider"),
@@ -65,12 +67,13 @@ typedef struct {
     const OSSL_CORE_HANDLE *handle;
     /*
      * Optional component property queries read from the provider's config
-     * section (pq-propquery / classic-propquery). They steer which provider
-     * supplies the PQ and classic sub-algorithms, independently of how the
-     * hybrid algorithm itself was selected. NULL when unset. Owned here.
+     * section (alg1-propquery / alg2-propquery). They steer which provider
+     * supplies each component sub-algorithm (by slot: alg1 / alg2),
+     * independently of how the hybrid algorithm itself was selected. NULL when
+     * unset. Owned here.
      */
-    char *pq_propq;
-    char *classic_propq;
+    char *alg1_propq;
+    char *alg2_propq;
     /*
      * Context used to fetch component sub-algorithms. Equals `libctx` by
      * default; when "component-providers" is configured it is a private context
@@ -141,18 +144,26 @@ typedef struct {
  * Signature component info. Sizes are constants (hybrid_sig_sizes[]); the table
  * carries only identity + the parameters that define oqsprovider's hybrid-sig
  * wire format:
- *   - nist_level: NIST level of the PQ component, which selects the digest the
- *     classical component signs (1 -> SHA-256, 2/3 -> SHA-384, 4/5 -> SHA-512).
- *   - alg1 is always ECDSA ("EC" + group) or "RSA" (3072-bit); no EdDSA.
- * Signature layout: ENCODE_UINT32(classical_len) || classical_sig || pq_sig.
+ *   - nist_level: NIST level that selects the digest a *digest-taking* classical
+ *     (ECDSA/RSA) component signs (1 -> SHA-256, 2/3 -> SHA-384, 4/5 -> SHA-512).
+ *     Inert for a PQ/PQ pair, which has no digest-taking component.
+ *   - alg1/alg2 are component identities; the sign/verify path is slot-symmetric
+ *     (hybrid_sig.c), so either slot may be digest-taking or md-less. The
+ *     classical set is ECDSA or RSA-3072 (no EdDSA); a PQ alg is "MLDSA65",
+ *     "falcon1024", … with group NULL. NOTE a construction limit, not a crypto
+ *     one: only alg1 carries a group (alg1_group), so a classical EC component
+ *     must sit in slot 1; RSA and the groupless PQ algs may sit in either slot.
+ * Signature layout: ENCODE_UINT32(comp1_len) || comp1_sig || comp2_sig — the
+ * length prefix is on component 1 regardless of its kind (handles the variable
+ * length of ECDSA DER and of Falcon alike).
  */
 typedef struct {
     const char *hybrid_name;    /* e.g., "p256_mldsa44" */
-    const char *alg1_name;      /* "EC" or "RSA" */
-    const char *alg1_group;     /* EC group (e.g. "P-256"), or NULL for RSA */
-    const char *alg2_name;      /* PQ, e.g. "MLDSA44" */
-    int         nist_level;     /* PQ NIST level -> classical digest choice */
-    const char *oid;            /* X.509 OID (used by M2 encoders/decoders) */
+    const char *alg1_name;      /* "EC" / "RSA", or a PQ alg name (either slot) */
+    const char *alg1_group;     /* EC group (e.g. "P-256"); NULL for RSA / PQ */
+    const char *alg2_name;      /* e.g. "MLDSA44" (or a classical name) */
+    int         nist_level;     /* digest choice for a digest-taking component */
+    const char *oid;            /* X.509 OID, or NULL if operation-only (§3.4) */
     int         tls_codepoint;  /* TLS SignatureScheme code point (0 if none) */
 } HYBRID_SIG_INFO;
 
@@ -196,15 +207,15 @@ typedef struct hybrid_key_st {
      * context, which outlives the key; not freed here). NULL when unset, in
      * which case the per-component accessors fall back to propq.
      */
-    const char *pq_propq;       /* for the PQ component (key2 / alg2) */
-    const char *classic_propq;  /* for the classical component (key1 / alg1) */
+    const char *alg2_propq;       /* for the PQ component (key2 / alg2) */
+    const char *alg1_propq;  /* for the classical component (key1 / alg1) */
 } HYBRID_KEY;
 
 /* Per-component property query, falling back to the key's generic propq. */
-#define HYBRID_KEY_PQ_PROPQ(k) \
-    ((k)->pq_propq != NULL ? (k)->pq_propq : (k)->propq)
-#define HYBRID_KEY_CLASSIC_PROPQ(k) \
-    ((k)->classic_propq != NULL ? (k)->classic_propq : (k)->propq)
+#define HYBRID_KEY_ALG2_PROPQ(k) \
+    ((k)->alg2_propq != NULL ? (k)->alg2_propq : (k)->propq)
+#define HYBRID_KEY_ALG1_PROPQ(k) \
+    ((k)->alg1_propq != NULL ? (k)->alg1_propq : (k)->propq)
 
 #define hybrid_have_pubkey(key)  ((key)->state >= HYBRID_HAVE_PUBKEY)
 #define hybrid_have_prvkey(key)  ((key)->state >= HYBRID_HAVE_PRVKEY)
@@ -578,19 +589,23 @@ static inline int hybrid_kem_is_default_builtin(const char *name)
 
 /*
  * Master hybrid-SIG list — single source of truth, mirroring HYBRID_KEM_LIST.
- * These are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ), matching
- * its names, OIDs and wire format. Component sizes are discovered at runtime.
+ * Most rows are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ),
+ * matching its names, OIDs and wire format; the trailing rows are operation-only
+ * PQ/PQ pairs (§3.4, NULL oid / code point 0) that the slot-symmetric sign path
+ * serves within this provider. Component sizes are discovered at runtime.
  *
  * PROVENANCE: the `oid` and `tls_codepoint` values are oqsprovider's, from its
  * `oqs-template/generate.yml` (see ALGORITHMS.md). Drift is caught automatically
  * — a wrong OID breaks the cross-provider SPKI/PKCS8 round-trips in
  * hybrid_encode_test, and a wrong code point is caught by hybrid_capability_test
  * (which compares against oqsprovider's advertised TLS-SIGALG capabilities).
+ * The operation-only PQ/PQ rows carry neither, so they share in neither check.
  *
  * X(cfield, name, alg1, alg1_group, alg2, nist_level, oid, desc, tls_codepoint)
- *   alg1          : "EC" or "RSA"
- *   alg1_group    : EC group, or NULL for RSA (3072-bit)
- *   nist_level    : PQ NIST level -> classical digest (1:SHA256 2/3:SHA384 4/5:SHA512)
+ *   alg1          : "EC" / "RSA", or a PQ alg name (slot-symmetric; either slot)
+ *   alg1_group    : EC group; NULL for RSA (3072-bit) or a PQ alg1
+ *   nist_level    : digest for a digest-taking component (1:SHA256 2/3:SHA384
+ *                   4/5:SHA512); inert for a PQ/PQ pair (no such component)
  *   tls_codepoint : TLS SignatureScheme code point (advertised via hybrid_caps.c)
  */
 #define HYBRID_SIG_LIST(X)                                                    \
@@ -652,7 +667,25 @@ static inline int hybrid_kem_is_default_builtin(const char *name)
   X(p384_mqom2cat3gf16fastr5,"p384_mqom2cat3gf16fastr5","EC","P-384",         \
       "mqom2cat3gf16fastr5", 3, "1.3.9999.11.3.2", "P-384+MQOM2-cat3", 0xff6c)        \
   X(p521_mqom2cat5gf16fastr5,"p521_mqom2cat5gf16fastr5","EC","P-521",         \
-      "mqom2cat5gf16fastr5", 5, "1.3.9999.11.5.2", "P-521+MQOM2-cat5", 0xff74)
+      "mqom2cat5gf16fastr5", 5, "1.3.9999.11.5.2", "P-521+MQOM2-cat5", 0xff74) \
+  /*                                                                          \
+   * --- PQ/PQ concatenation signatures (RFC 9794 terminology; §3.4) ---      \
+   * Operation-only experimental rows: both components post-quantum, so there \
+   * is no digest-taking (classical) half and nist_level is inert. No standard \
+   * defines a PQ/PQ concat signature and there is no interop peer, so these   \
+   * carry NO OID and NO TLS code point (sign/verify only, within this         \
+   * provider) — the signature analog of the xwing_* operation-only KEM rows.  \
+   * They exercise the slot-symmetric sign/verify path (md-less in BOTH slots, \
+   * a variable-length component 1 for the Falcon-first row, and a pair whose  \
+   * components do not honour a context string). Issue #114; the generic       \
+   * runtime-declared form arrives with #112.                                  \
+   */                                                                          \
+  X(mldsa65_falcon1024, "mldsa65_falcon1024", "MLDSA65", NULL, "falcon1024",   \
+      3, NULL, "ML-DSA-65+Falcon-1024", 0)                                     \
+  X(mldsa44_mayo1,      "mldsa44_mayo1",      "MLDSA44", NULL, "mayo1",        \
+      1, NULL, "ML-DSA-44+MAYO-1", 0)                                          \
+  X(falcon512_mayo1,    "falcon512_mayo1",    "falcon512", NULL, "mayo1",      \
+      1, NULL, "Falcon-512+MAYO-1", 0)
 
 /* Generate the info table from the master list. */
 #define HYBRID_SIG_ROW(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                 \
@@ -741,6 +774,10 @@ static const HYBRID_SIZES hybrid_sig_sizes[HYBRID_SIG_ALG_COUNT] = {
     { 65,32,0,0, 60,88,0,0, 72,3280 },              /* p256_mqom2cat1gf16fastr5 */
     { 97,48,0,0, 90,132,0,0, 104,7738 },            /* p384_mqom2cat3gf16fastr5 */
     { 133,66,0,0, 122,180,0,0, 139,13772 },         /* p521_mqom2cat5gf16fastr5 */
+    /* PQ/PQ (§3.4): a1 is the first PQ component, a2 the second. */
+    { 1952,4032,0,0, 1793,2305,0,0, 3309,1462 },    /* mldsa65_falcon1024 */
+    { 1312,2560,0,0, 1420,24,0,0, 2420,454 },       /* mldsa44_mayo1 */
+    { 897,1281,0,0, 1420,24,0,0, 752,454 },         /* falcon512_mayo1 */
 };
 
 /* Accessor macros — work for both KEM and SIG info via HYBRID_KEY */
@@ -775,7 +812,7 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 
 /*
  * Maximum hybrid signature size:
- * ENCODE_UINT32(classical_len) + max classical sig + PQ sig.
+ * ENCODE_UINT32(comp1_len) + max component-1 sig + max component-2 sig.
  */
 static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_KEY *key)
 {

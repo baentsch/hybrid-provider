@@ -317,12 +317,12 @@ static size_t pq_encaps_ctlen(EVP_PKEY *pq_key, OSSL_LIB_CTX *libctx,
 
 int composite_kem_encaps(const COMPOSITE_KEM_INFO *info,
                          EVP_PKEY *pq_pub, EVP_PKEY *trad_pub,
-                         OSSL_LIB_CTX *libctx, const char *pq_propq,
+                         OSSL_LIB_CTX *libctx, const char *alg2_propq,
                          const char *trad_propq,
                          unsigned char **ct, size_t *ctlen,
                          unsigned char **ss, size_t *sslen)
 {
-    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_from_pkey(libctx, pq_pub, pq_propq);
+    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_from_pkey(libctx, pq_pub, alg2_propq);
     unsigned char *mlct = NULL, *mlss = NULL, *trct = NULL, *trss = NULL,
                   *trpk = NULL;
     unsigned char out_ss[COMPOSITE_KEM_SS_BYTES];
@@ -376,7 +376,7 @@ end:
 
 int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
                          EVP_PKEY *pq_priv, EVP_PKEY *trad_priv,
-                         OSSL_LIB_CTX *libctx, const char *pq_propq,
+                         OSSL_LIB_CTX *libctx, const char *alg2_propq,
                          const char *trad_propq,
                          const unsigned char *ct, size_t ctlen,
                          unsigned char **ss, size_t *sslen,
@@ -397,9 +397,9 @@ int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
     if (pq_ctlen != NULL && *pq_ctlen != 0) {
         mlctlen = *pq_ctlen;
     } else {
-        mlctlen = pq_encaps_ctlen(pq_priv, libctx, pq_propq);
+        mlctlen = pq_encaps_ctlen(pq_priv, libctx, alg2_propq);
         if (mlctlen == 0)
-            mlctlen = pq_ct_len(info->pq_alg, libctx, pq_propq);
+            mlctlen = pq_ct_len(info->pq_alg, libctx, alg2_propq);
         if (pq_ctlen != NULL)
             *pq_ctlen = mlctlen;
     }
@@ -408,7 +408,7 @@ int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
     /* PQ KEM decapsulation of the leading pqCT. The PQ shared-secret length is
      * queried (NULL-buffer size call) rather than assumed to be 32, so non-ML-KEM
      * PQ components (e.g. HQC's 64-byte SS) work. */
-    pctx = EVP_PKEY_CTX_new_from_pkey(libctx, pq_priv, pq_propq);
+    pctx = EVP_PKEY_CTX_new_from_pkey(libctx, pq_priv, alg2_propq);
     if (pctx == NULL || EVP_PKEY_decapsulate_init(pctx, NULL) <= 0
             || EVP_PKEY_decapsulate(pctx, NULL, &mlsslen, ct, mlctlen) <= 0
             || (mlss = OPENSSL_malloc(mlsslen)) == NULL
@@ -500,7 +500,7 @@ static int composite_kem_encapsulate(void *vctx,
 
     if (ctext == NULL) {   /* size query: encapsulate once to learn the length */
         if (!composite_kem_encaps(k->info, k->pq_key, k->trad_key, k->libctx,
-                                  k->pq_propq, k->trad_propq,
+                                  k->alg2_propq, k->trad_propq,
                                   &ct, &ctlen, &ss, &sslen))
             return 0;
         if (clen != NULL) *clen = ctlen;
@@ -512,7 +512,7 @@ static int composite_kem_encapsulate(void *vctx,
     if (shsec == NULL || clen == NULL || slen == NULL)
         return 0;
     if (!composite_kem_encaps(k->info, k->pq_key, k->trad_key, k->libctx,
-                              k->pq_propq, k->trad_propq,
+                              k->alg2_propq, k->trad_propq,
                               &ct, &ctlen, &ss, &sslen))
         return 0;
     if (*clen >= ctlen && *slen >= sslen) {
@@ -544,7 +544,7 @@ static int composite_kem_decapsulate(void *vctx,
     if (slen == NULL)
         return 0;
     if (!composite_kem_decaps(k->info, k->pq_key, k->trad_key, k->libctx,
-                              k->pq_propq, k->trad_propq, ctext, clen,
+                              k->alg2_propq, k->trad_propq, ctext, clen,
                               &ss, &sslen, &k->pq_ctlen))
         return 0;
     if (*slen >= sslen) {

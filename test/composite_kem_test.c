@@ -100,7 +100,7 @@ static int have_alg(OSSL_LIB_CTX *ctx, const char *name)
 /* Property query selecting the provider for the classical component. Defaults to
  * the default provider, but is overridable (e.g. COMPOSITE_TRAD_PROPQ=
  * "provider=fips") so the classical half can be sourced elsewhere — mirroring the
- * real provider's config-driven classic-propquery, which is not hard-wired to
+ * real provider's config-driven alg1-propquery, which is not hard-wired to
  * the default provider either. */
 static const char *trad_propq(void)
 {

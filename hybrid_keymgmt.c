@@ -120,8 +120,8 @@ static void *hybrid_kem_dup(const void *vkey, int selection)
     ret->combiner = key->combiner;
     ret->state = HYBRID_HAVE_NOKEYS;
     ret->propq = NULL;
-    ret->pq_propq = key->pq_propq;
-    ret->classic_propq = key->classic_propq;
+    ret->alg2_propq = key->alg2_propq;
+    ret->alg1_propq = key->alg1_propq;
 
     if (key->propq != NULL
         && (ret->propq = OPENSSL_strdup(key->propq)) == NULL) {
@@ -226,8 +226,8 @@ void *hybrid_keymgmt_new_by_variant(void *provctx, int is_kem,
     HYBRID_KEY *k = hybrid_key_new(is_kem, variant, lc, NULL);
 
     if (k != NULL && ctx != NULL) {
-        k->pq_propq = ctx->pq_propq;
-        k->classic_propq = ctx->classic_propq;
+        k->alg2_propq = ctx->alg2_propq;
+        k->alg1_propq = ctx->alg1_propq;
     }
     return k;
 }
@@ -247,13 +247,13 @@ int hybrid_key_load_pub_components(HYBRID_KEY *key,
         key->key1 = d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)clen);
         if (key->key1 == NULL)
             return 0;
-    } else if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+    } else if (!load_component(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
                         HYBRID_KEY_ALG1_NAME(key), HYBRID_KEY_ALG1_GROUP(key),
                         OSSL_PKEY_PARAM_PUB_KEY, sel, classic, clen,
                         &key->key1)) {
         return 0;
     }
-    if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+    if (!load_component(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
                         HYBRID_KEY_ALG2_NAME(key), NULL,
                         OSSL_PKEY_PARAM_PUB_KEY, sel, pq, plen, &key->key2))
         return 0;
@@ -277,12 +277,12 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
      * ever load the classical private component. */
     if (strcmp(a1, "X25519") == 0 || strcmp(a1, "X448") == 0) {
         key->key1 = EVP_PKEY_new_raw_private_key_ex(key->libctx, a1,
-                        HYBRID_KEY_CLASSIC_PROPQ(key), cder, cderlen);
+                        HYBRID_KEY_ALG1_PROPQ(key), cder, cderlen);
     } else {
         const unsigned char *p = cder;
 
         key->key1 = d2i_AutoPrivateKey_ex(NULL, &p, (long)cderlen, key->libctx,
-                                          HYBRID_KEY_CLASSIC_PROPQ(key));
+                                          HYBRID_KEY_ALG1_PROPQ(key));
     }
     if (key->key1 == NULL)
         return 0;
@@ -291,11 +291,11 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
      * re-derive it from private material, and without it the decoded key could
      * not produce a certificate. Otherwise fall back to a private-only load. */
     if (pqpub != NULL && pqpublen > 0)
-        ok = load_component_privpub(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+        ok = load_component_privpub(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
                                     HYBRID_KEY_ALG2_NAME(key),
                                     pqv, pqvlen, pqpub, pqpublen, &key->key2);
     else
-        ok = load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+        ok = load_component(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
                             HYBRID_KEY_ALG2_NAME(key), NULL,
                             OSSL_PKEY_PARAM_PRIV_KEY, sel, pqv, pqvlen,
                             &key->key2);
@@ -383,13 +383,13 @@ load_keys(HYBRID_KEY *key,
         key->key1 = d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)len1);
         if (key->key1 == NULL)
             goto err;
-    } else if (!load_component(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+    } else if (!load_component(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
                         HYBRID_KEY_ALG1_NAME(key),
                         HYBRID_KEY_ALG1_GROUP(key),
                         pname, selection,
                         alg1_data, len1, &key->key1))
         goto err;
-    if (!load_component(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+    if (!load_component(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
                         HYBRID_KEY_ALG2_NAME(key), NULL,
                         pname, selection,
                         alg2_data, len2, &key->key2))
@@ -836,8 +836,8 @@ err:
 typedef struct {
     OSSL_LIB_CTX *libctx;
     char *propq;
-    const char *pq_propq;       /* borrowed from provctx */
-    const char *classic_propq;  /* borrowed from provctx */
+    const char *alg2_propq;       /* borrowed from provctx */
+    const char *alg1_propq;  /* borrowed from provctx */
     int selection;
     int is_kem;
     unsigned int algo_idx;
@@ -857,15 +857,15 @@ static void *hybrid_gen(void *vgctx, OSSL_CALLBACK *cb, void *cbarg)
     key = hybrid_key_new(gctx->is_kem, gctx->algo_idx, gctx->libctx, propq);
     if (key == NULL)
         return NULL;
-    key->pq_propq = gctx->pq_propq;
-    key->classic_propq = gctx->classic_propq;
+    key->alg2_propq = gctx->alg2_propq;
+    key->alg1_propq = gctx->alg1_propq;
 
     if ((gctx->selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
         return key;
 
-    key->key2 = hybrid_component_keygen(key->libctx, HYBRID_KEY_PQ_PROPQ(key),
+    key->key2 = hybrid_component_keygen(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
                                         HYBRID_KEY_ALG2_NAME(key), NULL);
-    key->key1 = hybrid_component_keygen(key->libctx, HYBRID_KEY_CLASSIC_PROPQ(key),
+    key->key1 = hybrid_component_keygen(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
                                         HYBRID_KEY_ALG1_NAME(key),
                                         HYBRID_KEY_ALG1_GROUP(key));
 
@@ -928,8 +928,8 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
             ctx ? HYBRID_COMPONENT_LIBCTX(ctx) : NULL;                       \
         HYBRID_KEY *k = hybrid_key_new(is_kem_val, variant, libctx, NULL);   \
         if (k != NULL && ctx != NULL) {                                      \
-            k->pq_propq = ctx->pq_propq;                                     \
-            k->classic_propq = ctx->classic_propq;                          \
+            k->alg2_propq = ctx->alg2_propq;                                     \
+            k->alg1_propq = ctx->alg1_propq;                          \
         }                                                                    \
         return k;                                                            \
     }                                                                        \
@@ -952,8 +952,8 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
         gctx->is_kem = is_kem_val;                                          \
         gctx->algo_idx = variant;                                            \
         gctx->libctx = HYBRID_COMPONENT_LIBCTX(pctx);                       \
-        gctx->pq_propq = pctx->pq_propq;                                     \
-        gctx->classic_propq = pctx->classic_propq;                          \
+        gctx->alg2_propq = pctx->alg2_propq;                                     \
+        gctx->alg1_propq = pctx->alg1_propq;                          \
         gctx->selection = selection;                                         \
         if (!hybrid_gen_set_params(gctx, params)) {                          \
             hybrid_gen_cleanup(gctx);                                        \

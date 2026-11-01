@@ -114,7 +114,7 @@ typedef struct composite_kem_key_st {
     EVP_PKEY *pq_key;           /* ML-KEM component                             */
     EVP_PKEY *trad_key;         /* classical component (EC / X / RSA)           */
     unsigned int state;         /* COMPOSITE_KEM_HAVE_*                         */
-    const char *pq_propq;       /* source for the ML-KEM component              */
+    const char *alg2_propq;       /* source for the ML-KEM component              */
     const char *trad_propq;     /* source for the classical component          */
     size_t pq_ctlen;            /* memoized PQ ciphertext length (0 = not yet   */
                                 /* computed); fixed per algorithm, learned once */
@@ -256,7 +256,7 @@ int composite_kem_combine(OSSL_LIB_CTX *libctx,
  * combiner. *ct and *ss are malloc'd; caller frees (*ss with clear). */
 int composite_kem_encaps(const COMPOSITE_KEM_INFO *info,
                          EVP_PKEY *pq_pub, EVP_PKEY *trad_pub,
-                         OSSL_LIB_CTX *libctx, const char *pq_propq,
+                         OSSL_LIB_CTX *libctx, const char *alg2_propq,
                          const char *trad_propq,
                          unsigned char **ct, size_t *ctlen,
                          unsigned char **ss, size_t *sslen);
@@ -267,7 +267,7 @@ int composite_kem_encaps(const COMPOSITE_KEM_INFO *info,
  * once and reuse; pass NULL to compute it each call. */
 int composite_kem_decaps(const COMPOSITE_KEM_INFO *info,
                          EVP_PKEY *pq_priv, EVP_PKEY *trad_priv,
-                         OSSL_LIB_CTX *libctx, const char *pq_propq,
+                         OSSL_LIB_CTX *libctx, const char *alg2_propq,
                          const char *trad_propq,
                          const unsigned char *ct, size_t ctlen,
                          unsigned char **ss, size_t *sslen,

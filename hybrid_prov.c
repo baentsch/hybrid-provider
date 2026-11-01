@@ -75,8 +75,8 @@ static void hybrid_teardown(void *provctx)
         OSSL_PROVIDER_unload(ctx->comp_provs[i]);
     if (ctx->comp_owned)
         OSSL_LIB_CTX_free(ctx->comp_libctx);
-    OPENSSL_free(ctx->pq_propq);
-    OPENSSL_free(ctx->classic_propq);
+    OPENSSL_free(ctx->alg2_propq);
+    OPENSSL_free(ctx->alg1_propq);
     /* Per-instance cede state (immutable after init) — this instance owns it. */
     OPENSSL_free(ctx->ceded);
     OPENSSL_free(ctx->keymgmts_rt);
@@ -858,9 +858,9 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
         OSSL_PARAM core_params[6];
 
         core_params[0] = OSSL_PARAM_construct_utf8_ptr(
-            HYBRID_CONF_PQ_PROPQUERY, &pq, 0);
+            HYBRID_CONF_ALG2_PROPQUERY, &pq, 0);
         core_params[1] = OSSL_PARAM_construct_utf8_ptr(
-            HYBRID_CONF_CLASSIC_PROPQUERY, &classic, 0);
+            HYBRID_CONF_ALG1_PROPQUERY, &classic, 0);
         core_params[2] = OSSL_PARAM_construct_utf8_ptr(
             HYBRID_CONF_COMPONENT_PROVIDERS, &comp, 0);
         core_params[3] = OSSL_PARAM_construct_utf8_ptr(
@@ -870,10 +870,10 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
         core_params[5] = OSSL_PARAM_construct_end();
 
         if (c_get_params(handle, core_params)) {
-            if (pq != NULL && (ctx->pq_propq = OPENSSL_strdup(pq)) == NULL)
+            if (pq != NULL && (ctx->alg2_propq = OPENSSL_strdup(pq)) == NULL)
                 goto err;
             if (classic != NULL
-                    && (ctx->classic_propq = OPENSSL_strdup(classic)) == NULL)
+                    && (ctx->alg1_propq = OPENSSL_strdup(classic)) == NULL)
                 goto err;
             if (cede != NULL)
                 cede_to_default = hybrid_parse_bool(cede, cede_to_default);
@@ -903,8 +903,10 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     if (c_obj_create != NULL && c_obj_add_sigid != NULL) {
         ERR_set_mark();
 #define HYBRID_SIG_OID_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)             \
-        (void)c_obj_create(handle, oid, nm, nm);                             \
-        (void)c_obj_add_sigid(handle, nm, "", nm);
+        if ((oid) != NULL) {         /* operation-only rows (§3.4) have none */ \
+            (void)c_obj_create(handle, oid, nm, nm);                         \
+            (void)c_obj_add_sigid(handle, nm, "", nm);                       \
+        }
         HYBRID_SIG_LIST(HYBRID_SIG_OID_REG)
 #undef HYBRID_SIG_OID_REG
         {   /* Hybrid KEMs: register the OID<->name mapping for the few rows that

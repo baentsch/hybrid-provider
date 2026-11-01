@@ -103,7 +103,7 @@ static int index_for_oid(const char *oid)
 static size_t discover_pq_pub_len(COMPOSITE_KEY *key)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                                 key->pq_propq);
+                                                 key->alg2_propq);
     EVP_PKEY *t = NULL;
     size_t n = 0;
 
@@ -216,7 +216,7 @@ static int composite_dec_does_selection_priv(void *provctx, int selection)
 static size_t pq_priv_len(COMPOSITE_KEY *key)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                                 key->pq_propq);
+                                                 key->alg2_propq);
     EVP_PKEY *t = NULL;
     size_t n = 0;
 

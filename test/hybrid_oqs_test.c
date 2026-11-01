@@ -215,6 +215,47 @@ static void sig_selfcheck(OSSL_LIB_CTX *ctx, const char *alg)
         || EVP_DigestVerify(md, sig, siglen, bad, sizeof(bad)) == 1)
         goto fail;
 
+#ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+    /* Context-string round-trip (issue #114). A context string is forwarded to
+     * every md-less component; one that does not support it ignores the param
+     * (best-effort, no hard failure). Signing and verifying with the SAME context
+     * must therefore succeed for every pairing — including a PQ/PQ pair whose
+     * components do not all honour a context string (e.g. falcon512_mayo1). This
+     * asserts only the no-hard-fail property, not cross-half domain separation
+     * (which holds only when a component actually honours the context). */
+    {
+        unsigned char cs[] = "hybrid-sig ctx";
+        OSSL_PARAM cp[] = {
+            OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING,
+                                    cs, sizeof(cs) - 1),
+            OSSL_PARAM_END
+        };
+        unsigned char *csig = NULL;
+        size_t cslen = 0;
+        int cok;
+
+        EVP_MD_CTX_free(md);
+        md = EVP_MD_CTX_new();
+        cok = md != NULL
+            && EVP_DigestSignInit_ex(md, NULL, NULL, ctx, "provider=hybrid",
+                                     pkey, cp) > 0
+            && EVP_DigestSign(md, NULL, &cslen, msg, sizeof(msg)) > 0
+            && (csig = OPENSSL_malloc(cslen)) != NULL
+            && EVP_DigestSign(md, csig, &cslen, msg, sizeof(msg)) > 0;
+        if (cok) {
+            EVP_MD_CTX_free(md);
+            md = EVP_MD_CTX_new();
+            cok = md != NULL
+                && EVP_DigestVerifyInit_ex(md, NULL, NULL, ctx, "provider=hybrid",
+                                           pkey, cp) > 0
+                && EVP_DigestVerify(md, csig, cslen, msg, sizeof(msg)) == 1;
+        }
+        OPENSSL_free(csig);
+        if (!cok)
+            goto fail;
+    }
+#endif
+
     printf("PASS\n");
     passed++;
     goto done;

@@ -71,8 +71,8 @@ static int hybrid_group_operable(HYBRID_PROV_CTX *ctx,
     int ok;
 
     ERR_set_mark();
-    ok = component_operable(libctx, info->alg1_name, ctx->classic_propq)
-        && component_operable(libctx, info->alg2_name, ctx->pq_propq);
+    ok = component_operable(libctx, info->alg1_name, ctx->alg1_propq)
+        && component_operable(libctx, info->alg2_name, ctx->alg2_propq);
     ERR_pop_to_mark();
     return ok;
 }
@@ -85,8 +85,8 @@ static int hybrid_sigalg_operable(HYBRID_PROV_CTX *ctx,
     int ok;
 
     ERR_set_mark();
-    ok = component_operable(libctx, info->alg1_name, ctx->classic_propq)
-        && component_operable(libctx, info->alg2_name, ctx->pq_propq);
+    ok = component_operable(libctx, info->alg1_name, ctx->alg1_propq)
+        && component_operable(libctx, info->alg2_name, ctx->alg2_propq);
     ERR_pop_to_mark();
     return ok;
 }

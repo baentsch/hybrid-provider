@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Tests the provider's config-driven component property queries
- * (pq-propquery / classic-propquery): they must independently steer which
+ * (alg1-propquery / alg2-propquery): they must independently steer which
  * provider supplies the PQ and classic sub-algorithms.
  *
  * The probe relies on the fact that the hybrid provider itself implements
@@ -95,21 +95,21 @@ int main(void)
 
     /* Both components explicitly from default via config. */
     TEST_START("pq+classic = provider=default -> keygen succeeds");
-    if (keygen_ok("pq-propquery = provider=default\n"
-                  "classic-propquery = provider=default\n") == 1) TEST_PASS();
+    if (keygen_ok("alg2-propquery = provider=default\n"
+                  "alg1-propquery = provider=default\n") == 1) TEST_PASS();
     else TEST_FAIL("explicit default routing should succeed");
 
     /* Force only the PQ component to the hybrid provider (which has no
-     * ML-KEM): keygen must fail -- proves pq-propquery is applied. */
+     * ML-KEM): keygen must fail -- proves alg2-propquery is applied. */
     TEST_START("pq = provider=hybrid (no ML-KEM there) -> keygen fails");
-    if (keygen_ok("pq-propquery = provider=hybrid\n") == 0) TEST_PASS();
-    else TEST_FAIL("pq-propquery was not applied to the PQ component");
+    if (keygen_ok("alg2-propquery = provider=hybrid\n") == 0) TEST_PASS();
+    else TEST_FAIL("alg2-propquery was not applied to the PQ component");
 
     /* Force only the classic component to hybrid (no X25519 there): keygen
-     * must fail independently -- proves classic-propquery is applied. */
+     * must fail independently -- proves alg1-propquery is applied. */
     TEST_START("classic = provider=hybrid (no X25519 there) -> keygen fails");
-    if (keygen_ok("classic-propquery = provider=hybrid\n") == 0) TEST_PASS();
-    else TEST_FAIL("classic-propquery was not applied to the classic component");
+    if (keygen_ok("alg1-propquery = provider=hybrid\n") == 0) TEST_PASS();
+    else TEST_FAIL("alg1-propquery was not applied to the classic component");
 
     printf("\n=======================================================\n");
     printf("Results: %d/%d passed", pass_count, test_count);

@@ -24,7 +24,7 @@
  *          given ML-DSA / ML-KEM variant, keygen/sign/verify or
  *          keygen/encaps/decaps;
  *        - C2 hybrid & composite figures, with the PQ component sourced from each
- *          provider in turn (config-driven pq-propquery; classical half pinned
+ *          provider in turn (config-driven alg2-propquery; classical half pinned
  *          to the default provider so only the PQ source varies);
  *        - C3 composed algorithm: the hybrid provider's composition next to any
  *          other provider that serves the SAME name natively. On OpenSSL >=3.5
@@ -124,7 +124,7 @@ static OSSL_LIB_CTX *make_libctx(const char *pq_source)
     fprintf(f, "[s_hybrid]\nmodule = %s/hybrid.so\nactivate = 1\n",
             g_module_dir);
     if (pq_source != NULL)
-        fprintf(f, "pq-propquery = provider=%s\nclassic-propquery = provider=default\n",
+        fprintf(f, "alg1-propquery = provider=default\nalg2-propquery = provider=%s\n",
                 pq_source);
     for (i = 1; i < NPROV; i++)
         if (provs[i].loaded)
@@ -823,7 +823,7 @@ static void perf_one_composed_sig(OSSL_LIB_CTX *libctx, const char *name,
 /*
  * Hybrid & composite performance with the PQ component sourced from each
  * provider in turn. Each source gets its own libctx whose hybrid provider is
- * configured pq-propquery=provider=<source> (classical pinned to default), so
+ * configured alg2-propquery=provider=<source> (classical pinned to default), so
  * the only thing that varies between rows of the same algorithm is which
  * provider computes the PQ half.
  */

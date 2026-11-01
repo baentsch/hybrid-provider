@@ -45,12 +45,12 @@ static void *composite_kem_key_new(void *provctx, const COMPOSITE_KEM_INFO *info
      * seed-based private key needs it) or from whichever loaded provider offers it
      * for the experimental research KEMs (Frodo/BIKE/HQC → oqsprovider). Mirrors
      * the composite-signature keymgmt. */
-    k->pq_propq = pc != NULL && pc->pq_propq != NULL
-                      ? pc->pq_propq
+    k->alg2_propq = pc != NULL && pc->alg2_propq != NULL
+                      ? pc->alg2_propq
                       : (info->tier == COMPOSITE_KEM_TIER_EXPERIMENTAL
                              ? NULL : "provider=default");
-    k->trad_propq = pc != NULL && pc->classic_propq != NULL
-                        ? pc->classic_propq : "provider=default";
+    k->trad_propq = pc != NULL && pc->alg1_propq != NULL
+                        ? pc->alg1_propq : "provider=default";
     k->state = COMPOSITE_KEM_HAVE_NOKEYS;
     return k;
 }
@@ -171,7 +171,7 @@ static void *composite_kem_gen(void *vgctx, OSSL_CALLBACK *cb, void *cbarg)
 
     if (k == NULL)
         return NULL;
-    pctx = EVP_PKEY_CTX_new_from_name(k->libctx, g->info->pq_alg, k->pq_propq);
+    pctx = EVP_PKEY_CTX_new_from_name(k->libctx, g->info->pq_alg, k->alg2_propq);
     if (pctx == NULL || EVP_PKEY_keygen_init(pctx) <= 0
             || EVP_PKEY_keygen(pctx, &k->pq_key) <= 0)
         goto err;
@@ -263,7 +263,7 @@ int composite_kem_key_load_pub(COMPOSITE_KEM_KEY *key,
                                const unsigned char *tradpub, size_t tradlen)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                                 key->pq_propq);
+                                                 key->alg2_propq);
     OSSL_PARAM p[2];
     int ok = 0;
 
@@ -302,7 +302,7 @@ int composite_kem_key_load_prv(COMPOSITE_KEM_KEY *key,
                                const unsigned char *tradpriv, size_t tradlen)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                                 key->pq_propq);
+                                                 key->alg2_propq);
     /* Reconstruct the PQ component from the param named by the row: the ML-KEM
      * seed for standardized combos; a different seed param or the raw private key
      * for a future non-ML-KEM combo. No ML-KEM assumption. */
@@ -346,7 +346,7 @@ static int composite_kem_key_match(const void *va, const void *vb, int selection
 static size_t discover_pq_pub_len(COMPOSITE_KEM_KEY *key)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                                 key->pq_propq);
+                                                 key->alg2_propq);
     EVP_PKEY *t = NULL;
     size_t n = 0;
 
@@ -360,7 +360,7 @@ static size_t discover_pq_pub_len(COMPOSITE_KEM_KEY *key)
 static size_t discover_pq_priv_len(COMPOSITE_KEM_KEY *key)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                                 key->pq_propq);
+                                                 key->alg2_propq);
     EVP_PKEY *t = NULL;
     size_t n = 0;
 

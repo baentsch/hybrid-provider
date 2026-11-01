@@ -10,8 +10,10 @@ or others) in arbitrary pairings.
 
 ## Goals
 
-1. Implement hybrid KEM: combine a classical key-exchange/KEM with a PQ KEM
-2. Implement hybrid signatures: combine a classical signature with a PQ signature
+1. Implement hybrid KEM: combine two component KEMs — typically a classical
+   key-exchange/KEM with a PQ KEM, or (operation-only) two PQ KEMs
+2. Implement hybrid signatures: combine two component signatures — a classical
+   with a PQ one, or (operation-only) two PQ signatures
 3. Use only the public EVP API — no internal OpenSSL headers
 4. Support arbitrary algorithm pairings from any provider
 5. Interoperate with OpenSSL default provider's built-in hybrid KEMs
@@ -114,16 +116,18 @@ reads two optional keys from its config section:
 
 ```ini
 [hybrid_sect]
-module            = /path/to/hybrid.so
-activate          = 1
-pq-propquery      = ?provider=oqsprovider   # ML-KEM / ML-DSA component
-classic-propquery = ?provider=default       # X25519 / EC component
+module         = /path/to/hybrid.so
+activate       = 1
+alg1-propquery = ?provider=default       # component 1 (e.g. X25519 / EC)
+alg2-propquery = ?provider=oqsprovider   # component 2 (e.g. ML-KEM / ML-DSA)
 ```
 
-When set, `pq-propquery` is used for every fetch of the PQ component (alg2) and
-`classic-propquery` for the classical component (alg1) — in key generation,
-import, and the KEM/signature operations alike. Each falls back to the key's
-`propq` when its config key is absent, so the default behaviour is unchanged.
+The mapping is **positional**: `alg1-propquery` is used for every fetch of the
+first component (`alg1`) and `alg2-propquery` for the second (`alg2`) — in key
+generation, import, and the KEM/signature operations alike. Naming the keys by
+slot rather than by "classical"/"PQ" keeps them correct for a PQ/PQ row (§3.4),
+whose `alg1` is itself post-quantum. Each falls back to the key's `propq` when
+its config key is absent, so the default behaviour is unchanged.
 Because the values come from configuration (not the per-operation query), they
 also take effect on the TLS path. This is preferred over propagating the
 selection query into key generation in libcrypto, which would change keygen
@@ -168,11 +172,11 @@ For signatures:
 ```c
 typedef struct {
     const char *hybrid_name;     /* e.g., "p256_mldsa44" */
-    const char *alg1_name;       /* "EC" or "RSA" (no EdDSA) */
-    const char *alg1_group;      /* EC group (e.g. "P-256"), or NULL for RSA-3072 */
-    const char *alg2_name;       /* PQ, e.g. "MLDSA44" */
-    int         nist_level;      /* PQ NIST level -> classical digest choice */
-    const char *oid;             /* X.509 OID (used by encoders/decoders) */
+    const char *alg1_name;       /* "EC"/"RSA" or a PQ alg name (either slot) */
+    const char *alg1_group;      /* EC group (e.g. "P-256"); NULL for RSA / PQ */
+    const char *alg2_name;       /* e.g. "MLDSA44" (or a classical name) */
+    int         nist_level;      /* digest for a digest-taking component; inert PQ/PQ */
+    const char *oid;             /* X.509 OID, or NULL if operation-only (§3.4) */
     int         tls_codepoint;   /* TLS SignatureScheme code point (0 if none) */
 } HYBRID_SIG_INFO;
 ```
@@ -198,15 +202,19 @@ research KEMs): advertised and serveable only where `curveSM2` is fetchable.
 
 Beyond these, the provider registers the full oqsprovider-compatible hybrid-KEM
 matrix — ML-KEM (incl. brainpool curves), FrodoKEM, BIKE and HQC combinations —
-matching oqsprovider's names, OIDs and TLS code points. The authoritative list
-is `HYBRID_KEM_LIST` in `hybrid_prov.h`; the README enumerates them.
+matching oqsprovider's names, OIDs and TLS code points. The list also carries the
+`xwing_*` rows that run the X-Wing SHA3-256 combiner (`draft-connolly-cfrg-xwing-kem`),
+including `xwing_mlkem768_hqc3` — a **PQ/PQ** KEM with a native PQ KEM in *both*
+slots (`alg1_is_kem`), operation-only with no OID or code point, the KEM analogue
+of the PQ/PQ signature rows (§3.4). The authoritative list is `HYBRID_KEM_LIST`
+in `hybrid_prov.h`; the README enumerates them.
 
 ### Signature algorithms
 
-OpenSSL has no built-in hybrid signatures, so the provider uses oqsprovider's
-naming and wire format (classical component first, PQ component second). The
-classical component is ECDSA on the named curve or RSA-3072 — there are **no**
-EdDSA concatenation hybrids. The core ML-DSA set:
+OpenSSL has no built-in hybrid signatures, so for the classical×PQ families the
+provider uses oqsprovider's naming and wire format (classical component first, PQ
+component second). The classical component is ECDSA on the named curve or
+RSA-3072 — there are **no** EdDSA concatenation hybrids. The core ML-DSA set:
 
 | Hybrid Name      | Component 1     | Component 2 |
 |------------------|-----------------|-------------|
@@ -217,7 +225,12 @@ EdDSA concatenation hybrids. The core ML-DSA set:
 
 The full matrix additionally pairs the same classical curves with the research
 PQ signatures from oqsprovider — Falcon (incl. padded), MAYO, UOV, SNOVA and
-MQOM2. The authoritative list is `HYBRID_SIG_LIST` in `hybrid_prov.h`.
+MQOM2. Because the sign/verify path is slot-symmetric (see *Operation:
+Signature*), the list also carries three **PQ/PQ** operation-only rows
+(`mldsa65_falcon1024`, `mldsa44_mayo1`, `falcon512_mayo1`) with a post-quantum
+algorithm in *both* slots — the signature analogue of `xwing_mlkem768_hqc3`, with
+no OID or code point (§3.4). The authoritative list is `HYBRID_SIG_LIST` in
+`hybrid_prov.h`.
 
 ### Composite signatures (LAMPS)
 
@@ -276,8 +289,8 @@ core. It is validated against the draft's published KAT vectors
 
 ### Hybrid vs. composite: when to use which
 
-Both families combine a classical and a PQ algorithm for the same reason —
-defense-in-depth that is deployable now (if either component is later broken, the
+Both families combine two algorithms (typically a classical and a PQ one) for the
+same reason — defense-in-depth that is deployable now (if either component is later broken, the
 other still holds). They are **not redundant**: they sit at different layers and
 interoperate with different ecosystems, and neither is faster (both are
 primitive-bound; composition glue is small — ~1.0×, up to ~1.2× for the fastest
@@ -314,12 +327,12 @@ typedef struct hybrid_key_st {
     char *propq;
     const void *info;        /* HYBRID_KEM_INFO or HYBRID_SIG_INFO */
     int is_kem;              /* 1 = KEM hybrid, 0 = SIG hybrid */
-    EVP_PKEY *key1;          /* classical component key */
-    EVP_PKEY *key2;          /* PQ component key */
+    EVP_PKEY *key1;          /* component 1 (classical for classical×PQ rows) */
+    EVP_PKEY *key2;          /* component 2 (PQ for classical×PQ rows) */
     unsigned int state;      /* HYBRID_HAVE_NOKEYS / PUBKEY / PRVKEY */
     HYBRID_SIZES sizes;      /* KEM only: runtime-discovered component sizes */
-    const char *pq_propq;      /* per-component propq for the PQ half (or NULL) */
-    const char *classic_propq; /* per-component propq for the classical half */
+    const char *alg2_propq;      /* per-component propq (positional: slot 2) */
+    const char *alg1_propq; /* per-component propq (positional: slot 1) */
 } HYBRID_KEY;
 
 #define HYBRID_HAVE_NOKEYS  0
@@ -328,9 +341,9 @@ typedef struct hybrid_key_st {
 ```
 
 Component sizes are compile-time constants (`HYBRID_SIZES`, copied in at
-construction); `pq_propq`/`classic_propq` are borrowed pointers into the
-provider context that steer per-component provider selection (see "Component
-provider selection"), each falling back to `propq` when unset.
+construction); `alg1_propq`/`alg2_propq` are borrowed pointers into the
+provider context that steer per-component (by slot) provider selection (see
+"Component provider selection"), each falling back to `propq` when unset.
 
 Each `EVP_PKEY` is obtained via EVP and may come from any provider.
 
@@ -431,7 +444,9 @@ inverse of extraction.
 
 ### Two sub-algorithm modes
 
-The classical component may be either:
+Component 1 (`alg1`) may be either — the mode is recorded per row by
+`alg1_is_kem`, not inferred from whether the component is classical or PQ (for a
+PQ/PQ KEM such as `xwing_mlkem768_hqc3`, `alg1` is itself a native PQ KEM):
 
 1. **Native KEM** (has `EVP_PKEY_encapsulate`/`EVP_PKEY_decapsulate`) — used
    directly.
@@ -499,30 +514,54 @@ exactly. From analysis of `mlx_kem.c`:
 ## Operation: Signature
 
 Wire format matches oqsprovider's hybrid signatures: a big-endian `uint32`
-length of the classical signature, then the classical signature, then the PQ
-signature (`ENCODE_UINT32(classical_len) || classical_sig || pq_sig`). This
-length prefix (rather than a fixed maximum slot) accommodates ECDSA's
-variable-length DER without padding. The classical component signs under a digest
-selected by the PQ component's NIST level (1 → SHA-256, 2/3 → SHA-384, 4/5 →
-SHA-512); the PQ component signs per its own scheme.
+length of the component-1 signature, then component-1's signature, then
+component-2's (`ENCODE_UINT32(comp1_len) || comp1_sig || comp2_sig`). This length
+prefix (rather than a fixed maximum slot) accommodates a variable-length
+component-1 signature without padding — ECDSA's DER, and equally a Falcon
+signature.
+
+The sign/verify path is **slot-symmetric**: each component is handled by its own
+kind, not by assuming "slot 1 is classical" (`hybrid_sig.c`,
+`hybrid_sig_component`). A component is either
+
+- **digest-taking** — classical ECDSA or RSA: the provider pre-hashes `tbs` with a
+  digest chosen by the hybrid's NIST level (1 → SHA-256, 2/3 → SHA-384, 4/5 →
+  SHA-512) and signs the digest (`EVP_PKEY_sign`, RSA PKCS#1 v1.5 for RSA); or
+- **md-less** — every PQ signature (ML-DSA, Falcon, MAYO, …) and EdDSA: it signs
+  the message directly (`EVP_DigestSign` with a NULL digest).
+
+The digest-taking set is the frozen pair `{EC, RSA}`; everything else is md-less.
+Because the classification is per-component on the alg name, the crypto path is
+**slot-symmetric** — a digest-taking or md-less component in either slot —
+covering classical×PQ (oqsprovider convention) and PQ/PQ (operation-only, §3.4 /
+RFC 9794) alike. One *construction* asymmetry remains in the table, not the crypto
+path: only `alg1` carries a group (`alg1_group`), so a classical **EC** component
+must occupy slot 1; RSA and the groupless PQ algorithms may sit in either slot
+(adding an `alg2_group` field would lift this —
+[#125](https://github.com/baentsch/hybrid-provider/issues/125)). A
+per-operation context string, if set, is applied to every md-less component (both
+halves of a PQ/PQ pair) and never to a digest-taking one; a component that does
+not itself honour a context string ignores it (best-effort, no hard failure).
 
 ### Sign
 
 ```
-1. sig1 = EVP_DigestSign(key1, tbs, tbslen)   (classical, alg1, digest per NIST level)
-2. sig2 = EVP_DigestSign(key2, tbs, tbslen)   (PQ, alg2)
-3. Output: sig = ENCODE_UINT32(len(sig1)) || sig1 || sig2
+for slot in {0, 1}:                              (alg1-first; no slot swapping)
+    if component[slot] is digest-taking:
+        sig[slot] = EVP_PKEY_sign(key[slot], Digest(tbs))   (md per NIST level)
+    else:
+        sig[slot] = EVP_DigestSign(key[slot], tbs)          (md-less; +ctx string)
+Output: sig = ENCODE_UINT32(len(sig[0])) || sig[0] || sig[1]
 ```
 
-Both sub-signatures are over the same `tbs` (to-be-signed) data. Signature
-hybrids always use alg1-first ordering (no slot swapping).
+Both sub-signatures are over the same `tbs` (to-be-signed) data.
 
 ### Verify
 
 ```
-1. Read the uint32 classical length prefix; split into sig1, sig2 accordingly
-2. ok1 = EVP_DigestVerify(key1, sig1, tbs, tbslen)   (same digest as sign)
-3. ok2 = EVP_DigestVerify(key2, sig2, tbs, tbslen)
+1. Read the uint32 component-1 length prefix; split into sig[0], sig[1]
+2. ok0 = verify component 0 (digest-taking or md-less, as on the sign side)
+3. ok1 = verify component 1 (likewise)
 4. Return success only if BOTH pass
 ```
 
@@ -538,17 +577,19 @@ md-less algorithms (ML-DSA, and thus our hybrids); without it, `cms -sign
 
 **The streaming path buffers the message and runs the one-shot at `final`,**
 rather than driving the two component contexts fragment-by-fragment. This is a
-deliberate tradeoff, not an algorithmic necessity: for the signature hybrids
-both components *can* in fact stream — the classical half is always ECDSA or
-RSA (never pure EdDSA; see the sig info table), both of which stream via
-`EVP_DigestSignUpdate`, and the PQ half is ML-DSA, whose default-provider
-implementation absorbs the message incrementally into `mu` (a SHAKE sponge) via
-`EVP_PKEY_sign_message_update` rather than buffering internally. A true
-end-to-end streaming design is therefore possible. Buffer-then-one-shot was
-chosen because it:
+deliberate tradeoff, not an algorithmic necessity: for the classical×PQ hybrids
+both components *can* in fact stream — a digest-taking ECDSA/RSA half (never pure
+EdDSA; see the sig info table) streams via `EVP_DigestSignUpdate`, and the ML-DSA
+half's default-provider implementation absorbs the message incrementally into
+`mu` (a SHAKE sponge) via `EVP_PKEY_sign_message_update` rather than buffering
+internally, so a true end-to-end streaming design is possible there. Buffering is
+also the only correct choice for a component that does *not* stream — the PQ/PQ
+rows may pair research signatures (Falcon/MAYO/…) whose oqsprovider
+implementations expose no message-update — which is one more reason it is the
+common denominator. Buffer-then-one-shot was chosen because it:
 
-- reuses the identical, already-tested one-shot assembly (the 4-byte
-  classical-length prefix + concatenation, and the `sig == NULL` size query),
+- reuses the identical, already-tested one-shot assembly (the 4-byte component-1
+  length prefix + concatenation, and the `sig == NULL` size query),
   instead of a second code path that reassembles the wire format from two
   separately-finalized halves;
 - keeps `dupctx` / `freectx` managing a single owned byte buffer (a trivial
@@ -994,7 +1035,7 @@ not composition overhead: our delegated M8 path pays exactly what an oqsprovider
 native hybrid of the same name already pays, so M8 adds nothing here, and sourcing
 the PQ half from a provider that caches its method table avoids it. The measured
 breakdown is in `docs/oqsprovider-no-cache-issue.md`. The lever available here is
-primitive sourcing: `pq-propquery` / `classic-propquery` steer each component to
+primitive sourcing: `alg1-propquery` / `alg2-propquery` steer each component to
 the fastest provider exposing the standalone EVP algorithm. Run
 `test/hybrid_bench.c` in your own environment for numbers.
 

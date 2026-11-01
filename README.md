@@ -26,7 +26,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 50 hybrid KEMs + 26 hybrid signatures = 76 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 128 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 76 hybrids (98 total).
+**Algorithms served:** 50 hybrid KEMs + 29 hybrid signatures = 79 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 131 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 79 hybrids (101 total).
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -123,12 +123,19 @@ Adding another is two central lines — a row in `HYBRID_KEM_LIST` and an entry 
 
 ### Hybrid Signatures
 
-Classical component first (ECDSA on the named curve, or RSA-3072), PQ component
-second; wire format matches
-[oqsprovider](https://github.com/open-quantum-safe/oqs-provider) (`uint32`
-classical-length prefix, classical signature, PQ signature). The ML-DSA hybrids
+Two independent signatures over the same message, concatenated behind a
+`uint32` length prefix on the first component (`uint32(len1) || sig1 || sig2`);
+wire format matches
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider). The sign/verify
+path is **slot-symmetric**: each component is handled by its own kind — a
+digest-taking classical half (ECDSA on the named curve, or RSA-3072, signing an
+externally-applied digest) or an md-less half (any PQ/EdDSA, signing the message
+directly) — so either slot may be digest-taking or md-less (one caveat: only the
+first component carries a curve, so a classical **EC** half must sit in slot 1,
+while RSA or any PQ algorithm may sit in either). The
+oqsprovider-convention families below are classical-first; the ML-DSA hybrids
 compose from the default provider or
-[oqsprovider](https://github.com/open-quantum-safe/oqs-provider); the research
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider), the research
 families need [oqsprovider](https://github.com/open-quantum-safe/oqs-provider).
 
 | Family | Algorithms |
@@ -140,6 +147,24 @@ families need [oqsprovider](https://github.com/open-quantum-safe/oqs-provider).
 | UOV | `p256_OV_Is_pkc`, `p256_OV_Ip_pkc`, `p256_OV_Is_pkc_skc`, `p256_OV_Ip_pkc_skc` |
 | SNOVA | `p256_snova2454`, `p256_snova2454esk`, `p256_snova37172`, `p384_snova2455`, `p521_snova2965` |
 | MQOM2 | `p256_mqom2cat1gf16fastr5`, `p384_mqom2cat3gf16fastr5`, `p521_mqom2cat5gf16fastr5` |
+
+Three further rows are **PQ/PQ** (RFC 9794 terminology: both components
+post-quantum), the signature analogue of `xwing_mlkem768_hqc3` above — md-less in
+*both* slots rather than classical + PQ:
+
+| Algorithm | Components |
+|---|---|
+| `mldsa65_falcon1024` | ML-DSA-65 + Falcon-1024 (needs oqsprovider) |
+| `mldsa44_mayo1` | ML-DSA-44 + MAYO-1 (needs oqsprovider) |
+| `falcon512_mayo1` | Falcon-512 + MAYO-1 (needs oqsprovider) |
+
+No PQ/PQ concatenation signature is standardized (RFC 9955 gives only the
+taxonomy) and there is no interop peer, so — like the `xwing_*` KEM rows — these
+are **operation-only**: no OID, no TLS code point, sign/verify within this
+provider. They exercise the slot-symmetric path over two post-quantum signatures,
+including a variable-length component 1 (`falcon512_mayo1`). The generic
+runtime-declared form of arbitrary PQ/PQ pairs arrives with #112; see
+[STANDARDS.md §3.4](STANDARDS.md).
 
 ### Composite signatures (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 

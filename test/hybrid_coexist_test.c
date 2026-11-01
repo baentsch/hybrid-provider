@@ -139,7 +139,10 @@ int main(void)
            nm, h ? h : "(none)");
         OK(d == NULL, "SIG %s: ?provider=default -> %s (want none; default has "
            "no hybrid sigs)", nm, d ? d : "(none)");
-        if (have_oqs) {
+        /* Operation-only rows (§3.4 PQ/PQ) have no oqsprovider counterpart —
+         * they are hybrid-only names (NULL OID). Only the oqs-convention rows
+         * (OID-bearing) are expected to resolve to oqsprovider. */
+        if (have_oqs && hybrid_sig_table[i].oid != NULL) {
             const char *o = sig_prov(ctx, nm, "provider=oqsprovider");
             OK(name_is(o, "oqsprovider"),
                "SIG %s: ?provider=oqsprovider -> %s (want oqsprovider)",
