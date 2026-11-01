@@ -26,7 +26,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 49 hybrid KEMs + 26 hybrid signatures = 75 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 127 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 75 hybrids (97 total).
+**Algorithms served:** 50 hybrid KEMs + 26 hybrid signatures = 76 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 128 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 76 hybrids (98 total).
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -108,6 +108,14 @@ private component-pair names, no TLS code point and no OID:
 | `xwing_p256_mlkem768` | ECDH P-256 + ML-KEM-768 |
 | `xwing_x448_mlkem1024` | X448 + ML-KEM-1024 |
 | `xwing_x25519_efrodo640aes` | X25519 + eFrodoKEM-640-AES (needs oqsprovider) |
+| `xwing_mlkem768_hqc3` | ML-KEM-768 + HQC-3 — **PQ/PQ**, both post-quantum (needs oqsprovider) |
+
+The last row is **PQ/PQ** (RFC 9794 terminology: both components post-quantum),
+the first hybrid here with a native KEM in *both* slots rather than a classical
+key exchange + PQ KEM. No PQ/PQ KEM is standardized anywhere — Chempat and
+`draft-irtf-cfrg-hybrid-kems` are both PQ/T — so it is operation-only with no
+interop peer and no KAT; it exercises the component-agnostic combiner over two
+post-quantum KEMs. See [STANDARDS.md §3.4](STANDARDS.md).
 
 Adding another is two central lines — a row in `HYBRID_KEM_LIST` and an entry in
 `hybrid_kem_combiner[]` — with no combiner-code change (see

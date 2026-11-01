@@ -206,9 +206,11 @@ or ML-KEM-768. Only `X-Wing` (the exact draft instantiation) is standards-backed
 the same construction over other component pairs is offered as **non-normative
 experimentation** (see §3.4) under private component-pair names, operation-only,
 with no TLS code point and no OID: `xwing_x25519_mlkem1024`, `xwing_p256_mlkem768`,
-`xwing_x448_mlkem1024`, `xwing_x25519_efrodo640aes`. These are **not** X-Wing and
-have no cross-implementation interop target; they exist to exercise the combiner
-over larger ML-KEM, a different classical curve, and a non-ML-KEM PQ KEM.
+`xwing_x448_mlkem1024`, `xwing_x25519_efrodo640aes`, and `xwing_mlkem768_hqc3`.
+These are **not** X-Wing and have no cross-implementation interop target; they
+exist to exercise the combiner over larger ML-KEM, a different classical curve, a
+non-ML-KEM PQ KEM, and — in `xwing_mlkem768_hqc3` — a **PQ/PQ** pair with a native
+KEM in *both* slots (`alg1_is_kem`), the first such row (see §3.4).
 
 Underlying: FIPS 203 (ML-KEM), RFC 7748 (X25519), FIPS 202 (SHA-3).
 
@@ -304,6 +306,21 @@ shipping a giant static table — is the subject of a planned runtime
 [Tracking](#tracking)): cnf-declared experimental hybrids, operation-only by
 default, private identifiers optional, never shadowing a standardized identifier.
 
+**PQ/PQ hybrids.** RFC 9794 defines *PQ/PQ* as a hybrid whose components are
+**both** post-quantum. No PQ/PQ construction is standardized: for **KEMs** the
+generic combiner drafts are explicitly PQ/T (Chempat and
+`draft-irtf-cfrg-hybrid-kems` each pair one post-quantum with one *traditional*
+component), and for **signatures** RFC 9955 supplies only the taxonomy
+(concatenation / nesting / fusion, PQ/PQ permitted) with no concrete combiner.
+So PQ/PQ lives entirely on this experimentation surface. One is now realized *by
+construction*: `xwing_mlkem768_hqc3` (§2.5) runs the X-Wing SHA3-256 combiner over
+ML-KEM-768 + HQC-3 — a native KEM in both slots (`alg1_is_kem`) — operation-only,
+no interop peer, no KAT. It is **not** X-Wing (PQ/T) and **not** Chempat (PQ/T);
+it reuses their combiner shape off their scope, so the "security = weakest
+component" caveat applies with no formal binding claim. PQ/PQ *signatures* remain
+doc-only pending the component-1 crypto-path generalization
+([#114](https://github.com/baentsch/hybrid-provider/issues/114)).
+
 ---
 
 ## 4. Future work — could be served
@@ -321,8 +338,10 @@ Each candidate above is tracked as a GitHub issue for later implementation (see
 **Out of scope** (different transport, not an OpenSSL-provider concern): RFC 10042
 (PQ/T hybrid KEX for SSH — same primitives, SSH wire), RFC 9370 (IKEv2 multiple
 key exchanges). **Informational anchors:** RFC 9958 (PQC for Engineers),
-`draft-ietf-pquip-hybrid-signature-spectrums` (taxonomy), NIST SP 800-227 / SP
-800-56C (combiner guidance).
+RFC 9955 (hybrid-signature taxonomy — concatenation / nesting / fusion, and the
+stripping / non-separability considerations; explicitly covers PQ/PQ pairs; ex
+`draft-ietf-pquip-hybrid-signature-spectrums`), NIST SP 800-227 / SP 800-56C
+(combiner guidance).
 
 ### Tracking
 
@@ -343,6 +362,7 @@ Each future-work item above is tracked as an issue:
 - [draft-rosomakho-tls-ecdhe-mlkem512](https://datatracker.ietf.org/doc/draft-rosomakho-tls-ecdhe-mlkem512/)
 - [draft-connolly-cfrg-xwing-kem](https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/)
 - [RFC 9629](https://datatracker.ietf.org/doc/rfc9629/) — Using KEMs with CMS
+- [RFC 9955](https://datatracker.ietf.org/doc/rfc9955/) — Hybrid Signature Spectrums (taxonomy; ex `draft-ietf-pquip-hybrid-signature-spectrums`)
 - FIPS 203 (ML-KEM), FIPS 204 (ML-DSA)
 </content>
 </invoke>

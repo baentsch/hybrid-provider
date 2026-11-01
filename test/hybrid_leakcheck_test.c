@@ -170,8 +170,10 @@ static void exercise_sig(OSSL_LIB_CTX *ctx, const char *name)
     EVP_PKEY_free(k);
 }
 
-/* Full battery for a KEM key type. Silent skip if not operable. */
-static void exercise_kem(OSSL_LIB_CTX *ctx, const char *name)
+/* Full battery for a KEM key type. Silent skip if not operable. `combiner` is the
+ * row's HYBRID_COMBINER_* value; X-Wing-combiner rows must collapse to one 32-byte
+ * digest (checked in the round-trip block). */
+static void exercise_kem(OSSL_LIB_CTX *ctx, const char *name, int combiner)
 {
     EVP_PKEY *k = keygen(ctx, name), *k2 = NULL, *spki = NULL, *p8 = NULL;
     EVP_PKEY_CTX *ec = NULL, *dc = NULL;
@@ -209,6 +211,13 @@ static void exercise_kem(OSSL_LIB_CTX *ctx, const char *name)
             && (ss2 = OPENSSL_malloc(ss2len)) != NULL
             && EVP_PKEY_decapsulate(dc, ss2, &ss2len, ct, ctlen) > 0) {
         ok &= (ss2len == sslen && memcmp(ss, ss2, sslen) == 0);
+        /* A row wired to the X-Wing combiner must collapse both component
+         * secrets into one SHA3-256 digest. A missing hybrid_kem_combiner[]
+         * entry would silently fall back to raw concatenation — a longer secret
+         * that still round-trips — so the agreement check above would not catch
+         * it; assert the combined length too. */
+        if (combiner == HYBRID_COMBINER_XWING)
+            ok &= (sslen == HYBRID_XWING_SS_LEN);
     } else {
         ok = 0;
     }
@@ -253,12 +262,14 @@ int main(void)
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         exercise_sig(ctx, hybrid_sig_table[i].hybrid_name);
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
-        exercise_kem(ctx, hybrid_kem_table[i].hybrid_name);
+        exercise_kem(ctx, hybrid_kem_table[i].hybrid_name, hybrid_kem_combiner[i]);
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
         exercise_sig(ctx, composite_sig_table[i].name);
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
-        exercise_kem(ctx, composite_kem_table[i].name);
+        /* Composite KEMs have their own fixed combiner, not a hybrid_kem_combiner[]
+         * row; pass CONCAT so the X-Wing length check does not apply. */
+        exercise_kem(ctx, composite_kem_table[i].name, HYBRID_COMBINER_CONCAT);
 #endif
 
     /* Unload-clean shutdown: unload every provider we loaded so teardown runs
