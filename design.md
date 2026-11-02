@@ -175,6 +175,7 @@ typedef struct {
     const char *alg1_name;       /* "EC"/"RSA" or a PQ alg name (either slot) */
     const char *alg1_group;      /* EC group (e.g. "P-256"); NULL for RSA / PQ */
     const char *alg2_name;       /* e.g. "MLDSA44" (or a classical name) */
+    const char *alg2_group;      /* EC group for an alg2 EC component; else NULL */
     int         nist_level;      /* digest for a digest-taking component; inert PQ/PQ */
     const char *oid;             /* X.509 OID, or NULL if operation-only (§3.4) */
     int         tls_codepoint;   /* TLS SignatureScheme code point (0 if none) */
@@ -534,11 +535,12 @@ The digest-taking set is the frozen pair `{EC, RSA}`; everything else is md-less
 Because the classification is per-component on the alg name, the crypto path is
 **slot-symmetric** — a digest-taking or md-less component in either slot —
 covering classical×PQ (oqsprovider convention) and PQ/PQ (operation-only, §3.4 /
-RFC 9794) alike. One *construction* asymmetry remains in the table, not the crypto
-path: only `alg1` carries a group (`alg1_group`), so a classical **EC** component
-must occupy slot 1; RSA and the groupless PQ algorithms may sit in either slot
-(adding an `alg2_group` field would lift this —
-[#125](https://github.com/baentsch/hybrid-provider/issues/125)). A
+RFC 9794) alike. Construction is slot-symmetric too: each slot carries its own
+group (`alg1_group`/`alg2_group`), so a classical **EC** component may occupy
+either slot (the `mldsa65_p256` operation-only row exercises EC-in-slot-2), while
+RSA and the groupless PQ algorithms are groupless
+([#125](https://github.com/baentsch/hybrid-provider/issues/125) lifted the former
+`alg1`-only limit). A
 per-operation context string, if set, is applied to every md-less component (both
 halves of a PQ/PQ pair) and never to a digest-taking one; a component that does
 not itself honour a context string ignores it (best-effort, no hard failure).

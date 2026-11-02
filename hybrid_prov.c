@@ -178,7 +178,7 @@ static int hybrid_get_params(void *provctx, OSSL_PARAM params[])
       ds " hybrid key management" },
 
 /* SIG keymgmt registration rows, generated from the master list. */
-#define HYBRID_SIG_KMGMT_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)              \
+#define HYBRID_SIG_KMGMT_REG(cf, nm, a1, grp, a2, grp2, lvl, oid, ds, cp)        \
     { nm, "provider=hybrid", hybrid_##cf##_kmgmt_functions,                   \
       ds " hybrid key management" },
 
@@ -229,7 +229,7 @@ static const OSSL_ALGORITHM hybrid_kems[] = {
 #endif
 
 /* SIG operation registration rows, generated from the master list. */
-#define HYBRID_SIG_OP_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                 \
+#define HYBRID_SIG_OP_REG(cf, nm, a1, grp, a2, grp2, lvl, oid, ds, cp)           \
     { nm, "provider=hybrid", hybrid_sig_functions, ds " hybrid signature" },
 
 #ifdef HYBRID_COMPOSITE
@@ -252,7 +252,7 @@ static const OSSL_ALGORITHM hybrid_signatures[] = {
  * Encoders: SubjectPublicKeyInfo in DER and PEM, one pair per signature
  * algorithm (matched by key-type name + output/structure properties).
  */
-#define HYBRID_SIG_ENC_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                \
+#define HYBRID_SIG_ENC_REG(cf, nm, a1, grp, a2, grp2, lvl, oid, ds, cp)          \
     { nm, "provider=hybrid,output=der,structure=SubjectPublicKeyInfo",       \
       hybrid_spki_der_encoder_functions, ds " SPKI DER encoder" },           \
     { nm, "provider=hybrid,output=pem,structure=SubjectPublicKeyInfo",       \
@@ -348,7 +348,7 @@ static const OSSL_ALGORITHM hybrid_encoders[] = {
 #endif
 
 /* Decoders: DER SubjectPublicKeyInfo -> key, one per signature algorithm. */
-#define HYBRID_SIG_DEC_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)                \
+#define HYBRID_SIG_DEC_REG(cf, nm, a1, grp, a2, grp2, lvl, oid, ds, cp)          \
     { nm, "provider=hybrid,input=der,structure=SubjectPublicKeyInfo",        \
       hybrid_spki_der_decoder_functions, ds " SPKI DER decoder" },           \
     { nm, "provider=hybrid,input=der,structure=PrivateKeyInfo",              \
@@ -902,7 +902,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
      */
     if (c_obj_create != NULL && c_obj_add_sigid != NULL) {
         ERR_set_mark();
-#define HYBRID_SIG_OID_REG(cf, nm, a1, grp, a2, lvl, oid, ds, cp)             \
+#define HYBRID_SIG_OID_REG(cf, nm, a1, grp, a2, grp2, lvl, oid, ds, cp)       \
         if ((oid) != NULL) {         /* operation-only rows (§3.4) have none */ \
             (void)c_obj_create(handle, oid, nm, nm);                         \
             (void)c_obj_add_sigid(handle, nm, "", nm);                       \

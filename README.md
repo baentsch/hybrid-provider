@@ -26,7 +26,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 50 hybrid KEMs + 29 hybrid signatures = 79 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 131 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 79 hybrids (101 total).
+**Algorithms served:** 50 hybrid KEMs + 30 hybrid signatures = 80 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 132 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 80 hybrids (102 total).
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -130,9 +130,10 @@ wire format matches
 path is **slot-symmetric**: each component is handled by its own kind — a
 digest-taking classical half (ECDSA on the named curve, or RSA-3072, signing an
 externally-applied digest) or an md-less half (any PQ/EdDSA, signing the message
-directly) — so either slot may be digest-taking or md-less (one caveat: only the
-first component carries a curve, so a classical **EC** half must sit in slot 1,
-while RSA or any PQ algorithm may sit in either). The
+directly) — so either slot may be digest-taking or md-less. Construction is
+slot-symmetric too: each slot carries its own curve (`alg1_group`/`alg2_group`),
+so a classical **EC** half may occupy either slot, while RSA or any PQ algorithm
+is groupless. The
 oqsprovider-convention families below are classical-first; the ML-DSA hybrids
 compose from the default provider or
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider), the research

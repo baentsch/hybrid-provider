@@ -254,7 +254,7 @@ int hybrid_key_load_pub_components(HYBRID_KEY *key,
         return 0;
     }
     if (!load_component(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
-                        HYBRID_KEY_ALG2_NAME(key), NULL,
+                        HYBRID_KEY_ALG2_NAME(key), HYBRID_KEY_ALG2_GROUP(key),
                         OSSL_PKEY_PARAM_PUB_KEY, sel, pq, plen, &key->key2))
         return 0;
     key->state = HYBRID_HAVE_PUBKEY;
@@ -296,7 +296,7 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
                                     pqv, pqvlen, pqpub, pqpublen, &key->key2);
     else
         ok = load_component(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
-                            HYBRID_KEY_ALG2_NAME(key), NULL,
+                            HYBRID_KEY_ALG2_NAME(key), HYBRID_KEY_ALG2_GROUP(key),
                             OSSL_PKEY_PARAM_PRIV_KEY, sel, pqv, pqvlen,
                             &key->key2);
     if (!ok) {
@@ -390,7 +390,7 @@ load_keys(HYBRID_KEY *key,
                         alg1_data, len1, &key->key1))
         goto err;
     if (!load_component(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
-                        HYBRID_KEY_ALG2_NAME(key), NULL,
+                        HYBRID_KEY_ALG2_NAME(key), HYBRID_KEY_ALG2_GROUP(key),
                         pname, selection,
                         alg2_data, len2, &key->key2))
         goto err;
@@ -864,7 +864,8 @@ static void *hybrid_gen(void *vgctx, OSSL_CALLBACK *cb, void *cbarg)
         return key;
 
     key->key2 = hybrid_component_keygen(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
-                                        HYBRID_KEY_ALG2_NAME(key), NULL);
+                                        HYBRID_KEY_ALG2_NAME(key),
+                                        HYBRID_KEY_ALG2_GROUP(key));
     key->key1 = hybrid_component_keygen(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
                                         HYBRID_KEY_ALG1_NAME(key),
                                         HYBRID_KEY_ALG1_GROUP(key));
