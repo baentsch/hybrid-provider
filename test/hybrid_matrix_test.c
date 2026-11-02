@@ -255,8 +255,17 @@ int main(void)
     printf("======================================================\n");
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         check_kem(ctx, hybrid_kem_table[i].hybrid_name);
-    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
+        /* Operation-only rows (§3.4 PQ/PQ) carry no OID: not SPKI-serializable
+         * and no oqsprovider peer, so the SPKI+sig cross has no second peer. */
+        if (hybrid_sig_table[i].oid == NULL) {
+            printf("  %-24s SIG hybrid<->oqs (SPKI+sig) ... SKIP (operation-only)\n",
+                   hybrid_sig_table[i].hybrid_name);
+            skipped++;
+            continue;
+        }
         check_sig(ctx, hybrid_sig_table[i].hybrid_name);
+    }
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);

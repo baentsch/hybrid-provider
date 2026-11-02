@@ -2,16 +2,21 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Hybrid signature dispatch — one-shot DigestSign/DigestVerify combining a
- * classical signature (ECDSA or RSA) with a PQ signature (ML-DSA/…), matching
- * oqsprovider's hybrid-sig wire format:
+ * Hybrid signature dispatch — one-shot DigestSign/DigestVerify combining two
+ * component signatures over the same message, matching oqsprovider's hybrid-sig
+ * wire format:
  *
- *   sig = ENCODE_UINT32(classical_len) || classical_sig || pq_sig
+ *   sig = ENCODE_UINT32(comp1_len) || comp1_sig || comp2_sig
  *
- * The classical component signs a digest of the message — SHA-256/384/512 chosen
- * by the PQ component's NIST level (1 -> 256, 2/3 -> 384, 4/5 -> 512) — via
- * EVP_PKEY_sign (ECDSA DER, or RSA PKCS#1 v1.5). The PQ component signs the raw
- * message. Verify requires BOTH to pass.
+ * The path is slot-SYMMETRIC: each component is handled by its own kind, resolved
+ * from the alg name (hybrid_sig_is_digest_taking), so EITHER slot may hold a
+ * classical or a PQ algorithm (classical×PQ, and the PQ/PQ §3.4 rows):
+ *   - digest-taking (classical ECDSA/RSA): the provider pre-hashes with a digest
+ *     chosen by the hybrid's NIST level (1 -> SHA-256, 2/3 -> SHA-384, 4/5 ->
+ *     SHA-512) and signs it via EVP_PKEY_sign (ECDSA DER, or RSA PKCS#1 v1.5);
+ *   - md-less (every PQ signature and EdDSA): signs the raw message via
+ *     EVP_DigestSign with a NULL digest.
+ * Verify requires BOTH components to pass.
  */
 
 #include "hybrid_prov.h"
@@ -56,12 +61,12 @@ typedef struct {
     HYBRID_KEY *key;
     int op;     /* EVP_PKEY_OP_SIGN or EVP_PKEY_OP_VERIFY */
     /*
-     * Optional per-operation signature context string (issue #46). Applied ONLY
-     * to the PQ component, which is the half that supports it (ML-DSA and the
-     * other PQ signatures take a context string). The classical component
-     * (ECDSA/RSA over a digest) has no such concept, so it is always driven
-     * without it — forwarding a context string there would force a spurious
-     * failure. Owned here; freed in freectx, deep-copied in dupctx.
+     * Optional per-operation signature context string (issue #46). Applied to
+     * every md-less component (ML-DSA and the other PQ signatures take a context
+     * string; for a PQ/PQ pair, both halves) and never to a digest-taking
+     * classical component (ECDSA/RSA over a digest have no such concept). A
+     * component that does not itself honour one ignores the param — best-effort,
+     * no hard failure. Owned here; freed in freectx, deep-copied in dupctx.
      */
     unsigned char *ctxstr;
     size_t ctxstrlen;
@@ -213,9 +218,10 @@ hybrid_sig_verify_init(void *vctx, void *vkey, const OSSL_PARAM params[])
 }
 
 /*
- * Digest the classical component signs, chosen by the PQ NIST level. Uses the
- * static (non-fetched) EVP_MD accessors — matching oqsprovider and avoiding an
- * EVP_MD_fetch per operation.
+ * Digest a digest-taking (classical ECDSA/RSA) component signs, chosen by the
+ * hybrid's NIST level. Uses the static (non-fetched) EVP_MD accessors — matching
+ * oqsprovider and avoiding an EVP_MD_fetch per operation. Only ever consulted for
+ * a digest-taking component; for a PQ/PQ pair (no such component) it is unused.
  */
 static const EVP_MD *classical_md(int nist_level)
 {
@@ -228,15 +234,62 @@ static const EVP_MD *classical_md(int nist_level)
 }
 
 /*
- * Classical sign/verify over a pre-computed digest via EVP_PKEY_sign/verify
- * (ECDSA DER, or RSA PKCS#1 v1.5). `is_rsa` selects PKCS#1 padding.
- * For signing, out/outlen receive the signature; for verify, sig/siglen are the
- * input. Returns 1 on success.
+ * A resolved view of one hybrid signature component, by slot (0 = alg1-first in
+ * the wire layout, 1 = the tail). The sign/verify path is slot-SYMMETRIC: each
+ * slot is handled by its own component kind (digest-taking vs md-less), never by
+ * assuming "slot 0 is classical". Either slot may hold a classical (ECDSA/RSA) or
+ * a PQ (ML-DSA/Falcon/…) algorithm. Resolved from the key by hybrid_sig_component.
  */
-static int classical_op(HYBRID_KEY *key, int sign, int is_rsa,
-                        const EVP_MD *md,
+typedef struct {
+    EVP_PKEY   *pkey;          /* the component key (key1 for slot 0, key2 for 1) */
+    const char *propq;         /* per-slot property query (positional, see below) */
+    size_t      max_sig;       /* signing output bound: sizes->a{1,2}_sig */
+    int         digest_taking; /* 1 = ECDSA/RSA over an external digest; 0 = md-less */
+    int         is_rsa;        /* digest-taking RSA -> PKCS#1 v1.5 padding */
+} HYBRID_SIG_COMP;
+
+/*
+ * A signature component is "digest-taking" iff it is classical ECDSA or RSA: the
+ * caller pre-hashes and the component signs the digest. Every other family — all
+ * PQ signatures (ML-DSA, Falcon, MAYO, …) and EdDSA — is md-less: it signs the
+ * message directly (md == NULL). The digest-taking set is frozen and tiny, so it
+ * is listed explicitly rather than probed (a prober would be the same two names
+ * behind more code). Keyed on the component's alg name, so it is correct in
+ * EITHER slot.
+ */
+static int hybrid_sig_is_digest_taking(const char *alg_name)
+{
+    return strcmp(alg_name, "EC") == 0 || strcmp(alg_name, "RSA") == 0;
+}
+
+/* Resolve slot `slot` (0 or 1) of `key` into *c. The per-slot property query is
+ * positional (slot 0 -> alg1_propq, slot 1 -> alg2_propq); the type-named
+ * accessors are a provider-steering concern shared with the KEM family and are
+ * orthogonal to which component kind sits in the slot. */
+static void hybrid_sig_component(const HYBRID_KEY *key, int slot,
+                                 HYBRID_SIG_COMP *c)
+{
+    const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
+    const char *alg = slot == 0 ? info->alg1_name : info->alg2_name;
+
+    c->digest_taking = hybrid_sig_is_digest_taking(alg);
+    c->is_rsa = (strcmp(alg, "RSA") == 0);
+    c->pkey = slot == 0 ? key->key1 : key->key2;
+    c->propq = slot == 0 ? HYBRID_KEY_ALG1_PROPQ(key)
+                         : HYBRID_KEY_ALG2_PROPQ(key);
+    c->max_sig = slot == 0 ? key->sizes->a1_sig : key->sizes->a2_sig;
+}
+
+/*
+ * Digest-taking sign/verify over a pre-computed digest via EVP_PKEY_sign/verify
+ * (ECDSA DER, or RSA PKCS#1 v1.5). For signing, sig/siglen receive the signature
+ * (bounded by c->max_sig); for verify, sig/siglen are the input. Returns 1 on
+ * success.
+ */
+static int hybrid_sig_digest_taking_op(const HYBRID_KEY *key,
+                        const HYBRID_SIG_COMP *c, int sign, const EVP_MD *md,
                         const unsigned char *tbs, size_t tbslen,
-                        unsigned char *sig, size_t *siglen, size_t sigmax)
+                        unsigned char *sig, size_t *siglen)
 {
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char dig[EVP_MAX_MD_SIZE];
@@ -246,19 +299,18 @@ static int classical_op(HYBRID_KEY *key, int sign, int is_rsa,
     if (!EVP_Digest(tbs, tbslen, dig, &diglen, md, NULL))
         return 0;
 
-    pctx = EVP_PKEY_CTX_new_from_pkey(key->libctx, key->key1,
-                                      HYBRID_KEY_CLASSIC_PROPQ(key));
+    pctx = EVP_PKEY_CTX_new_from_pkey(key->libctx, c->pkey, c->propq);
     if (pctx == NULL)
         goto end;
     if ((sign ? EVP_PKEY_sign_init(pctx) : EVP_PKEY_verify_init(pctx)) <= 0)
         goto end;
-    if (is_rsa && EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) <= 0)
+    if (c->is_rsa && EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) <= 0)
         goto end;
     if (EVP_PKEY_CTX_set_signature_md(pctx, md) <= 0)
         goto end;
 
     if (sign) {
-        *siglen = sigmax;
+        *siglen = c->max_sig;
         if (EVP_PKEY_sign(pctx, sig, siglen, dig, diglen) <= 0)
             goto end;
     } else {
@@ -272,11 +324,17 @@ end:
 }
 
 /*
- * Build the OSSL_PARAM array handed to the PQ component's DigestSign/Verify init
- * (issue #46). Returns the array (into the caller-provided storage) when a
- * context string is set, or NULL when none is — so the PQ component runs with
- * its default (empty) context, preserving the oqsprovider-compatible wire format.
- * The classical component never receives these params.
+ * Build the OSSL_PARAM array handed to an md-less component's DigestSign/Verify
+ * init (issue #46). Returns the array (into the caller-provided storage) when a
+ * context string is set, or NULL when none is — so the component runs with its
+ * default (empty) context, preserving the oqsprovider-compatible wire format.
+ *
+ * The rule, generalized for either-slot / PQ-PQ hybrids (issue #114): the context
+ * string is applied to EVERY md-less component (ML-DSA, and for a PQ/PQ pair both
+ * halves) and never to a digest-taking classical component (ECDSA/RSA have no
+ * such concept). A component that does not itself honour a context string simply
+ * ignores the param — best-effort, no hard failure — so a pair whose components
+ * do not all support one cannot enforce domain separation across both halves.
  */
 static OSSL_PARAM *pq_ctx_params(HYBRID_SIG_CTX *ctx, OSSL_PARAM store[2])
 {
@@ -295,6 +353,63 @@ static OSSL_PARAM *pq_ctx_params(HYBRID_SIG_CTX *ctx, OSSL_PARAM store[2])
 }
 
 /*
+ * Md-less sign/verify over the raw message via EVP_DigestSign/Verify with a NULL
+ * digest (ML-DSA and every other PQ/EdDSA family). The context string (if any) is
+ * applied here, to this component. For signing, sig/siglen receive the signature
+ * (bounded by c->max_sig); for verify, sig/siglen are the input. Returns 1.
+ */
+static int hybrid_sig_mdless_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
+                        const HYBRID_SIG_COMP *c, int sign,
+                        const unsigned char *tbs, size_t tbslen,
+                        unsigned char *sig, size_t *siglen)
+{
+    EVP_MD_CTX *mctx = EVP_MD_CTX_new();
+    OSSL_PARAM pqp_store[2], *pqp = pq_ctx_params(ctx, pqp_store);
+    int ret = 0;
+
+    if (mctx == NULL)
+        goto end;
+    if (sign) {
+        if (EVP_DigestSignInit_ex(mctx, NULL, NULL, key->libctx, c->propq,
+                                  c->pkey, pqp) <= 0)
+            goto end;
+        *siglen = c->max_sig;
+        if (EVP_DigestSign(mctx, sig, siglen, tbs, tbslen) <= 0)
+            goto end;
+    } else {
+        if (EVP_DigestVerifyInit_ex(mctx, NULL, NULL, key->libctx, c->propq,
+                                    c->pkey, pqp) <= 0)
+            goto end;
+        if (EVP_DigestVerify(mctx, sig, *siglen, tbs, tbslen) <= 0)
+            goto end;
+    }
+    ret = 1;
+end:
+    EVP_MD_CTX_free(mctx);
+    return ret;
+}
+
+/*
+ * Sign/verify one resolved component into/from the wire buffer, dispatching on
+ * its kind. slen is in/out: for signing it receives the produced length; for
+ * verify it is the input length to check. Slot-symmetric — identical for slot 0
+ * and slot 1.
+ */
+static int hybrid_sig_component_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
+                        const HYBRID_SIG_COMP *c, int sign,
+                        const unsigned char *tbs, size_t tbslen,
+                        unsigned char *sig, size_t *slen)
+{
+    const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
+
+    if (c->digest_taking)
+        return hybrid_sig_digest_taking_op(key, c, sign,
+                                           classical_md(info->nist_level),
+                                           tbs, tbslen, sig, slen);
+    return hybrid_sig_mdless_op(ctx, key, c, sign, tbs, tbslen, sig, slen);
+}
+
+/*
  * One-shot sign:
  *   sig = ENCODE_UINT32(classical_len) || classical_sig || pq_sig
  */
@@ -306,12 +421,8 @@ hybrid_sig_digest_sign(void *vctx,
 {
     HYBRID_SIG_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
-    const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
-    EVP_MD_CTX *mctx = NULL;
-    OSSL_PARAM pqp_store[2], *pqp;
-    size_t clen = 0, plen = 0, maxsig;
-    int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
-    int ret = 0;
+    HYBRID_SIG_COMP c0, c1;
+    size_t len0 = 0, len1 = 0, maxsig;
 
     maxsig = hybrid_sig_max_sig_bytes(key);
 
@@ -331,43 +442,31 @@ hybrid_sig_digest_sign(void *vctx,
         return 0;
     }
 
-    /* classical signature, written after the 4-byte length prefix */
-    if (!classical_op(key, 1, is_rsa, classical_md(info->nist_level),
-                      tbs, tbslen, sig + sizeof(uint32_t), &clen,
-                      key->sizes->a1_sig)) {
-        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
-                       "hybrid classical component signing failed");
-        goto err;
-    }
-    sig[0] = (unsigned char)(clen >> 24);
-    sig[1] = (unsigned char)(clen >> 16);
-    sig[2] = (unsigned char)(clen >> 8);
-    sig[3] = (unsigned char)(clen);
+    hybrid_sig_component(key, 0, &c0);
+    hybrid_sig_component(key, 1, &c1);
 
-    /* PQ signature over the raw message, appended after the classical sig.
-     * The context string (if any) is applied here, to the PQ half only. */
-    pqp = pq_ctx_params(ctx, pqp_store);
-    mctx = EVP_MD_CTX_new();
-    if (mctx == NULL
-        || EVP_DigestSignInit_ex(mctx, NULL, NULL, key->libctx,
-                                 HYBRID_KEY_PQ_PROPQ(key), key->key2, pqp) <= 0) {
+    /* component 0 signature, written after the 4-byte length prefix */
+    if (!hybrid_sig_component_op(ctx, key, &c0, 1, tbs, tbslen,
+                                 sig + sizeof(uint32_t), &len0)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
-                       "hybrid PQ component sign init failed");
-        goto err;
+                       "hybrid component 1 signing failed");
+        return 0;
     }
-    plen = key->sizes->a2_sig;
-    if (EVP_DigestSign(mctx, sig + sizeof(uint32_t) + clen, &plen,
-                       tbs, tbslen) <= 0) {
+    sig[0] = (unsigned char)(len0 >> 24);
+    sig[1] = (unsigned char)(len0 >> 16);
+    sig[2] = (unsigned char)(len0 >> 8);
+    sig[3] = (unsigned char)(len0);
+
+    /* component 1 signature over the same message, appended as the tail */
+    if (!hybrid_sig_component_op(ctx, key, &c1, 1, tbs, tbslen,
+                                 sig + sizeof(uint32_t) + len0, &len1)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
-                       "hybrid PQ component signing failed");
-        goto err;
+                       "hybrid component 2 signing failed");
+        return 0;
     }
 
-    *siglen = sizeof(uint32_t) + clen + plen;
-    ret = 1;
-err:
-    EVP_MD_CTX_free(mctx);
-    return ret;
+    *siglen = sizeof(uint32_t) + len0 + len1;
+    return 1;
 }
 
 /*
@@ -380,21 +479,17 @@ hybrid_sig_digest_verify(void *vctx,
 {
     HYBRID_SIG_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
-    const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
-    EVP_MD_CTX *mctx = NULL;
-    OSSL_PARAM pqp_store[2], *pqp;
-    size_t clen, plen;
-    int is_rsa = (strcmp(info->alg1_name, "RSA") == 0);
-    int ret = 0;
+    HYBRID_SIG_COMP c0, c1;
+    size_t len0, len1;
 
     if (!hybrid_have_pubkey(key)) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PUBLIC_KEY,
                        "hybrid verification requires a public key");
         return 0;
     }
-    /* Bounds guards: the signature must hold the 4-byte classical-length prefix
+    /* Bounds guards: the signature must hold the 4-byte component-1 length prefix
      * before we read sig[0..3], and that length must fit within siglen before we
-     * split off the classical and PQ parts (else a malformed signature would
+     * split off the two component signatures (else a malformed signature would
      * cause an out-of-bounds read). */
     if (siglen < sizeof(uint32_t)) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_SIGNATURE_SIZE,
@@ -402,48 +497,38 @@ hybrid_sig_digest_verify(void *vctx,
                        siglen);
         return 0;
     }
-    clen = ((size_t)sig[0] << 24) | ((size_t)sig[1] << 16)
+    len0 = ((size_t)sig[0] << 24) | ((size_t)sig[1] << 16)
          | ((size_t)sig[2] << 8) | (size_t)sig[3];
-    if (sizeof(uint32_t) + clen > siglen) {
+    if (sizeof(uint32_t) + len0 > siglen) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_SIGNATURE_SIZE,
-                       "hybrid classical length %zu inconsistent with "
-                       "signature length %zu", clen, siglen);
+                       "hybrid component 1 length %zu inconsistent with "
+                       "signature length %zu", len0, siglen);
         return 0;
     }
-    plen = siglen - sizeof(uint32_t) - clen;
+    len1 = siglen - sizeof(uint32_t) - len0;
 
-    /* verify classical over the digest */
-    if (!classical_op(key, 0, is_rsa, classical_md(info->nist_level),
-                      tbs, tbslen, (unsigned char *)sig + sizeof(uint32_t),
-                      &clen, 0)) {
+    hybrid_sig_component(key, 0, &c0);
+    hybrid_sig_component(key, 1, &c1);
+
+    /* verify component 0 (after the length prefix) */
+    if (!hybrid_sig_component_op(ctx, key, &c0, 0, tbs, tbslen,
+                                 (unsigned char *)sig + sizeof(uint32_t),
+                                 &len0)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
-                       "hybrid classical component verification failed");
-        goto err;
+                       "hybrid component 1 verification failed");
+        return 0;
+    }
+    /* verify component 1 (the tail); context string, if any, applied to every
+     * md-less component on both the sign and verify sides */
+    if (!hybrid_sig_component_op(ctx, key, &c1, 0, tbs, tbslen,
+                                 (unsigned char *)sig + sizeof(uint32_t) + len0,
+                                 &len1)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
+                       "hybrid component 2 verification failed");
+        return 0;
     }
 
-    /* verify PQ over the raw message; context string (if any) applied to the
-     * PQ half only, matching the sign side. */
-    pqp = pq_ctx_params(ctx, pqp_store);
-    mctx = EVP_MD_CTX_new();
-    if (mctx == NULL
-        || EVP_DigestVerifyInit_ex(mctx, NULL, NULL, key->libctx,
-                                   HYBRID_KEY_PQ_PROPQ(key), key->key2,
-                                   pqp) <= 0) {
-        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
-                       "hybrid PQ component verify init failed");
-        goto err;
-    }
-    if (EVP_DigestVerify(mctx, sig + sizeof(uint32_t) + clen, plen,
-                         tbs, tbslen) <= 0) {
-        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
-                       "hybrid PQ component verification failed");
-        goto err;
-    }
-
-    ret = 1;
-err:
-    EVP_MD_CTX_free(mctx);
-    return ret;
+    return 1;
 }
 
 #ifdef HYBRID_HAVE_MSG_SIG

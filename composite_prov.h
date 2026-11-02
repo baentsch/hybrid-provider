@@ -120,7 +120,7 @@ typedef struct {
 
 /*
  * Composite key: a PQ component + a classical component, sourced by EVP.
- * pq_propq / trad_propq select the provider for each half (config-driven, see
+ * alg2_propq / trad_propq select the provider for each half (config-driven, see
  * composite_key_new). Parallels HYBRID_KEY: kept a distinct type because the
  * composite serialization (raw concat, ML-DSA seed) and combiner differ from the
  * hybrid concat-signature layout, so the format-specific layers are not shared.
@@ -132,7 +132,7 @@ typedef struct composite_key_st {
     EVP_PKEY *pq_key;           /* PQ component (ML-DSA or research sig)        */
     EVP_PKEY *trad_key;         /* classical component (default provider)       */
     unsigned int state;         /* COMPOSITE_HAVE_*                             */
-    const char *pq_propq;       /* source for the PQ component                  */
+    const char *alg2_propq;       /* source for the PQ component                  */
     const char *trad_propq;     /* source for the classical component          */
 } COMPOSITE_KEY;
 
@@ -382,11 +382,11 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
  * with trad_md, or pure for Ed), and concatenates PQ-sig || trad-sig. Verify
  * splits at the fixed ML-DSA signature length. *sig is malloc'd; caller frees. */
 int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
-                   OSSL_LIB_CTX *libctx, const char *pq_propq,
+                   OSSL_LIB_CTX *libctx, const char *alg2_propq,
                    const char *trad_propq, const unsigned char *msg,
                    size_t msglen, unsigned char **sig, size_t *siglen);
 int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
-                     OSSL_LIB_CTX *libctx, const char *pq_propq,
+                     OSSL_LIB_CTX *libctx, const char *alg2_propq,
                      const char *trad_propq, const unsigned char *msg,
                      size_t msglen, const unsigned char *sig, size_t siglen);
 

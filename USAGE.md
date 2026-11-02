@@ -66,7 +66,7 @@ implements them.
 
 The hybrid provider is configured **exclusively through an `openssl.cnf`**, never
 by loading it with `openssl -provider hybrid` on the command line. All of its
-component-steering keys — `pq-propquery`, `classic-propquery`,
+component-steering keys — `alg1-propquery`, `alg2-propquery`,
 `component-providers`, `component-path` — live in the provider's config section
 and have **no command-line equivalent**. Loading the module with `-provider
 hybrid` gives it none of these keys, so it cannot compose anything, and the
@@ -88,15 +88,15 @@ Two coexistence constraints sit behind this, with different lifespans:
   the base FrodoKEM/BIKE/HQC KEMs, the name overlap — and this requirement —
   disappears:** all three providers can then be loaded on the command line and
   those groups become ordinary CLI-usable groups.
-- **Independent per-component steering** (`pq-propquery` / `classic-propquery`,
+- **Independent per-component steering** (`alg1-propquery` / `alg2-propquery`,
   below) stays cnf-only, but that is an OpenSSL TLS-plumbing constraint (only a
   single `-propquery` is exposed on the TLS path), not an
   [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) one, and M8
-  does not change it. It only matters when you need to source the PQ and classic
+  does not change it. It only matters when you need to source the two component
   halves from *different* providers; the common case (let each component resolve
   normally, or force one provider globally with `-propquery`) needs no cnf.
 
-### Selecting component providers (`pq-propquery` / `classic-propquery`)
+### Selecting component providers (`alg1-propquery` / `alg2-propquery`)
 
 The hybrid provider reads two optional keys from its config section to steer
 which provider supplies each sub-algorithm, independently of how the hybrid
@@ -104,13 +104,16 @@ algorithm itself is selected:
 
 ```ini
 [hybrid_sect]
-module            = /path/to/hybrid.so
-activate          = 1
-pq-propquery      = ?provider=oqsprovider   # ML-KEM / ML-DSA component
-classic-propquery = ?provider=default       # X25519 / EC component
+module         = /path/to/hybrid.so
+activate       = 1
+alg1-propquery = ?provider=default       # component 1 (e.g. X25519 / EC)
+alg2-propquery = ?provider=oqsprovider   # component 2 (e.g. ML-KEM / ML-DSA)
 ```
 
-Each defaults to the key's normal property query when unset, so behaviour is
+The mapping is **positional** — `alg1-propquery` steers the first component
+(`alg1`), `alg2-propquery` the second — so for a PQ/PQ row, whose `alg1` is
+itself post-quantum, there is no "classical"/"PQ" assumption baked into the key
+names. Each defaults to the key's normal property query when unset, so behaviour is
 unchanged without them. Because they come from configuration, they also take
 effect in TLS (where only one property query is otherwise exposed) — no OpenSSL
 core change required. `hybrid_config_test` verifies that each key independently
@@ -189,10 +192,10 @@ provider is never withdrawn.
 
 ## Only operable algorithms are advertised
 
-A hybrid combines a classical and a PQ component, each fetched from whatever
-provider supplies it (default, oqsprovider, …). The hybrid provider advertises a
-TLS group or signature scheme **only when both components are actually fetchable
-in the library context it is loaded into** — otherwise libssl could negotiate an
+A hybrid combines two components — typically a classical and a PQ one, each
+fetched from whatever provider supplies it (default, oqsprovider, …). The hybrid
+provider advertises a TLS group or signature scheme **only when both components
+are actually fetchable in the library context it is loaded into** — otherwise libssl could negotiate an
 algorithm that then fails mid-handshake ("no suitable key share" / "no suitable
 signature algorithm"). So, for example, the Frodo/BIKE/HQC groups and the
 Falcon/MAYO/SNOVA/OV/MQOM signatures appear in the advertised lists only when

@@ -119,8 +119,12 @@ end:
     return back;
 }
 
-/* Full battery for a signature key type. Silent skip if not operable. */
-static void exercise_sig(OSSL_LIB_CTX *ctx, const char *name)
+/* Full battery for a signature key type. Silent skip if not operable.
+ * `serializable` is 0 for operation-only rows (§3.4 PQ/PQ, no OID): the
+ * SPKI/PKCS8 encoders are still driven (to exercise + free their allocation
+ * paths without leaking), but a decline to encode is not a functional failure —
+ * the same best-effort rationale the KEM battery already uses for OID-less KEMs. */
+static void exercise_sig(OSSL_LIB_CTX *ctx, const char *name, int serializable)
 {
     EVP_PKEY *k = keygen(ctx, name), *k2 = NULL, *spki = NULL, *p8 = NULL;
     EVP_MD_CTX *md = NULL, *mv = NULL;
@@ -140,9 +144,9 @@ static void exercise_sig(OSSL_LIB_CTX *ctx, const char *name)
 
     /* SPKI (public) and PKCS8 (keypair) encode->decode round-trips */
     spki = der_roundtrip(ctx, EVP_PKEY_PUBLIC_KEY, "SubjectPublicKeyInfo", k);
-    ok &= (spki != NULL);
     p8 = der_roundtrip(ctx, EVP_PKEY_KEYPAIR, "PrivateKeyInfo", k);
-    ok &= (p8 != NULL);
+    if (serializable)
+        ok &= (spki != NULL && p8 != NULL);
 
     /* sign then verify (pure/one-shot) */
     md = EVP_MD_CTX_new();
@@ -260,12 +264,13 @@ int main(void)
     printf("==========================================================\n");
 
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
-        exercise_sig(ctx, hybrid_sig_table[i].hybrid_name);
+        exercise_sig(ctx, hybrid_sig_table[i].hybrid_name,
+                     hybrid_sig_table[i].oid != NULL);
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         exercise_kem(ctx, hybrid_kem_table[i].hybrid_name, hybrid_kem_combiner[i]);
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
-        exercise_sig(ctx, composite_sig_table[i].name);
+        exercise_sig(ctx, composite_sig_table[i].name, 1 /* all have OIDs */);
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
         /* Composite KEMs have their own fixed combiner, not a hybrid_kem_combiner[]
          * row; pass CONCAT so the X-Wing length check does not apply. */

@@ -283,9 +283,9 @@ TLS codepoint and is covered only via the KEM API in `hybrid_test`.
 
 To exercise the same interop through the `openssl` command line — and to select
 component providers by **configuration alone** (no code), via the hybrid
-provider's `pq-propquery` / `classic-propquery` config keys — see the
+provider's `alg1-propquery` / `alg2-propquery` config keys — see the
 [CLI harness](#cli-harness-testhybrid_scenariossh) below and
-[Selecting component providers](USAGE.md#selecting-component-providers-pq-propquery--classic-propquery)
+[Selecting component providers](USAGE.md#selecting-component-providers-alg1-propquery--alg2-propquery)
 in the usage guide.
 
 ### CLI harness (`test/hybrid_scenarios.sh`)
@@ -308,9 +308,9 @@ hybrid↔hybrid. `--pq-provider`/`--classic-provider` (property names) and
 `--extra-provider` (module name) configure component sourcing for the
 `info`/`config` views. Run `test/hybrid_scenarios.sh --help` for all options.
 
-Independent PQ/classic component provider selection is available via the
-provider's **config keys** `pq-propquery` / `classic-propquery` (see
-[Selecting component providers](USAGE.md#selecting-component-providers-pq-propquery--classic-propquery))
+Independent per-component provider selection is available via the
+provider's **config keys** `alg1-propquery` / `alg2-propquery` (see
+[Selecting component providers](USAGE.md#selecting-component-providers-alg1-propquery--alg2-propquery))
 — including on the TLS path, where a single CLI `-propquery` cannot express it.
 Signature key files serialize as SPKI/PKCS#8 (always built), and hybrid-KEM key
 files when `HYBRID_KEM_ENCODERS=ON` for the few KEMs with an assigned OID; those
@@ -515,7 +515,7 @@ on the module path (wolfProvider `libwolfprov.so`, mldsa-native-provider
 2. tabulates performance — the "naked" ML-DSA/ML-KEM primitives of each provider
    side by side, then the hybrid/composite figures with the PQ component sourced
    from each provider in turn (classical half pinned to default via
-   `classic-propquery`).
+   `alg1-propquery`).
 
 It needs the sibling modules symlinked onto `OPENSSL_MODULES` (an absolute path,
 since the generated cnf's `module=` is relative to it). Run with a per-op budget

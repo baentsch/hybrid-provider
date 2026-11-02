@@ -317,9 +317,38 @@ construction*: `xwing_mlkem768_hqc3` (§2.5) runs the X-Wing SHA3-256 combiner o
 ML-KEM-768 + HQC-3 — a native KEM in both slots (`alg1_is_kem`) — operation-only,
 no interop peer, no KAT. It is **not** X-Wing (PQ/T) and **not** Chempat (PQ/T);
 it reuses their combiner shape off their scope, so the "security = weakest
-component" caveat applies with no formal binding claim. PQ/PQ *signatures* remain
-doc-only pending the component-1 crypto-path generalization
-([#114](https://github.com/baentsch/hybrid-provider/issues/114)).
+component" caveat applies with no formal binding claim.
+
+PQ/PQ *signatures* are now realized the same way. The hybrid-sig sign/verify path
+is **slot-symmetric**: each component is handled as digest-taking (classical
+ECDSA/RSA over an external digest) or md-less (any PQ/EdDSA, signing the message
+directly) by its own kind, so either slot may be digest-taking or md-less
+([#114](https://github.com/baentsch/hybrid-provider/issues/114) — the component-1
+crypto-path generalization). One construction limit remains in the table (not the
+crypto path): only `alg1` carries a group, so a classical **EC** component must
+occupy slot 1, while RSA or any PQ algorithm may occupy either. Three
+operation-only rows exercise it, under the same
+`uint32(len1) || sig1 || sig2` wire layout (the length prefix is on component 1
+regardless of kind, so a variable-length Falcon component 1 is handled as
+naturally as ECDSA DER):
+
+| Row | Components | Exercises |
+|---|---|---|
+| `mldsa65_falcon1024` | ML-DSA-65 + Falcon-1024 | md-less in both slots; variable-length component 2; context string honoured by the ML-DSA half |
+| `mldsa44_mayo1` | ML-DSA-44 + MAYO-1 | fixed+fixed md-less pair |
+| `falcon512_mayo1` | Falcon-512 + MAYO-1 | variable-length md-less component 1; a pair whose components do **not** honour a context string (no cross-half domain separation) |
+
+No standard defines a PQ/PQ concatenation signature (RFC 9955 gives only the
+taxonomy) and there is no interop peer, so — like the `xwing_*` KEM rows — these
+carry **no OID and no TLS code point**: sign/verify only, within this provider.
+Giving them private-use identifiers so they serialize (X.509/CMS) and negotiate
+(TLS) — and the security-bits policy that then becomes live — is tracked in
+[#126](https://github.com/baentsch/hybrid-provider/issues/126). The context
+string, when set, is applied to every md-less component (so both halves of a PQ/PQ
+pair); a component that does not support one ignores it (no hard failure), which
+is why `falcon512_mayo1` cannot enforce separation across both halves. The generic
+runtime-declared form (arbitrary PQ/PQ pairs, no static row) arrives with
+[#112](https://github.com/baentsch/hybrid-provider/issues/112).
 
 ---
 

@@ -31,7 +31,7 @@
 #
 # The hybrid provider is configurable ONLY through an openssl.cnf, never through
 # `openssl -provider hybrid` on the command line. Two things force this:
-#   * Its component-steering keys — pq-propquery, classic-propquery,
+#   * Its component-steering keys — alg1-propquery, alg2-propquery,
 #     component-providers, component-path — live in the provider's config
 #     section and have no command-line equivalent. component-providers /
 #     component-path in particular build the provider's PRIVATE component
@@ -49,7 +49,7 @@
 # this provider (hence the private context to dodge the collision). Once
 # oqsprovider drops its hybrid combinations (design.md Future work) and supplies only
 # the base FrodoKEM/BIKE/HQC KEMs, that collision goes away and these groups
-# become ordinary command-line-usable groups. The pq-propquery/classic-propquery
+# become ordinary command-line-usable groups. The alg1-propquery/alg2-propquery
 # steering keys stay cnf-only, but that is an OpenSSL limitation (single
 # -propquery on the TLS path), not oqsprovider's, and only matters when the PQ
 # and classic components must come from different providers.
@@ -73,7 +73,7 @@
 #       name may differ from its module name (bcrust_provider.so advertises
 #       "provider=bcrust"); load the module separately with --extra-provider.
 #       These are emitted into the generated openssl.cnf as the hybrid
-#       provider's pq-propquery / classic-propquery keys, which steer each
+#       provider's alg1-propquery / alg2-propquery keys, which steer each
 #       component independently and also take effect on the TLS path. Use
 #       --use-config so the generated cnf (and thus these keys) is in effect.
 #   --extra-provider NAME
@@ -273,9 +273,9 @@ gen_config() {
             # Steer the hybrid provider's components to the chosen providers.
             if [ "$p" = "hybrid" ]; then
                 [ "$PQ_PROVIDER" = "default" ] \
-                    || echo "pq-propquery = ?provider=$PQ_PROVIDER"
+                    || echo "alg2-propquery = ?provider=$PQ_PROVIDER"
                 [ "$CLASSIC_PROVIDER" = "default" ] \
-                    || echo "classic-propquery = ?provider=$CLASSIC_PROVIDER"
+                    || echo "alg1-propquery = ?provider=$CLASSIC_PROVIDER"
                 # Private component context: the hybrid provider loads these
                 # providers into its OWN libctx so their group registrations
                 # don't collide with oqsprovider's in the application context.
@@ -775,7 +775,7 @@ case "$COMMAND" in tls|tls-compctx|sig-certs|sig-interop|all)
     echo "  passed: $pass   failed: $fail   skipped: $skip"
     echo
     echo "  Note: independent PQ/classic component selection is driven by the"
-    echo "  generated cnf's pq-propquery/classic-propquery keys (use --use-config)."
+    echo "  generated cnf's alg1-propquery/alg2-propquery keys (use --use-config)."
     echo "  Signature keys are file-serializable (see 'sig-certs'); KEM key files"
     echo "  stay off by default (HYBRID_KEM_ENCODERS), so KEM round-trips remain"
     echo "  in-process only ('hybrid_test')."

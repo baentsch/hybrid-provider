@@ -190,7 +190,7 @@ end:
 }
 
 int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
-                   OSSL_LIB_CTX *libctx, const char *pq_propq,
+                   OSSL_LIB_CTX *libctx, const char *alg2_propq,
                    const char *trad_propq, const unsigned char *msg,
                    size_t msglen, unsigned char **sig, size_t *siglen)
 {
@@ -203,7 +203,7 @@ int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                        "composite sign: message prehash (M') failed");
         goto end;
     }
-    if (!pq_op(1, info, pq, libctx, pq_propq, mp, mplen,
+    if (!pq_op(1, info, pq, libctx, alg2_propq, mp, mplen,
                &pqsig, &pqlen, NULL, 0)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "composite sign: PQ component signing failed");
@@ -230,7 +230,7 @@ end:
 }
 
 int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
-                     OSSL_LIB_CTX *libctx, const char *pq_propq,
+                     OSSL_LIB_CTX *libctx, const char *alg2_propq,
                      const char *trad_propq, const unsigned char *msg,
                      size_t msglen, const unsigned char *sig, size_t siglen)
 {
@@ -257,7 +257,7 @@ int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *tra
                        "composite verify: message prehash (M') failed");
         goto end;
     }
-    if (!pq_op(0, info, pq, libctx, pq_propq, mp, mplen,
+    if (!pq_op(0, info, pq, libctx, alg2_propq, mp, mplen,
                NULL, NULL, sig, (size_t)pqfixed)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "composite verify: PQ component verification failed");
@@ -368,7 +368,7 @@ static int composite_sig_digest_sign(void *vctx, unsigned char *sig,
         return 1;
     }
     if (!composite_sign(k->info, k->pq_key, k->trad_key, k->libctx,
-                        k->pq_propq, k->trad_propq, tbs, tbslen, &tmp, &tlen))
+                        k->alg2_propq, k->trad_propq, tbs, tbslen, &tmp, &tlen))
         return 0;                            /* composite_sign already raised */
     if (tlen <= sigsize) {
         memcpy(sig, tmp, tlen);
@@ -391,7 +391,7 @@ static int composite_sig_digest_verify(void *vctx, const unsigned char *sig,
     COMPOSITE_KEY *k = c->key;
 
     return composite_verify(k->info, k->pq_key, k->trad_key, k->libctx,
-                            k->pq_propq, k->trad_propq, tbs, tbslen, sig, siglen);
+                            k->alg2_propq, k->trad_propq, tbs, tbslen, sig, siglen);
 }
 
 #ifdef COMPOSITE_HAVE_MSG_SIG
