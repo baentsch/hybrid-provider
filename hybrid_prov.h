@@ -145,8 +145,11 @@ typedef struct {
  * carries only identity + the parameters that define oqsprovider's hybrid-sig
  * wire format:
  *   - nist_level: NIST level that selects the digest a *digest-taking* classical
- *     (ECDSA/RSA) component signs (1 -> SHA-256, 2/3 -> SHA-384, 4/5 -> SHA-512).
- *     Inert for a PQ/PQ pair, which has no digest-taking component.
+ *     (ECDSA/RSA) component signs (1 -> SHA-256, 2/3 -> SHA-384, 4/5 -> SHA-512),
+ *     and the advertised TLS-SIGALG security bits (hybrid_caps.c). For a PQ/PQ
+ *     pair it selects no digest (neither half is digest-taking) — it then carries
+ *     only the security bits, set to the MIN of the two components' categories
+ *     (the weaker survivor if one scheme is broken; §3.4, issue #126).
  *   - alg1/alg2 are component identities; the sign/verify path is slot-symmetric
  *     (hybrid_sig.c), so either slot may be digest-taking or md-less. The
  *     classical set is ECDSA or RSA-3072 (no EdDSA); a PQ alg is "MLDSA65",
@@ -591,16 +594,23 @@ static inline int hybrid_kem_is_default_builtin(const char *name)
 /*
  * Master hybrid-SIG list — single source of truth, mirroring HYBRID_KEM_LIST.
  * Most rows are oqsprovider's hybrid signatures (ECDSA/RSA classical + PQ),
- * matching its names, OIDs and wire format; the trailing rows are operation-only
- * PQ/PQ pairs (§3.4, NULL oid / code point 0) that the slot-symmetric sign path
- * serves within this provider. Component sizes are discovered at runtime.
+ * matching its names, OIDs and wire format; the trailing rows are PQ/PQ (and
+ * EC-in-slot-2) pairs that no standard defines and no other provider serves
+ * (§3.4), carrying private-use identifiers (§3.4 arc OID + 0xFFE5.. TLS code
+ * point) so the slot-symmetric path serves them end-to-end — serialize and
+ * negotiate — within this provider only. Component sizes are discovered at
+ * runtime.
  *
- * PROVENANCE: the `oid` and `tls_codepoint` values are oqsprovider's, from its
- * `oqs-template/generate.yml` (see ALGORITHMS.md). Drift is caught automatically
- * — a wrong OID breaks the cross-provider SPKI/PKCS8 round-trips in
- * hybrid_encode_test, and a wrong code point is caught by hybrid_capability_test
- * (which compares against oqsprovider's advertised TLS-SIGALG capabilities).
- * The operation-only PQ/PQ rows carry neither, so they share in neither check.
+ * PROVENANCE: the oqsprovider-shared rows take their `oid` and `tls_codepoint`
+ * verbatim from oqsprovider's `oqs-template/generate.yml` (see ALGORITHMS.md);
+ * drift is caught automatically — a wrong OID breaks the cross-provider
+ * SPKI/PKCS8 round-trips in hybrid_encode_test, and a wrong code point is caught
+ * by hybrid_capability_test (which compares against oqsprovider's advertised
+ * TLS-SIGALG capabilities). The provider-private PQ/PQ rows have no origin peer,
+ * so their values are self-asserted: hybrid_capability_test checks only that the
+ * code point sits in the private-use range (not that it matches an origin), and
+ * their round-trips are self-consistency (this provider encodes → this provider
+ * decodes) rather than cross-provider.
  *
  * X(cfield, name, alg1, alg1_group, alg2, alg2_group, nist_level, oid, desc,
  *   tls_codepoint)
@@ -673,35 +683,48 @@ static inline int hybrid_kem_is_default_builtin(const char *name)
       "mqom2cat5gf16fastr5", NULL, 5, "1.3.9999.11.5.2", "P-521+MQOM2-cat5", 0xff74)  \
   /*                                                                          \
    * --- PQ/PQ concatenation signatures (RFC 9794 terminology; §3.4) ---      \
-   * Operation-only experimental rows: both components post-quantum, so there \
-   * is no digest-taking (classical) half and nist_level is inert. No standard \
-   * defines a PQ/PQ concat signature and there is no interop peer, so these   \
-   * carry NO OID and NO TLS code point (sign/verify only, within this         \
-   * provider) — the signature analog of the xwing_* operation-only KEM rows.  \
-   * They exercise the slot-symmetric sign/verify path (md-less in BOTH slots, \
-   * a variable-length component 1 for the Falcon-first row, and a pair whose  \
+   * Experimental rows: both components post-quantum, so there is no          \
+   * digest-taking (classical) half. No standard defines a PQ/PQ concat       \
+   * signature and there is no interop peer, so they carry PRIVATE-USE         \
+   * identifiers — an OID in this provider's `1.3.9999.99.*` arc (the same arc \
+   * the experimental composites use) and a TLS SignatureScheme in the        \
+   * private-use range (0xFFE5.., the sub-block after the composite sigs) —    \
+   * which make them serializable (X.509/PKCS8/CMS) and TLS-negotiable WITHIN  \
+   * this provider only (no cross-provider interop; issue #126). They exercise \
+   * the slot-symmetric sign/verify path (md-less in BOTH slots, a            \
+   * variable-length component 1 for the Falcon-first row, and a pair whose    \
    * components do not honour a context string). Issue #114; the generic       \
    * runtime-declared form arrives with #112.                                  \
+   *                                                                           \
+   * nist_level on these PQ/PQ rows no longer selects a digest (neither half   \
+   * is digest-taking); it carries only the advertised TLS security bits, set  \
+   * to the MIN of the two components' NIST categories. A PQ/PQ pair guards    \
+   * against one scheme being cryptanalytically broken, so the honest floor is \
+   * the weaker survivor (§3.4; issue #126) — not max. The placeholders        \
+   * already encoded min, so the values are unchanged from the operation-only  \
+   * era: 3 (cat3+cat5), 1 (cat2+cat1), 1 (cat1+cat1).                         \
    */                                                                          \
   X(mldsa65_falcon1024, "mldsa65_falcon1024", "MLDSA65", NULL, "falcon1024",   \
-      NULL, 3, NULL, "ML-DSA-65+Falcon-1024", 0)                               \
+      NULL, 3, "1.3.9999.99.80", "ML-DSA-65+Falcon-1024", 0xffe5)              \
   X(mldsa44_mayo1,      "mldsa44_mayo1",      "MLDSA44", NULL, "mayo1",        \
-      NULL, 1, NULL, "ML-DSA-44+MAYO-1", 0)                                    \
+      NULL, 1, "1.3.9999.99.81", "ML-DSA-44+MAYO-1", 0xffe6)                   \
   X(falcon512_mayo1,    "falcon512_mayo1",    "falcon512", NULL, "mayo1",      \
-      NULL, 1, NULL, "Falcon-512+MAYO-1", 0)                                   \
+      NULL, 1, "1.3.9999.99.82", "Falcon-512+MAYO-1", 0xffe7)                  \
   /*                                                                          \
-   * --- Classical EC in slot 2 (operation-only; §3.4) ---                    \
+   * --- Classical EC in slot 2 (§3.4) ---                                    \
    * PQ component first, a classical EC component (with its curve on          \
    * alg2_group) second — the mirror image of the standardized p384_mldsa65   \
    * ordering. Proves construction is slot-symmetric: alg2_group lets an EC    \
    * key occupy slot 2 (keygen would otherwise reach a curveless keygen and    \
    * fail). No standard defines this PQ-first ordering and there is no interop \
-   * peer, so it is operation-only (NULL OID, no TLS code point). nist_level=3 \
-   * = ML-DSA-65's category, which selects SHA-384 for the digest-taking EC    \
-   * half. Issue #125 (construction-symmetry follow-up to #114).              \
+   * peer, so it carries private-use identifiers like the PQ/PQ rows above     \
+   * (issue #126). nist_level=3 = ML-DSA-65's category: here it is NOT inert — \
+   * it still selects SHA-384 for the digest-taking EC half, and also supplies \
+   * the advertised security bits (the surviving PQ half's level; the classical \
+   * half is the one quantum is expected to break). Issue #125.               \
    */                                                                          \
   X(mldsa65_p256,       "mldsa65_p256",       "MLDSA65", NULL, "EC", "P-256",  \
-      3, NULL, "ML-DSA-65+P-256", 0)
+      3, "1.3.9999.99.83", "ML-DSA-65+P-256", 0xffe8)
 
 /* Generate the info table from the master list. */
 #define HYBRID_SIG_ROW(cf, nm, a1, grp, a2, grp2, lvl, oid, ds, cp)           \
@@ -811,6 +834,24 @@ static const HYBRID_SIZES hybrid_sig_sizes[HYBRID_SIG_ALG_COUNT] = {
 #define HYBRID_KEY_ALG2_GROUP(k) \
     ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_group \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_group)
+
+/*
+ * A component is "classical" (oqsprovider's traditional set) when it carries a
+ * named EC curve, or is RSA / a raw-key X25519|X448 type. Keyed on (alg, group),
+ * not on slot, so a classical half is serialized the same way whichever slot it
+ * occupies — the single source of truth the slot-symmetric encoders, decoders
+ * and the -text dump all share. A PQ component (ML-DSA, Falcon, MAYO, …) is
+ * groupless and matches none of these.
+ */
+static inline int hybrid_component_is_classical(const char *alg,
+                                                const char *group)
+{
+    return group != NULL                   /* any named-curve EC */
+        || strcmp(alg, "RSA") == 0
+        || strcmp(alg, "X25519") == 0
+        || strcmp(alg, "X448") == 0;
+}
+
 /*
  * Size accessors read key->sizes (the constant sizes copied in at construction)
  * for both KEM and SIG keys.
@@ -894,6 +935,9 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
                                    const unsigned char *cder, size_t cderlen,
                                    const unsigned char *pqv, size_t pqvlen,
                                    const unsigned char *pqpub, size_t pqpublen);
+int hybrid_key_load_prv_components_sym(HYBRID_KEY *key,
+                                       const unsigned char *s1, size_t l1,
+                                       const unsigned char *s2, size_t l2);
 
 /* TLS-GROUP capability advertising (hybrid_caps.c) */
 int hybrid_get_capabilities(void *provctx, const char *capability,

@@ -324,12 +324,30 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         ret = 0;
         goto end;
     }
+    /* Common bound: the slot-1 block (length in the UINT32 prefix) must fit. */
+    if (sizeof(uint32_t) + (size_t)clen > octlen)
+        goto end;
+
+    if (!is_kem) {
+        /* Signatures: slot-symmetric. UINT32(len1) || slot1 || slot2 — each slot
+         * reconstructed by its component's kind (classical DER / PQ priv||pub).
+         * slot1 is the prefixed block, slot2 the remainder. */
+        if (!hybrid_key_load_prv_components_sym(key, octdata + 4, clen,
+                 octdata + 4 + clen, octlen - 4 - (size_t)clen)) {
+            ret = 0;
+            goto end;
+        }
+        ret = handback(&key, variant, is_kem, data_cb, data_cbarg);
+        goto end;
+    }
+
+    /* KEMs: oqsprovider's alg2_slot-ordered layout (classical DER + PQ raw). */
     a2v = key->sizes->a2_prv;
     a2p = key->sizes->a2_pub;
     if (sizeof(uint32_t) + (size_t)clen + a2v > octlen)
         goto end;
     /* Reverse-share KEMs store PQ private first, then classical. */
-    if (is_kem && ((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0) {
+    if (((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0) {
         pqv  = octdata + 4;
         cder = octdata + 4 + a2v;
     } else {

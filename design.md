@@ -13,7 +13,7 @@ or others) in arbitrary pairings.
 1. Implement hybrid KEM: combine two component KEMs — typically a classical
    key-exchange/KEM with a PQ KEM, or (operation-only) two PQ KEMs
 2. Implement hybrid signatures: combine two component signatures — a classical
-   with a PQ one, or (operation-only) two PQ signatures
+   with a PQ one, or two PQ signatures (provider-private, under §3.4 identifiers)
 3. Use only the public EVP API — no internal OpenSSL headers
 4. Support arbitrary algorithm pairings from any provider
 5. Interoperate with OpenSSL default provider's built-in hybrid KEMs
@@ -176,8 +176,8 @@ typedef struct {
     const char *alg1_group;      /* EC group (e.g. "P-256"); NULL for RSA / PQ */
     const char *alg2_name;       /* e.g. "MLDSA44" (or a classical name) */
     const char *alg2_group;      /* EC group for an alg2 EC component; else NULL */
-    int         nist_level;      /* digest for a digest-taking component; inert PQ/PQ */
-    const char *oid;             /* X.509 OID, or NULL if operation-only (§3.4) */
+    int         nist_level;      /* digest for a digest-taking half; PQ/PQ: secbits (min) */
+    const char *oid;             /* X.509 OID (private-use arc for §3.4 rows); NULL = op-only */
     int         tls_codepoint;   /* TLS SignatureScheme code point (0 if none) */
 } HYBRID_SIG_INFO;
 ```
@@ -227,11 +227,15 @@ RSA-3072 — there are **no** EdDSA concatenation hybrids. The core ML-DSA set:
 The full matrix additionally pairs the same classical curves with the research
 PQ signatures from oqsprovider — Falcon (incl. padded), MAYO, UOV, SNOVA and
 MQOM2. Because the sign/verify path is slot-symmetric (see *Operation:
-Signature*), the list also carries three **PQ/PQ** operation-only rows
-(`mldsa65_falcon1024`, `mldsa44_mayo1`, `falcon512_mayo1`) with a post-quantum
-algorithm in *both* slots — the signature analogue of `xwing_mlkem768_hqc3`, with
-no OID or code point (§3.4). The authoritative list is `HYBRID_SIG_LIST` in
-`hybrid_prov.h`.
+Signature*), the list also carries four provider-private rows that no other
+provider serves: three **PQ/PQ** pairs (`mldsa65_falcon1024`, `mldsa44_mayo1`,
+`falcon512_mayo1`) with a post-quantum algorithm in *both* slots — the signature
+analogue of `xwing_mlkem768_hqc3` — and `mldsa65_p256`, a PQ-first row with the
+classical EC half in slot 2. Having no interop peer, these carry **private-use
+identifiers** (an OID in the `1.3.9999.99.*` arc + a `0xFFE5..` TLS code point) so
+they serialize and negotiate within this provider; their advertised TLS security
+bits take the min of the two components' categories (§3.4). The authoritative list
+is `HYBRID_SIG_LIST` in `hybrid_prov.h`.
 
 ### Composite signatures (LAMPS)
 
@@ -534,10 +538,10 @@ kind, not by assuming "slot 1 is classical" (`hybrid_sig.c`,
 The digest-taking set is the frozen pair `{EC, RSA}`; everything else is md-less.
 Because the classification is per-component on the alg name, the crypto path is
 **slot-symmetric** — a digest-taking or md-less component in either slot —
-covering classical×PQ (oqsprovider convention) and PQ/PQ (operation-only, §3.4 /
+covering classical×PQ (oqsprovider convention) and PQ/PQ (provider-private, §3.4 /
 RFC 9794) alike. Construction is slot-symmetric too: each slot carries its own
 group (`alg1_group`/`alg2_group`), so a classical **EC** component may occupy
-either slot (the `mldsa65_p256` operation-only row exercises EC-in-slot-2), while
+either slot (the `mldsa65_p256` row exercises EC-in-slot-2), while
 RSA and the groupless PQ algorithms are groupless
 ([#125](https://github.com/baentsch/hybrid-provider/issues/125) lifted the former
 `alg1`-only limit). A

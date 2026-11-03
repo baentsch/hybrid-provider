@@ -120,10 +120,13 @@ end:
 }
 
 /* Full battery for a signature key type. Silent skip if not operable.
- * `serializable` is 0 for operation-only rows (§3.4 PQ/PQ, no OID): the
- * SPKI/PKCS8 encoders are still driven (to exercise + free their allocation
- * paths without leaking), but a decline to encode is not a functional failure —
- * the same best-effort rationale the KEM battery already uses for OID-less KEMs. */
+ * `serializable` is 0 for an operation-only row (no OID): the SPKI/PKCS8 encoders
+ * are still driven (to exercise + free their allocation paths without leaking),
+ * but a decline to encode is not a functional failure — the same best-effort
+ * rationale the KEM battery already uses for OID-less KEMs. No shipped sig row is
+ * operation-only now (the §3.4 PQ/PQ rows carry a private-use OID, so they pass
+ * serializable=1 and their encode->decode round-trips are asserted), but the
+ * distinction stays for the runtime-declared hybrids #112 will add. */
 static void exercise_sig(OSSL_LIB_CTX *ctx, const char *name, int serializable)
 {
     EVP_PKEY *k = keygen(ctx, name), *k2 = NULL, *spki = NULL, *p8 = NULL;
@@ -142,11 +145,15 @@ static void exercise_sig(OSSL_LIB_CTX *ctx, const char *name, int serializable)
     k2 = todata_fromdata(ctx, name, k);
     ok &= (k2 != NULL && EVP_PKEY_eq(k, k2) == 1);
 
-    /* SPKI (public) and PKCS8 (keypair) encode->decode round-trips */
+    /* SPKI (public) and PKCS8 (keypair) encode->decode round-trips; the decoded
+     * key must equal the original. For the §3.4 rows that have no cross-provider
+     * peer this within-provider EVP_PKEY_eq is the serialization-correctness
+     * check (hybrid_encode_test cross-checks the oqsprovider-shared rows). */
     spki = der_roundtrip(ctx, EVP_PKEY_PUBLIC_KEY, "SubjectPublicKeyInfo", k);
     p8 = der_roundtrip(ctx, EVP_PKEY_KEYPAIR, "PrivateKeyInfo", k);
     if (serializable)
-        ok &= (spki != NULL && p8 != NULL);
+        ok &= (spki != NULL && EVP_PKEY_eq(k, spki) == 1
+               && p8 != NULL && EVP_PKEY_eq(k, p8) == 1);
 
     /* sign then verify (pure/one-shot) */
     md = EVP_MD_CTX_new();

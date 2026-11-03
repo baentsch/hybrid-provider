@@ -211,8 +211,10 @@ int main(void)
     printf("decoder robustness: external + malformed inputs (item 7)\n");
     printf("========================================================\n");
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
-        /* Operation-only rows (§3.4 PQ/PQ) have no OID, hence no SPKI encoding
-         * to malform — the decoder-robustness premise does not apply. */
+        /* An operation-only row (no OID) has no SPKI encoding to malform, so the
+         * decoder-robustness premise does not apply. No shipped sig row is
+         * operation-only (the §3.4 PQ/PQ rows now carry a private-use OID), but
+         * the guard stays for the runtime-declared hybrids #112 will add. */
         if (hybrid_sig_table[i].oid == NULL)
             continue;
         check_multiobj(ctx, hybrid_sig_table[i].hybrid_name);

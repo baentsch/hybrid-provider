@@ -149,23 +149,30 @@ families need [oqsprovider](https://github.com/open-quantum-safe/oqs-provider).
 | SNOVA | `p256_snova2454`, `p256_snova2454esk`, `p256_snova37172`, `p384_snova2455`, `p521_snova2965` |
 | MQOM2 | `p256_mqom2cat1gf16fastr5`, `p384_mqom2cat3gf16fastr5`, `p521_mqom2cat5gf16fastr5` |
 
-Three further rows are **PQ/PQ** (RFC 9794 terminology: both components
-post-quantum), the signature analogue of `xwing_mlkem768_hqc3` above — md-less in
-*both* slots rather than classical + PQ:
+Four further rows have no oqsprovider counterpart. Three are **PQ/PQ** (RFC 9794
+terminology: both components post-quantum), the signature analogue of
+`xwing_mlkem768_hqc3` above — md-less in *both* slots rather than classical + PQ;
+the fourth puts a classical **EC** half in slot 2 (PQ-first, the mirror of the
+standardized classical-first order):
 
 | Algorithm | Components |
 |---|---|
 | `mldsa65_falcon1024` | ML-DSA-65 + Falcon-1024 (needs oqsprovider) |
 | `mldsa44_mayo1` | ML-DSA-44 + MAYO-1 (needs oqsprovider) |
 | `falcon512_mayo1` | Falcon-512 + MAYO-1 (needs oqsprovider) |
+| `mldsa65_p256` | ML-DSA-65 + P-256 (EC in slot 2) |
 
 No PQ/PQ concatenation signature is standardized (RFC 9955 gives only the
-taxonomy) and there is no interop peer, so — like the `xwing_*` KEM rows — these
-are **operation-only**: no OID, no TLS code point, sign/verify within this
-provider. They exercise the slot-symmetric path over two post-quantum signatures,
-including a variable-length component 1 (`falcon512_mayo1`). The generic
-runtime-declared form of arbitrary PQ/PQ pairs arrives with #112; see
-[STANDARDS.md §3.4](STANDARDS.md).
+taxonomy) and none of these four has an interop peer, so they carry **private-use
+identifiers** — an OID in this provider's `1.3.9999.99.*` arc and a TLS
+SignatureScheme in the private-use range (`0xFFE5..`) — which make them
+serializable (X.509/PKCS8/CMS) and TLS-negotiable **within this provider only**
+(no cross-provider interop). The advertised TLS security bits take the *min* of
+the two components' NIST categories: a PQ/PQ pair guards against one scheme being
+broken, so the honest floor is the weaker survivor. They exercise the
+slot-symmetric path over two post-quantum signatures, including a variable-length
+component 1 (`falcon512_mayo1`). The generic runtime-declared form of arbitrary
+PQ/PQ pairs arrives with #112; see [STANDARDS.md §3.4](STANDARDS.md).
 
 ### Composite signatures (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 

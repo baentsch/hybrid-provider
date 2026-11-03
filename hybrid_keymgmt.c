@@ -308,6 +308,73 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
     return 1;
 }
 
+/*
+ * Reconstruct one private component (which = 1 or 2) from its on-wire bytes,
+ * dispatched by kind (mirror of the encoder's encode_component_priv): a classical
+ * component from DER (d2i_AutoPrivateKey, or raw for X25519/X448); a PQ component
+ * from raw private || raw public, split by the fixed sizes (the public handed to
+ * the provider so a research keytype that cannot re-derive it still loads). This
+ * is the slot-symmetric analogue of hybrid_key_load_prv_components, which fixes
+ * classical = slot 1 for the KEM wire format.
+ */
+static int load_prv_bykind(HYBRID_KEY *key, int which,
+                           const unsigned char *data, size_t len,
+                           EVP_PKEY **out)
+{
+    const char *alg   = which == 1 ? HYBRID_KEY_ALG1_NAME(key)
+                                   : HYBRID_KEY_ALG2_NAME(key);
+    const char *group = which == 1 ? HYBRID_KEY_ALG1_GROUP(key)
+                                   : HYBRID_KEY_ALG2_GROUP(key);
+    const char *propq = which == 1 ? HYBRID_KEY_ALG1_PROPQ(key)
+                                   : HYBRID_KEY_ALG2_PROPQ(key);
+
+    if (hybrid_component_is_classical(alg, group)) {
+        if (strcmp(alg, "X25519") == 0 || strcmp(alg, "X448") == 0) {
+            *out = EVP_PKEY_new_raw_private_key_ex(key->libctx, alg, propq,
+                                                   data, len);
+        } else {
+            const unsigned char *p = data;
+
+            *out = d2i_AutoPrivateKey_ex(NULL, &p, (long)len, key->libctx, propq);
+        }
+        return *out != NULL;
+    } else {
+        /* PQ: raw private (prv bytes) then raw public (pub bytes). */
+        size_t prv = which == 1 ? key->sizes->a1_prv : key->sizes->a2_prv;
+        size_t pub = which == 1 ? key->sizes->a1_pub : key->sizes->a2_pub;
+        int sel = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
+                | OSSL_KEYMGMT_SELECT_PRIVATE_KEY;
+
+        if (len < prv)
+            return 0;
+        if (pub > 0 && len >= prv + pub)
+            return load_component_privpub(key->libctx, propq, alg,
+                                          data, prv, data + prv, pub, out);
+        return load_component(key->libctx, propq, alg, group,
+                              OSSL_PKEY_PARAM_PRIV_KEY, sel, data, prv, out);
+    }
+}
+
+/*
+ * Slot-symmetric private load: reconstruct both components from their on-wire
+ * byte ranges by kind (either slot classical or PQ). Used by the signature
+ * decoder; KEMs stay on hybrid_key_load_prv_components (fixed classical slot).
+ */
+int hybrid_key_load_prv_components_sym(HYBRID_KEY *key,
+                                       const unsigned char *s1, size_t l1,
+                                       const unsigned char *s2, size_t l2)
+{
+    if (!load_prv_bykind(key, 1, s1, l1, &key->key1))
+        return 0;
+    if (!load_prv_bykind(key, 2, s2, l2, &key->key2)) {
+        EVP_PKEY_free(key->key1);
+        key->key1 = NULL;
+        return 0;
+    }
+    key->state = HYBRID_HAVE_PRVKEY;
+    return 1;
+}
+
 /* --- Component keygen forward declaration --- */
 
 /* Forward declaration; defined in the Key Generation section below. */
