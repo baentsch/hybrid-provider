@@ -127,6 +127,21 @@ static int get_component_pub(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
     }
 }
 
+/*
+ * oqsprovider's classical component set — rendered in its on-wire form
+ * (EC/RSA DER, raw X25519/X448, or a BN scalar) via get_component_{priv,pub}
+ * rather than as a raw PQ octet. EC carries a named curve; RSA and the raw-key
+ * types do not. Lets the component dump be slot-symmetric: a classical half is
+ * rendered the same way whichever slot (1 or 2) it occupies.
+ */
+static int component_is_classical(const char *alg, const char *group)
+{
+    return group != NULL                   /* any named-curve EC */
+        || strcmp(alg, "RSA") == 0
+        || strcmp(alg, "X25519") == 0
+        || strcmp(alg, "X448") == 0;
+}
+
 int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
     unsigned char *cbuf = NULL, *pqbuf = NULL, *buf = NULL;
@@ -502,9 +517,9 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     HYBRID_ENC_CTX *ctx = vctx;
     HYBRID_KEY *hkey = (HYBRID_KEY *)key;
     BIO *mem = NULL;
-    unsigned char *cbuf = NULL, *pqbuf = NULL;
-    size_t clen = 0, pqlen = 0, got = 0;
-    const char *cname;
+    unsigned char *slot1buf = NULL, *slot2buf = NULL;
+    size_t slot1len = 0, slot2len = 0, got = 0;
+    const char *slot1name, *slot2name;
     int priv, ret = 0;
     char *data = NULL;
     long datalen;
@@ -515,37 +530,63 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     priv = (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0
            && hybrid_have_prvkey(hkey);
 
-    /* Gather the classical + PQ component material (private or public). The
-     * classical part is its on-wire form (EC/RSA DER, or raw X25519); the PQ
-     * part is the raw octet. */
+    /*
+     * Gather component 1 and component 2 material (private or public). Each half
+     * is rendered by its own kind, not by assuming "slot 1 is classical": a
+     * classical half (EC/RSA DER, raw X25519/X448, or a BN scalar) via
+     * get_component_{priv,pub}; a PQ half as its fixed-size raw octet. This makes
+     * the dump slot-symmetric, so a classical EC component in slot 2 (e.g.
+     * mldsa65_p256, whose EC private key is a BN, not an octet) renders too.
+     * The slotN* names are deliberately slot-neutral: either slot may hold the
+     * classical or the PQ half.
+     */
+    if (!hybrid_have_pubkey(hkey))
+        goto end;
     if (priv) {
-        pqlen = hkey->sizes->a2_prv;
-        if (!get_component_priv(hkey->key1, &cbuf, &clen)
-            || (pqbuf = OPENSSL_malloc(pqlen)) == NULL
-            || EVP_PKEY_get_octet_string_param(hkey->key2,
-                   OSSL_PKEY_PARAM_PRIV_KEY, pqbuf, pqlen, &got) <= 0
-            || got != pqlen)
+        if (!get_component_priv(hkey->key1, &slot1buf, &slot1len))
             goto end;
+        if (component_is_classical(HYBRID_KEY_ALG2_NAME(hkey),
+                                   HYBRID_KEY_ALG2_GROUP(hkey))) {
+            if (!get_component_priv(hkey->key2, &slot2buf, &slot2len))
+                goto end;
+        } else {
+            slot2len = hkey->sizes->a2_prv;
+            if ((slot2buf = OPENSSL_malloc(slot2len)) == NULL
+                || EVP_PKEY_get_octet_string_param(hkey->key2,
+                       OSSL_PKEY_PARAM_PRIV_KEY, slot2buf, slot2len, &got) <= 0
+                || got != slot2len)
+                goto end;
+        }
     } else {
-        if (!hybrid_have_pubkey(hkey))
+        if (!get_component_pub(hkey->key1, &slot1buf, &slot1len))
             goto end;
-        pqlen = hkey->sizes->a2_pub;
-        if (!get_component_pub(hkey->key1, &cbuf, &clen)
-            || (pqbuf = OPENSSL_malloc(pqlen)) == NULL
-            || EVP_PKEY_get_octet_string_param(hkey->key2,
-                   OSSL_PKEY_PARAM_PUB_KEY, pqbuf, pqlen, &got) <= 0
-            || got != pqlen)
-            goto end;
+        if (component_is_classical(HYBRID_KEY_ALG2_NAME(hkey),
+                                   HYBRID_KEY_ALG2_GROUP(hkey))) {
+            if (!get_component_pub(hkey->key2, &slot2buf, &slot2len))
+                goto end;
+        } else {
+            slot2len = hkey->sizes->a2_pub;
+            if ((slot2buf = OPENSSL_malloc(slot2len)) == NULL
+                || EVP_PKEY_get_octet_string_param(hkey->key2,
+                       OSSL_PKEY_PARAM_PUB_KEY, slot2buf, slot2len, &got) <= 0
+                || got != slot2len)
+                goto end;
+        }
     }
 
-    cname = HYBRID_KEY_ALG1_GROUP(hkey);      /* "P-256"; NULL for RSA/X25519 */
-    if (cname == NULL)
-        cname = HYBRID_KEY_ALG1_NAME(hkey);
+    /* Label each component with its curve ("P-256") if it has one, else its
+     * algorithm name ("RSA", "MLDSA65", …) — symmetric across both slots. */
+    slot1name = HYBRID_KEY_ALG1_GROUP(hkey);
+    if (slot1name == NULL)
+        slot1name = HYBRID_KEY_ALG1_NAME(hkey);
+    slot2name = HYBRID_KEY_ALG2_GROUP(hkey);
+    if (slot2name == NULL)
+        slot2name = HYBRID_KEY_ALG2_NAME(hkey);
     if ((mem = BIO_new(BIO_s_mem())) == NULL
         || BIO_printf(mem, "%s hybrid %s key:\n", hybrid_key_name(hkey),
                       priv ? "private" : "public") <= 0
-        || !text_block(mem, cname, cbuf, clen)
-        || !text_block(mem, HYBRID_KEY_ALG2_NAME(hkey), pqbuf, pqlen))
+        || !text_block(mem, slot1name, slot1buf, slot1len)
+        || !text_block(mem, slot2name, slot2buf, slot2len))
         goto end;
 
     datalen = BIO_get_mem_data(mem, &data);
@@ -554,8 +595,8 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     ret = ctx->bio_write_ex(cout, data, (size_t)datalen, &written)
           && written == (size_t)datalen;
 end:
-    OPENSSL_clear_free(cbuf, clen);
-    OPENSSL_clear_free(pqbuf, pqlen);
+    OPENSSL_clear_free(slot1buf, slot1len);
+    OPENSSL_clear_free(slot2buf, slot2len);
     BIO_free(mem);
     return ret;
 }

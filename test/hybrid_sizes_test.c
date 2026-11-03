@@ -183,7 +183,7 @@ static void verify(OSSL_LIB_CTX *lc)
         size_t a1p, a1v, a1g, a2p, a2v, a2g;
 
         if (!disc_sig(lc, r->alg1_name, r->alg1_group, &a1p, &a1v, &a1g)
-                || !disc_sig(lc, r->alg2_name, NULL, &a2p, &a2v, &a2g)) {
+                || !disc_sig(lc, r->alg2_name, r->alg2_group, &a2p, &a2v, &a2g)) {
             skipped++;
             ERR_clear_error();
             continue;
@@ -221,7 +221,7 @@ static void emit(OSSL_LIB_CTX *lc)
         size_t a1p, a1v, a1g, a2p, a2v, a2g;
 
         if (!disc_sig(lc, r->alg1_name, r->alg1_group, &a1p, &a1v, &a1g)
-                || !disc_sig(lc, r->alg2_name, NULL, &a2p, &a2v, &a2g)) {
+                || !disc_sig(lc, r->alg2_name, r->alg2_group, &a2p, &a2v, &a2g)) {
             printf("    { 0 },  /* %-22s UNRESOLVED */\n", r->hybrid_name);
             continue;
         }

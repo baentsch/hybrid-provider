@@ -324,19 +324,21 @@ is **slot-symmetric**: each component is handled as digest-taking (classical
 ECDSA/RSA over an external digest) or md-less (any PQ/EdDSA, signing the message
 directly) by its own kind, so either slot may be digest-taking or md-less
 ([#114](https://github.com/baentsch/hybrid-provider/issues/114) — the component-1
-crypto-path generalization). One construction limit remains in the table (not the
-crypto path): only `alg1` carries a group, so a classical **EC** component must
-occupy slot 1, while RSA or any PQ algorithm may occupy either. Three
-operation-only rows exercise it, under the same
-`uint32(len1) || sig1 || sig2` wire layout (the length prefix is on component 1
-regardless of kind, so a variable-length Falcon component 1 is handled as
-naturally as ECDSA DER):
+crypto-path generalization). Construction is slot-symmetric too: each slot carries
+its own group (`alg1_group`/`alg2_group`), so a classical **EC** component may
+occupy either slot, while RSA or any PQ algorithm is groupless
+([#125](https://github.com/baentsch/hybrid-provider/issues/125) — the
+construction-symmetry follow-up). Four operation-only rows exercise it, under the
+same `uint32(len1) || sig1 || sig2` wire layout (the length prefix is on
+component 1 regardless of kind, so a variable-length Falcon component 1 is handled
+as naturally as ECDSA DER):
 
 | Row | Components | Exercises |
 |---|---|---|
 | `mldsa65_falcon1024` | ML-DSA-65 + Falcon-1024 | md-less in both slots; variable-length component 2; context string honoured by the ML-DSA half |
 | `mldsa44_mayo1` | ML-DSA-44 + MAYO-1 | fixed+fixed md-less pair |
 | `falcon512_mayo1` | Falcon-512 + MAYO-1 | variable-length md-less component 1; a pair whose components do **not** honour a context string (no cross-half domain separation) |
+| `mldsa65_p256` | ML-DSA-65 + P-256 | a classical **EC** (digest-taking) half in slot 2, via `alg2_group`; md-less + digest-taking, PQ-first |
 
 No standard defines a PQ/PQ concatenation signature (RFC 9955 gives only the
 taxonomy) and there is no interop peer, so — like the `xwing_*` KEM rows — these

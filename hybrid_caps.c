@@ -202,7 +202,7 @@ typedef struct {
 
 #define HYBRID_SIGALG_SECBITS(lvl) ((lvl) <= 2 ? 128u : (lvl) <= 4 ? 192u : 256u)
 
-#define HYBRID_CAPS_SIG_CONST_ROW(cf, nm, a1, grp, a2, lvl, oid, ds, cp)      \
+#define HYBRID_CAPS_SIG_CONST_ROW(cf, nm, a1, grp, a2, grp2, lvl, oid, ds, cp)\
     { (unsigned int)(cp), HYBRID_SIGALG_SECBITS(lvl), TLS1_3_VERSION, 0 },
 static const HYBRID_TLS_SIGALG_CONSTANTS hybrid_sigalg_list[] = {
     HYBRID_SIG_LIST(HYBRID_CAPS_SIG_CONST_ROW)
@@ -230,7 +230,7 @@ static const HYBRID_TLS_SIGALG_CONSTANTS hybrid_sigalg_list[] = {
         OSSL_PARAM_END                                                        \
     }
 
-#define HYBRID_CAPS_SIG_PARAM_ROW(cf, nm, a1, grp, a2, lvl, oid, ds, cp)      \
+#define HYBRID_CAPS_SIG_PARAM_ROW(cf, nm, a1, grp, a2, grp2, lvl, oid, ds, cp)\
     HYBRID_TLS_SIGALG_ENTRY(nm, oid, HYBRID_SIG_IDX_##cf),
 static const OSSL_PARAM hybrid_param_sigalg_list[][8] = {
     HYBRID_SIG_LIST(HYBRID_CAPS_SIG_PARAM_ROW)
