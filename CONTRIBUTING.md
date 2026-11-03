@@ -134,6 +134,57 @@ the standards-backed instance — additionally pinned by a KAT against the draft
 reference vectors (`xwing_kat_test`) with a weekly vector-coherence guard
 (`scripts/check-xwing-kat-drift.sh`).
 
+### Experimenting with a provider-private combination (no interop peer)
+
+A first principle of this provider: **any component reachable through the public
+EVP API can be paired with any other, from any provider.** The hybrid code never
+touches the raw cryptography — it orchestrates the components over EVP and is
+agnostic to which provider implements them (steer each slot with
+`alg1-propquery` / `alg2-propquery`; see
+[USAGE.md](USAGE.md#selecting-component-providers-alg1-propquery--alg2-propquery),
+where sourcing a hybrid's PQ half from
+[wolfProvider](https://github.com/wolfSSL/wolfProvider) is a worked example). So
+experimenting with a pairing no standard defines and no other provider serves is
+deliberately cheap.
+
+Such a combination has **no interop peer**, so do not invent — or reuse — a
+standardized identifier for it. Two levels, cheapest first:
+
+- **Operation-only.** Leave the row's `oid` `NULL` and its TLS code point `0`. The
+  combination can be keygen'd, signed/verified or encaps/decaps'd and KAT-checked,
+  but is not serializable (no X.509/PKCS8/CMS) or TLS-negotiable. This is the
+  smallest possible experiment — one table line (plus a `hybrid_kem_combiner[]`
+  entry for a non-concatenation KEM).
+- **Serializable / TLS-negotiable.** Give it **private-use** identifiers: an OID
+  in this provider's `1.3.9999.99.*` arc and a TLS code point in the private-use
+  range (`0xFE00..0xFFFF` — signatures use the `0xFFE5..` sub-block after the
+  composite rows; KEMs the NamedGroup private-use space). **Never shadow a
+  standardized identifier**; `hybrid_capability_test` enforces that every code
+  point sits in a known IANA-assigned span or a provisional/private-use range.
+  The `xwing_*` KEM rows (operation-only) and the §3.4 signature rows
+  `mldsa65_falcon1024` / `mldsa44_mayo1` / `falcon512_mayo1` / `mldsa65_p256`
+  (private-use, issue #126) are the worked examples.
+
+For **signatures** the sign/verify path, the construction, and the private-key
+serialization are all **slot-symmetric** (issues #114 / #125 / #126), so either
+slot may be classical (ECDSA/RSA, with its curve on `alg1_group` / `alg2_group`)
+or md-less PQ, in either order, with no code change. For a **PQ/PQ** signature
+`nist_level` no longer selects a digest; set it to the **min** of the two
+components' NIST categories — the advertised TLS security bits, the weaker
+survivor if one scheme is broken (see [STANDARDS.md §3.4](STANDARDS.md)).
+
+The table-driven tests then pick the row up automatically: `hybrid_leakcheck_test`
+round-trips it in-provider (keygen / sign-verify / SPKI+PKCS8 encode→decode→`eq`);
+a non-zero code point pulls it into `hybrid_cert_tls_test`, and an OID into
+`hybrid_cms_test`. Cross-provider tests (`hybrid_encode_test`,
+`hybrid_matrix_test`, `hybrid_coexist_test`) skip a row by probing whether another
+provider actually serves the name — not by whether it has an OID — so a
+provider-private row is correctly left out of the interop sweep.
+
+A fully **config-declared** form — arbitrary pairings at runtime with no table
+edit or rebuild — is the planned "define-a-hybrid" mechanism, tracked in
+[#112](https://github.com/baentsch/hybrid-provider/issues/112).
+
 ### The oqsprovider coverage invariant
 
 Every OQS-legacy hybrid must match

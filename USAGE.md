@@ -119,6 +119,30 @@ effect in TLS (where only one property query is otherwise exposed) — no OpenSS
 core change required. `hybrid_config_test` verifies that each key independently
 governs its component.
 
+Any provider that serves the component through the public EVP API works as the
+source — not just default or
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider). For example,
+[wolfProvider](https://github.com/wolfSSL/wolfProvider) (built with
+`--enable-mlkem`) serves ML-KEM-512/768/1024, so its ML-KEM can supply the PQ
+half of a hybrid:
+
+```ini
+[hybrid_sect]
+module         = /path/to/hybrid.so
+activate       = 1
+alg1-propquery = ?provider=default    # classical half: X25519 from default
+alg2-propquery = ?provider=wolfprov   # PQ half: ML-KEM-768 from wolfProvider
+```
+
+`X25519MLKEM768` then composes X25519 (default) with ML-KEM-768 (wolfProvider),
+and the composed key interoperates byte-for-byte with wolfProvider's *native*
+`X25519MLKEM768` group (verified by the cross-provider matrix — see
+[TESTING.md](TESTING.md) and
+[provider-interop-results.md](provider-interop-results.md)). Note the query name
+is `wolfprov`, not the module name `libwolfprov.so`: a `?provider=` query matches
+the name a provider registers under, which for wolfProvider differs from its
+module file.
+
 ### Private component context (`component-providers` / `component-path`)
 
 Some PQ bases (FrodoKEM, BIKE, HQC) exist only in
