@@ -112,6 +112,67 @@ the tables drive keymgmt, KEM/sig dispatch and capability advertising. Update th
 inventory tables in the [README](README.md#supported-algorithms) to match, and
 add coverage to the relevant test.
 
+### Step by step
+
+Self-contained recipe for one new hybrid KEM or signature. Component sizes are
+compile-time constants (not computed at runtime), so a new row needs a matching
+size row — which you do **not** hand-count: a generator derives them from live
+component keygens.
+
+1. **Add the master-list row** in `hybrid_prov.h` — `HYBRID_SIG_LIST` for a
+   signature, `HYBRID_KEM_LIST` for a KEM. Each row's `X(...)` field order is
+   documented in the comment directly above the list. The component names
+   (`alg1` / `alg2`) are the EVP fetch names their provider registers (e.g.
+   `"MLDSA65"`, `"snova2454"`, `"CROSSrsdp128balanced"`); a classical EC half
+   carries its curve in `alg1_group` / `alg2_group`, everything else is `NULL`.
+   For identifiers, follow
+   [Experimenting with a provider-private combination](#experimenting-with-a-provider-private-combination-no-interop-peer)
+   below: operation-only (`NULL` OID, code point `0`) to start, or private-use
+   identifiers to make it serialize/negotiate.
+2. **Add a placeholder size row** at the **same ordinal** in the matching array
+   (`hybrid_sig_sizes[]` / `hybrid_kem_sizes[]`, just below the list) — the index
+   is positional (`HYBRID_*_IDX_*`), so it must line up with your new list row:
+
+   ```c
+   { 0 },   /* snova2454_crossrsdp128balanced */   /* filled in step 4 */
+   ```
+   (A non-concatenation KEM additionally needs a `hybrid_kem_combiner[]` entry —
+   see the combiner note above.)
+3. **Build the provider**, with the component providers reachable. If a component
+   lives in oqsprovider (any non-ML-DSA/ML-KEM PQ family: Falcon, MAYO, SNOVA,
+   CROSS, UOV, MQOM, Frodo, BIKE, HQC), put an oqsprovider built against the
+   *same* OpenSSL on the module path — `./test/setup_oqs_interop.sh` builds and
+   symlinks one into the build dir. Without it the new row self-skips
+   "component provider absent" (and the generator can't resolve its sizes).
+
+   ```sh
+   cmake --build build -j4
+   ```
+4. **Generate the real sizes** and paste them over the placeholder. From the
+   build dir, `emit` re-derives every row from live keygens and prints both size
+   tables as C initializers:
+
+   ```sh
+   cd build
+   OPENSSL_MODULES=$PWD ./hybrid_sizes_test emit     # add LD_LIBRARY_PATH=<ossl>/lib64 if needed
+   ```
+   Copy the line for your new algorithm (a row that printed `{ 0 } ... UNRESOLVED`
+   means its components were not fetchable — fix step 3 first) back into the array
+   from step 2, then rebuild.
+5. **Verify.** The table-driven tests pick the row up automatically:
+   `hybrid_sizes_test` goes green once the sizes match (it fails CI on any drift);
+   `hybrid_leakcheck_test` round-trips it in-provider (keygen / sign-verify or
+   encaps-decaps / SPKI+PKCS8 encode→decode→`eq`); a non-zero code point pulls it
+   into `hybrid_cert_tls_test`, an OID into `hybrid_cms_test`, and both into
+   `hybrid_capability_test`.
+
+   ```sh
+   ctest
+   ```
+6. **Update the README counts and inventory tables**
+   ([Supported algorithms](README.md#supported-algorithms)); `hybrid_count_test`
+   fails the suite until the counts match the tables.
+
 A hybrid KEM whose shared secret is **not** the plain concatenation of the
 component secrets (the RFC 10024 default) selects a combiner in
 `hybrid_kem_combiner[]` (next to `hybrid_kem_sizes[]` in `hybrid_prov.h`), keyed
