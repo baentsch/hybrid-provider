@@ -93,6 +93,45 @@ apply_cede_patch() {  # <oqs-provider src dir>
     fi
 }
 
+# Guard a stale liboqs cache. The cache-skip below reuses whatever liboqs is
+# already installed in LIBOQS_PREFIX, regardless of LIBOQS_REF. Pairing an older
+# (usually tagged-release) liboqs with a newer oqs-provider is the common cause
+# of "OQS_SIG_alg_{snova,mqom}_... undeclared" build errors: liboqs renames the
+# NIST-onramp sigs between releases, and oqs-provider tracks the new names. Catch
+# the mismatch here rather than let the oqs-provider build fail cryptically.
+#   - LIBOQS_REF is a release tag (X.Y.Z): the installed version must match it
+#     exactly, else hard-fail (override with ALLOW_LIBOQS_MISMATCH=1).
+#   - LIBOQS_REF is a branch/commit (e.g. main) but a tagged *release* is cached:
+#     warn only — we can't know the right version without building, but a release
+#     paired with main is the exact foot-gun above.
+check_liboqs_cache_matches_ref() {
+    local cfg="$LIBOQS_PREFIX/include/oqs/oqsconfig.h"
+    [ -f "$cfg" ] || return 0    # no version header; let the build speak
+    local installed prerelease ref
+    installed="$(sed -n 's/.*OQS_VERSION_TEXT "\([^"]*\)".*/\1/p' "$cfg")"
+    prerelease="$(grep -c '^#define OQS_VERSION_PRE_RELEASE' "$cfg" || true)"
+    ref="${LIBOQS_REF#v}"
+    if printf '%s' "$ref" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        [ "$installed" = "$ref" ] && return 0
+        echo "!! liboqs cache mismatch: installed $installed != LIBOQS_REF $LIBOQS_REF" >&2
+        if [ "${ALLOW_LIBOQS_MISMATCH:-0}" = "1" ]; then
+            echo "!! proceeding anyway (ALLOW_LIBOQS_MISMATCH=1)" >&2
+            return 0
+        fi
+        echo "!! The cached liboqs in $LIBOQS_PREFIX was NOT rebuilt (oqs.h present)." >&2
+        echo "!! Force a rebuild to LIBOQS_REF, or override with ALLOW_LIBOQS_MISMATCH=1:" >&2
+        echo "!!     rm -rf $LIBOQS_PREFIX/include/oqs && ./test/setup_oqs_interop.sh" >&2
+        exit 1
+    elif [ "$prerelease" = "0" ]; then
+        echo "!! cached liboqs is tagged release $installed, but LIBOQS_REF=$LIBOQS_REF" >&2
+        echo "!! is a branch/commit. If the oqs-provider build fails with undeclared" >&2
+        echo "!! OQS_SIG_alg_{snova,mqom}_... symbols, this stale cache is why. Pin a" >&2
+        echo "!! matching pair (OQSPROV_REF for liboqs $installed; see" >&2
+        echo "!! .github/workflows/ci.yml) or force a liboqs rebuild:" >&2
+        echo "!!     rm -rf $LIBOQS_PREFIX/include/oqs && ./test/setup_oqs_interop.sh" >&2
+    fi
+}
+
 echo ">> repo:           $REPO"
 echo ">> openssl prefix: $OPENSSL_PREFIX"
 echo ">> liboqs prefix:  $LIBOQS_PREFIX"
@@ -117,6 +156,7 @@ echo ">> liboqs ref:      $LIBOQS_REF"
 echo ">> oqs-provider ref: $OQSPROV_REF"
 if [ -f "$LIBOQS_PREFIX/include/oqs/oqs.h" ]; then
     echo ">> liboqs already installed in $LIBOQS_PREFIX (skipping rebuild)"
+    check_liboqs_cache_matches_ref
 else
     if [ ! -d "$LIBOQS_SRC/.git" ]; then
         git clone https://github.com/open-quantum-safe/liboqs.git "$LIBOQS_SRC"
