@@ -26,7 +26,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 50 hybrid KEMs + 30 hybrid signatures = 80 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 132 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 80 hybrids (102 total).
+**Algorithms served:** 54 hybrid KEMs + 30 hybrid signatures = 84 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 136 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 84 hybrids (106 total).
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -120,6 +120,23 @@ post-quantum KEMs. See [STANDARDS.md §3.4](STANDARDS.md).
 Adding another is two central lines — a row in `HYBRID_KEM_LIST` and an entry in
 `hybrid_kem_combiner[]` — with no combiner-code change (see
 [CONTRIBUTING.md](CONTRIBUTING.md)).
+
+**HQC-KEM groups** (`draft-preussmattsson-tls-hqckem`) — the draft's four
+**2-component** hybrids: two PQ/T (HQC + ECDHE) and two PQ/PQ (HQC + ML-KEM). The
+combiner is RFC 9954 fixed-length concatenation in name order (HQC first), which
+is our default concat combiner. HQC resolves from
+[oqsprovider](https://github.com/open-quantum-safe/oqs-provider); the ML-KEM half
+from the default provider (3.5+) or oqsprovider. The draft is an individual
+submission with code points still TBD, so these are **operation-only**: no TLS
+code point (KEM API only) and no OID. The two 3-component PQ/PQ/T groups (a
+2→N-slot generalization) and standalone HQC are out of scope here.
+
+| Algorithm | Components |
+|---|---|
+| `HQCKEM192X25519` | HQC-192 + X25519 — **PQ/T** (needs oqsprovider) |
+| `HQCKEM256X448` | HQC-256 + X448 — **PQ/T** (needs oqsprovider) |
+| `HQCKEM192MLKEM768` | HQC-192 + ML-KEM-768 — **PQ/PQ** (needs oqsprovider) |
+| `HQCKEM256MLKEM1024` | HQC-256 + ML-KEM-1024 — **PQ/PQ** (needs oqsprovider) |
 
 ### Hybrid Signatures
 

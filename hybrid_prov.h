@@ -421,7 +421,31 @@ typedef struct hybrid_key_st {
    * encode round-trip test skips it (provider_has(...oqsprovider) is false). */   \
   X(exphyb_p256_frodo640aes, "exphyb_p256_frodo640aes", "EC", "P-256",       0,   \
       "frodo640aes", 1, 0x0000, 128, "Experimental P-256+FrodoKEM-640-AES (CMS)", \
-      "1.3.9999.99.70")
+      "1.3.9999.99.70")\
+  /* --- draft-preussmattsson-tls-hqckem HQC-KEM TLS groups (2-component) ---      \
+   * The draft defines nine groups; this adds the four 2-component hybrids — two    \
+   * PQ/T (HQC + ECDHE) and two PQ/PQ (HQC + ML-KEM). The combiner is RFC 9954      \
+   * fixed-length concatenation in NAME order, i.e. HQC first — exactly our default \
+   * HYBRID_COMBINER_CONCAT. HQC-first wire order is expressed by alg2_slot = 0:     \
+   * HQC is the alg2 KEM and lands in slot 0 (see hybrid_kem.c slot ordering). The   \
+   * HQC half resolves from oqsprovider; the ML-KEM half from default (3.5+) or      \
+   * oqsprovider. secbits = min of the component NIST categories (HQC-192 + its      \
+   * level-3 partner -> 192; HQC-256 + its level-5 partner -> 256). PQ/T rows:       \
+   * alg1 = ECDHE key-exchange, alg2 = HQC KEM. PQ/PQ rows: both slots native KEMs   \
+   * (alg1_is_kem = 1, the xwing_mlkem768_hqc3 both-KEM path) under plain concat.    \
+   * Draft code points are still TBD (TBD1-9, un-assigned by IANA) and the draft is  \
+   * an individual submission, so these are operation-only: cp = 0 (KEM API only,    \
+   * never advertised as a TLS group), oid = NULL (HQC does not serialize to a key   \
+   * file standalone anyway). The two 3-component PQ/PQ/T groups need a 2->N-slot     \
+   * generalization and are deferred (issue #131); standalone HQC is oqsprovider's. */ \
+  X(x25519_hqc3,       "HQCKEM192X25519",    "X25519", NULL,            0,    \
+      "hqc3",      0, 0x0000, 192, "HQC-192+X25519 (PQ/T, draft-preussmattsson)", NULL)\
+  X(x448_hqc5,         "HQCKEM256X448",      "X448",   NULL,            0,    \
+      "hqc5",      0, 0x0000, 256, "HQC-256+X448 (PQ/T, draft-preussmattsson)", NULL)\
+  X(mlkem768_hqc3,     "HQCKEM192MLKEM768",  "MLKEM768", NULL,          1,    \
+      "hqc3",      0, 0x0000, 192, "HQC-192+ML-KEM-768 (PQ/PQ, draft-preussmattsson)", NULL)\
+  X(mlkem1024_hqc5,    "HQCKEM256MLKEM1024", "MLKEM1024", NULL,         1,    \
+      "hqc5",      0, 0x0000, 256, "HQC-256+ML-KEM-1024 (PQ/PQ, draft-preussmattsson)", NULL)
 
 /* Generate the info table from the master list. */
 #define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)       \
@@ -511,6 +535,14 @@ static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
                                                       * (= p256_frodo640aes:
                                                       * same P-256 + FrodoKEM-640-
                                                       * AES components) */
+    /* draft-preussmattsson-tls-hqckem: alg1 then alg2 (HQC) — the HQC-first wire
+     * order is the slot, not this table. Sizes reuse the ML-KEM/HQC/X25519/X448
+     * component figures already proven above (e.g. the ML-KEM-768+HQC-3 row equals
+     * xwing_mlkem768_hqc3). Regenerate with `hybrid_sizes_test emit` after build. */
+    { 32,32,32,32, 4514,4602,32,8978, 0,0 },        /* HQCKEM192X25519  (X25519 + HQC-3) */
+    { 56,56,56,56, 7237,7333,32,14421, 0,0 },       /* HQCKEM256X448    (X448 + HQC-5) */
+    { 1184,2400,32,1088, 4514,4602,32,8978, 0,0 },  /* HQCKEM192MLKEM768  (ML-KEM-768 + HQC-3) */
+    { 1568,3168,32,1568, 7237,7333,32,14421, 0,0 }, /* HQCKEM256MLKEM1024 (ML-KEM-1024 + HQC-5) */
 };
 
 /*
