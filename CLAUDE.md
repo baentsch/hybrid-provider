@@ -86,7 +86,7 @@ hybrid-provider/
     ├── hybrid_tls_test.c          ← in-process TLS 1.3 handshake interop (dual libctx)
     ├── hybrid_cert_tls_test.c     ← signature certs over TLS 1.3
     ├── hybrid_encode_test.c       ← SPKI/PKCS8 key round-trips vs oqsprovider
-    ├── hybrid_kem_encode_test.c   ← KEM key-file round-trips (HYBRID_KEM_ENCODERS)
+    ├── hybrid_kem_encode_test.c   ← KEM key-file round-trips: hybrid↔oqs (HYBRID_KEM_ENCODERS) + composite self (HYBRID_COMPOSITE)
     ├── hybrid_param_test.c        ← raw-param (OSSL_PARAM) round-trips
     ├── hybrid_cms_test.c          ← CMS SignedData
     ├── hybrid_cms_kem_test.c      ← composite KEM (both tiers) as CMS KEMRI recipient (RFC 9629)

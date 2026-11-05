@@ -174,8 +174,9 @@ asserts the version contract per running OpenSSL:
 - **composite KEMs** — standardized (ML-KEM) tier OpenSSL **3.5+** (seed private
   key); experimental (FrodoKEM/BIKE/HQC) tier **3.2+** (raw private key, no seed
   API). Below 3.5 the standardized ML-KEM combos self-deactivate and only the
-  experimental composite KEMs are served; `composite_kem_prov_test` self-skips the
-  rows it cannot serve on a given version.
+  experimental composite KEMs are served; the composite rows in `hybrid_test`
+  (iterated under `-DHYBRID_COMPOSITE`) self-skip the rows it cannot serve on a
+  given version.
 
 The provider's encodable KEMs are also exercised as CMS `EnvelopedData` KEMRI
 recipients (RFC 9629, `hybrid_cms_kem_test`): per composite combo, an in-process
