@@ -146,6 +146,31 @@ end:
 }
 
 /*
+ * Property query pinning an operation to a key's ACTUAL owning provider. When
+ * two co-loaded providers register the same keytype name+OID (hybrid and
+ * oqsprovider both serve the MLX/mlkem512 rows below 3.5), OSSL_DECODER cannot be
+ * steered to one of them: the "provider=" query on OSSL_DECODER_CTX_new_for_pkey
+ * is only honoured from OpenSSL 3.5 (verified: on 3.4 the query — even a bogus
+ * one — is ignored and the decoded key's owner is fixed by decoder-chain order,
+ * SPKI->oqs / PKCS8->hybrid). So the key a decode hands back may be owned by
+ * either provider regardless of the requested dstprop. Operating it under a
+ * mismatched provider= then fails evp_kem_init ("operation not supported for this
+ * keytype"). Deriving the op property from the key's real provider makes the KEM
+ * fetch match the keymgmt on every OpenSSL version; the round-trip still proves
+ * the serialized key is consumable and its shared secret matches the original.
+ */
+static const char *key_prop(EVP_PKEY *k, char *buf, size_t n)
+{
+    const OSSL_PROVIDER *p = k != NULL ? EVP_PKEY_get0_provider(k) : NULL;
+    const char *name = p != NULL ? OSSL_PROVIDER_get0_name(p) : NULL;
+
+    if (name == NULL)
+        return NULL;
+    snprintf(buf, n, "provider=%s", name);
+    return buf;
+}
+
+/*
  * Encapsulate to `encaps_key` (via encaps_prop) and decapsulate with
  * `decaps_key` (via decaps_prop); the shared secrets must match. Used to prove a
  * key survived a key-file round-trip across the two providers.
@@ -176,6 +201,7 @@ static void one_dir(OSSL_LIB_CTX *ctx, const char *alg, const char *label,
     EVP_PKEY *a = NULL, *pub_b = NULL, *prv_b = NULL;
     unsigned char *spki = NULL, *p8 = NULL;
     size_t spkilen = 0, p8len = 0;
+    char bprop[64];
 
     /* --- SPKI (public) round-trip --- */
     tests++;
@@ -187,8 +213,10 @@ static void one_dir(OSSL_LIB_CTX *ctx, const char *alg, const char *label,
                   &spki, &spkilen)
         && (pub_b = decode(ctx, "SubjectPublicKeyInfo", EVP_PKEY_PUBLIC_KEY,
                            dstprop, spki, spkilen)) != NULL
-        /* encaps to the decoded pub (dst), decaps with the original priv (src) */
-        && ss_match(ctx, pub_b, dstprop, a, srcprop)) {
+        /* encaps to the decoded pub (its real owner, see key_prop), decaps with
+         * the original priv (src) */
+        && ss_match(ctx, pub_b, key_prop(pub_b, bprop, sizeof(bprop)),
+                    a, srcprop)) {
         printf("PASS\n"); passed++;
     } else {
         printf("FAIL\n"); ERR_print_errors_fp(stdout); failed++;
@@ -202,8 +230,10 @@ static void one_dir(OSSL_LIB_CTX *ctx, const char *alg, const char *label,
         && encode(a, EVP_PKEY_KEYPAIR, "PrivateKeyInfo", srcprop, &p8, &p8len)
         && (prv_b = decode(ctx, "PrivateKeyInfo", EVP_PKEY_KEYPAIR, dstprop,
                            p8, p8len)) != NULL
-        /* encaps to the original pub (src), decaps with the decoded priv (dst) */
-        && ss_match(ctx, a, srcprop, prv_b, dstprop)) {
+        /* encaps to the original pub (src), decaps with the decoded priv (its
+         * real owner, see key_prop) */
+        && ss_match(ctx, a, srcprop, prv_b,
+                    key_prop(prv_b, bprop, sizeof(bprop)))) {
         printf("PASS\n"); passed++;
     } else {
         printf("FAIL\n"); ERR_print_errors_fp(stdout); failed++;
