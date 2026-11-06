@@ -176,10 +176,16 @@ end:
  * a classical component via get_component_priv (i2d_PrivateKey DER for EC/RSA, or
  * raw for X25519/X448); a PQ component as raw private || raw public (the public
  * appended so a research keytype that cannot re-derive it still decodes to a
- * complete key). `prv`/`pub` are the fixed PQ component sizes. The PQ branch
- * allocates from the secure heap, so the caller MUST free *buf with
- * OPENSSL_secure_clear_free (safe for the classical branch's regular-heap
- * buffer too — CRYPTO_secure_free falls back to CRYPTO_free for it).
+ * complete key). `prv`/`pub` are the fixed PQ component sizes.
+ *
+ * This is a transient scratch buffer holding private-key material, so it is a
+ * regular-heap allocation wiped on free (OPENSSL_clear_free), not a secure-heap
+ * one: the serialized private key unavoidably lands on the regular heap at the
+ * ASN.1/PKCS#8 stage regardless (so securing the scratch is only partial), and
+ * the fixed-size secure arena is a scarce resource that large PQ private keys
+ * (e.g. UOV's ~405 KB uncompressed secret key) can exhaust, turning a
+ * defence-in-depth nicety into an encode failure. Caller frees *buf with
+ * OPENSSL_clear_free.
  */
 static int encode_component_priv(EVP_PKEY *pkey, const char *alg,
                                  const char *group, size_t prv, size_t pub,
@@ -191,13 +197,13 @@ static int encode_component_priv(EVP_PKEY *pkey, const char *alg,
     if (hybrid_component_is_classical(alg, group))
         return get_component_priv(pkey, buf, len);
 
-    if ((b = OPENSSL_secure_malloc(prv + pub)) == NULL)
+    if ((b = OPENSSL_malloc(prv + pub)) == NULL)
         return 0;
     if (EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PRIV_KEY,
                                         b, prv, &got) <= 0 || got != prv
         || EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
                                            b + prv, pub, &got) <= 0 || got != pub) {
-        OPENSSL_secure_clear_free(b, prv + pub);
+        OPENSSL_clear_free(b, prv + pub);
         return 0;
     }
     *buf = b;
@@ -212,8 +218,8 @@ static int encode_component_priv(EVP_PKEY *pkey, const char *alg,
  * classical-first rows this is byte-identical to the historical layout
  * (UINT32(classical_der_len) || classical_DER || pq_priv || pq_pub); a PQ-first
  * or EC-in-slot-2 row simply reverses which kind lands where. Signatures only —
- * KEMs keep their alg2_slot-ordered layout below. Free *out with
- * OPENSSL_secure_clear_free.
+ * KEMs keep their alg2_slot-ordered layout below. Regular-heap, wiped on free;
+ * caller frees *out with OPENSSL_clear_free.
  */
 static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
                                 size_t *outlen)
@@ -232,7 +238,7 @@ static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
         goto err;
 
     total = sizeof(uint32_t) + l1 + l2;
-    if ((buf = OPENSSL_secure_malloc(total)) == NULL)
+    if ((buf = OPENSSL_malloc(total)) == NULL)
         goto err;
     buf[0] = (unsigned char)(l1 >> 24);
     buf[1] = (unsigned char)(l1 >> 16);
@@ -246,12 +252,10 @@ static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
     buf = NULL;
     ret = 1;
 err:
-    /* b1/b2 may come from the secure heap (PQ component) or the regular heap
-     * (classical, via get_component_priv); OPENSSL_secure_clear_free is correct
-     * for both — it falls back to CRYPTO_free for non-secure pointers. */
-    OPENSSL_secure_clear_free(b1, l1);
-    OPENSSL_secure_clear_free(b2, l2);
-    OPENSSL_secure_clear_free(buf, total);
+    /* All three are regular-heap private-key scratch, wiped on free. */
+    OPENSSL_clear_free(b1, l1);
+    OPENSSL_clear_free(b2, l2);
+    OPENSSL_clear_free(buf, total);
     return ret;
 }
 
@@ -259,8 +263,9 @@ err:
  * Build the private-key blob. Signatures use the slot-symmetric layout above.
  * KEMs keep oqsprovider's alg2_slot-ordered layout:
  *   UINT32(classical_der_len) || classical_privkey_DER || pq_privkey || pq_pubkey
- * (PQ private first for reverse-share KEMs). *out is secure-heap allocated;
- * caller frees it with OPENSSL_secure_clear_free.
+ * (PQ private first for reverse-share KEMs). Regular-heap, wiped on free (see
+ * encode_component_priv for why not the secure heap); caller frees *out with
+ * OPENSSL_clear_free.
  */
 int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
@@ -279,7 +284,7 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
         return 0;
 
     total = sizeof(uint32_t) + clen + a2v + a2p;
-    if ((buf = OPENSSL_secure_malloc(total)) == NULL)
+    if ((buf = OPENSSL_malloc(total)) == NULL)
         goto err;
 
     /* UINT32 big-endian classical private-key length */
@@ -313,7 +318,7 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
     ret = 1;
 err:
     OPENSSL_clear_free(cbuf, clen);
-    OPENSSL_secure_clear_free(buf, total);
+    OPENSSL_clear_free(buf, total);
     return ret;
 }
 
@@ -339,13 +344,13 @@ static PKCS8_PRIV_KEY_INFO *hybrid_key_to_p8info(HYBRID_KEY *key)
     /* Transfers ownership of oid and inner to p8. */
     if (!PKCS8_pkey_set0(p8, oid, 0, V_ASN1_UNDEF, NULL, inner, innerlen))
         goto err;
-    OPENSSL_secure_clear_free(blob, bloblen);
+    OPENSSL_clear_free(blob, bloblen);
     ASN1_OCTET_STRING_free(oct);
     return p8;
 err:
     ASN1_OBJECT_free(oid);
     OPENSSL_free(inner);
-    OPENSSL_secure_clear_free(blob, bloblen);
+    OPENSSL_clear_free(blob, bloblen);
     ASN1_OCTET_STRING_free(oct);
     PKCS8_PRIV_KEY_INFO_free(p8);
     return NULL;

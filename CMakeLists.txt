@@ -420,20 +420,6 @@ set_tests_properties(hybrid_decode_neg_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
-# Secure-heap signature PKCS#8 round-trips: initialises the OpenSSL secure heap so
-# the signature encoder's per-component OPENSSL_secure_malloc() buffers really land
-# in the arena, where a wrong free (OPENSSL_clear_free instead of secure_clear_free)
-# aborts/corrupts. The rest of the suite never inits the secure heap, so this is the
-# only leg that exercises that free path. Self-skips rows whose components are
-# unavailable; falls back to a functional-only run if the platform denies mlock.
-add_executable(hybrid_secheap_test test/hybrid_secheap_test.c)
-target_include_directories(hybrid_secheap_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
-target_link_libraries(hybrid_secheap_test PRIVATE OpenSSL::Crypto)
-add_test(NAME hybrid_secheap_test COMMAND hybrid_secheap_test)
-set_tests_properties(hybrid_secheap_test PROPERTIES
-    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
-)
-
 # CMS SignedData with hybrid signatures (in-process analog of oqsprovider's CMS
 # scripts). ML-DSA hybrids need only the default provider; Falcon/MAYO/… self-
 # skip without oqsprovider, and each algorithm self-skips if unavailable.
