@@ -29,12 +29,13 @@ static const char *hybrid_key_oid(const HYBRID_KEY *key)
                        : ((const HYBRID_SIG_INFO *)key->info)->oid;
 }
 
-/* Is this a reverse-share KEM (PQ/alg2 component first on the wire)? Routed
- * through the wire-order iterator so no call site here reads alg2_slot directly;
- * for signature keys component 0 always leads, so this is false. */
-static int hybrid_key_reverse(const HYBRID_KEY *key)
+/* Write a UINT32 big-endian length prefix at p. */
+static void enc_uint32_be(unsigned char *p, uint32_t v)
 {
-    return hybrid_wire_to_comp(key, 0) == HYBRID_COMP_ALG2;
+    p[0] = (unsigned char)(v >> 24);
+    p[1] = (unsigned char)(v >> 16);
+    p[2] = (unsigned char)(v >> 8);
+    p[3] = (unsigned char)(v);
 }
 
 /*
@@ -132,43 +133,42 @@ static int get_component_pub(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
 
 int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
-    unsigned char *cbuf = NULL, *pqbuf = NULL, *buf = NULL;
-    size_t clen = 0, pqlen = 0, total;
-    int pq_first, ret = 0;
+    unsigned n = HYBRID_KEY_NCOMP(key), i, w;
+    unsigned char *cpub[HYBRID_KEY_NCOMP(key)] = { 0 }, *buf = NULL;
+    size_t cplen[HYBRID_KEY_NCOMP(key)] = { 0 }, total, off;
+    int ret = 0;
 
     if (!hybrid_have_pubkey(key))
         return 0;
-    if (!get_component_pub(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1), &cbuf, &clen)
-        || !get_component_pub(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
-                              &pqbuf, &pqlen))
-        goto end;
 
-    total = sizeof(uint32_t) + clen + pqlen;
+    /* Gather every component's public key, then lay them down in wire order
+     * (the iterator places the PQ share first for reverse-share KEMs) behind a
+     * UINT32 big-endian length of the classical (component ALG1) share — the
+     * oqsprovider SPKI layout. */
+    total = sizeof(uint32_t);
+    for (i = 0; i < n; i++) {
+        if (!get_component_pub(HYBRID_KEY_COMP(key, i), &cpub[i], &cplen[i]))
+            goto end;
+        total += cplen[i];
+    }
     if ((buf = OPENSSL_malloc(total)) == NULL)
         goto end;
+    enc_uint32_be(buf, (uint32_t)cplen[HYBRID_COMP_ALG1]);
 
-    /* UINT32 big-endian classical public-key length */
-    buf[0] = (unsigned char)(clen >> 24);
-    buf[1] = (unsigned char)(clen >> 16);
-    buf[2] = (unsigned char)(clen >> 8);
-    buf[3] = (unsigned char)(clen);
+    off = sizeof(uint32_t);
+    for (w = 0; w < n; w++) {
+        unsigned ci = hybrid_wire_to_comp(key, w);
 
-    /* Reverse-share KEMs (alg2_slot == 0) place the PQ share first. */
-    pq_first = hybrid_key_reverse(key);
-    if (pq_first) {
-        memcpy(buf + sizeof(uint32_t), pqbuf, pqlen);
-        memcpy(buf + sizeof(uint32_t) + pqlen, cbuf, clen);
-    } else {
-        memcpy(buf + sizeof(uint32_t), cbuf, clen);
-        memcpy(buf + sizeof(uint32_t) + clen, pqbuf, pqlen);
+        memcpy(buf + off, cpub[ci], cplen[ci]);
+        off += cplen[ci];
     }
     *out = buf;
     *outlen = total;
     buf = NULL;
     ret = 1;
 end:
-    OPENSSL_free(cbuf);
-    OPENSSL_free(pqbuf);
+    for (i = 0; i < n; i++)
+        OPENSSL_free(cpub[i]);
     OPENSSL_free(buf);
     return ret;
 }
@@ -216,109 +216,112 @@ static int encode_component_priv(EVP_PKEY *pkey, const char *alg,
 
 /*
  * Slot-symmetric signature private blob:
- *   UINT32(len1) || slot1 || slot2
- * where each slot is encode_component_priv() of that slot's component. For the
+ *   UINT32(len of component ALG1) || components in wire order
+ * where each component is encode_component_priv() of its own kind. For the
  * classical-first rows this is byte-identical to the historical layout
  * (UINT32(classical_der_len) || classical_DER || pq_priv || pq_pub); a PQ-first
- * or EC-in-slot-2 row simply reverses which kind lands where. Signatures only —
- * KEMs keep their alg2_slot-ordered layout below. Regular-heap, wiped on free;
+ * or EC-in-slot-2 row simply reverses which kind lands where (signatures never
+ * reverse-share, so wire order == logical order here). Signatures only — KEMs
+ * keep their trailing-PQ-public layout below. Regular-heap, wiped on free;
  * caller frees *out with OPENSSL_clear_free.
  */
 static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
                                 size_t *outlen)
 {
-    unsigned char *b1 = NULL, *b2 = NULL, *buf = NULL;
-    size_t l1 = 0, l2 = 0, total = 0;
+    unsigned n = HYBRID_KEY_NCOMP(key), i, w;
+    unsigned char *cb[HYBRID_KEY_NCOMP(key)] = { 0 }, *buf = NULL;
+    size_t cl[HYBRID_KEY_NCOMP(key)] = { 0 }, total = 0, off;
     int ret = 0;
 
-    if (!encode_component_priv(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1),
-                               hybrid_key_comp_name(key, HYBRID_COMP_ALG1),
-                               hybrid_key_comp_group(key, HYBRID_COMP_ALG1),
-                               hybrid_key_comp_prv_bytes(key, HYBRID_COMP_ALG1),
-                               hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG1),
-                               &b1, &l1)
-        || !encode_component_priv(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
-                                  hybrid_key_comp_name(key, HYBRID_COMP_ALG2),
-                                  hybrid_key_comp_group(key, HYBRID_COMP_ALG2),
-                                  hybrid_key_comp_prv_bytes(key, HYBRID_COMP_ALG2),
-                                  hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG2),
-                                  &b2, &l2))
-        goto err;
-
-    total = sizeof(uint32_t) + l1 + l2;
+    total = sizeof(uint32_t);
+    for (i = 0; i < n; i++) {
+        if (!encode_component_priv(HYBRID_KEY_COMP(key, i),
+                                   hybrid_key_comp_name(key, i),
+                                   hybrid_key_comp_group(key, i),
+                                   hybrid_key_comp_prv_bytes(key, i),
+                                   hybrid_key_comp_pub_bytes(key, i),
+                                   &cb[i], &cl[i]))
+            goto err;
+        total += cl[i];
+    }
     if ((buf = OPENSSL_malloc(total)) == NULL)
         goto err;
-    buf[0] = (unsigned char)(l1 >> 24);
-    buf[1] = (unsigned char)(l1 >> 16);
-    buf[2] = (unsigned char)(l1 >> 8);
-    buf[3] = (unsigned char)(l1);
-    memcpy(buf + sizeof(uint32_t), b1, l1);
-    memcpy(buf + sizeof(uint32_t) + l1, b2, l2);
+    enc_uint32_be(buf, (uint32_t)cl[HYBRID_COMP_ALG1]);
 
+    off = sizeof(uint32_t);
+    for (w = 0; w < n; w++) {
+        unsigned ci = hybrid_wire_to_comp(key, w);
+
+        memcpy(buf + off, cb[ci], cl[ci]);
+        off += cl[ci];
+    }
     *out = buf;
     *outlen = total;
     buf = NULL;
     ret = 1;
 err:
-    /* All three are regular-heap private-key scratch, wiped on free. */
-    OPENSSL_clear_free(b1, l1);
-    OPENSSL_clear_free(b2, l2);
+    /* Regular-heap private-key scratch, wiped on free. */
+    for (i = 0; i < n; i++)
+        OPENSSL_clear_free(cb[i], cl[i]);
     OPENSSL_clear_free(buf, total);
     return ret;
 }
 
 /*
- * Build the private-key blob. Signatures use the slot-symmetric layout above.
- * KEMs keep oqsprovider's alg2_slot-ordered layout:
- *   UINT32(classical_der_len) || classical_privkey_DER || pq_privkey || pq_pubkey
- * (PQ private first for reverse-share KEMs). Regular-heap, wiped on free (see
+ * Build the KEM private-key blob (signatures take the slot-symmetric path above
+ * and return early). oqsprovider's KEM layout is NOT a plain per-component
+ * concatenation: the PQ component's public key is always pinned to the trailing
+ * block, whatever the share order —
+ *   UINT32(classical_der_len) || <private parts, wire order> || pq_pubkey
+ * where each private part is the classical DER (component ALG1) or the PQ raw
+ * private key (component ALG2), ordered by the wire iterator (PQ private first
+ * for reverse-share KEMs). That trailing-public rule is the one asymmetry a loop
+ * cannot absorb; the private parts themselves are placed by the same wire-order
+ * loop the public blob uses. Regular-heap, wiped on free (see
  * encode_component_priv for why not the secure heap); caller frees *out with
  * OPENSSL_clear_free.
  */
 int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
-    unsigned char *cbuf = NULL, *buf = NULL, *cdst, *pqdst;
-    size_t clen = 0, a2v, a2p, total = 0, got;
+    unsigned n = HYBRID_KEY_NCOMP(key), w;
+    unsigned char *cbuf = NULL, *buf = NULL;
+    size_t clen = 0, pqv, pqp, total = 0, off, got;
     int ret = 0;
 
     if (!hybrid_have_prvkey(key))
         return 0;
     if (!key->is_kem)                  /* signatures: slot-symmetric by kind */
         return encode_priv_blob_sig(key, out, outlen);
-    a2v = hybrid_key_comp_prv_bytes(key, HYBRID_COMP_ALG2);
-    a2p = hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG2);
 
+    /* Classical (ALG1) private part, and PQ (ALG2) raw private/public sizes. */
+    pqv = hybrid_key_comp_prv_bytes(key, HYBRID_COMP_ALG2);
+    pqp = hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG2);
     if (!get_component_priv(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1), &cbuf, &clen))
         return 0;
 
-    total = sizeof(uint32_t) + clen + a2v + a2p;
+    total = sizeof(uint32_t) + clen + pqv + pqp;
     if ((buf = OPENSSL_malloc(total)) == NULL)
         goto err;
+    enc_uint32_be(buf, (uint32_t)clen);
 
-    /* UINT32 big-endian classical private-key length */
-    buf[0] = (unsigned char)(clen >> 24);
-    buf[1] = (unsigned char)(clen >> 16);
-    buf[2] = (unsigned char)(clen >> 8);
-    buf[3] = (unsigned char)(clen);
+    off = sizeof(uint32_t);
+    for (w = 0; w < n; w++) {
+        unsigned ci = hybrid_wire_to_comp(key, w);
 
-    /*
-     * Reverse-share KEMs (alg2_slot == 0) store PQ private first, then
-     * classical; others classical first. The PQ public key is always the
-     * trailing block, at offset 4 + clen + a2v in both cases.
-     */
-    if (hybrid_key_reverse(key)) {
-        pqdst = buf + sizeof(uint32_t);
-        cdst  = buf + sizeof(uint32_t) + a2v;
-    } else {
-        cdst  = buf + sizeof(uint32_t);
-        pqdst = buf + sizeof(uint32_t) + clen;
+        if (ci == HYBRID_COMP_ALG1) {         /* classical share: DER (clen) */
+            memcpy(buf + off, cbuf, clen);
+            off += clen;
+        } else {                              /* PQ share: raw private (pqv) */
+            if (EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, ci),
+                    OSSL_PKEY_PARAM_PRIV_KEY, buf + off, pqv, &got) <= 0
+                || got != pqv)
+                goto err;
+            off += pqv;
+        }
     }
-    memcpy(cdst, cbuf, clen);
+    /* PQ public key: the trailing block in every share order. */
     if (EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
-            OSSL_PKEY_PARAM_PRIV_KEY, pqdst, a2v, &got) <= 0 || got != a2v
-        || EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
-            OSSL_PKEY_PARAM_PUB_KEY,
-            buf + sizeof(uint32_t) + clen + a2v, a2p, &got) <= 0 || got != a2p)
+            OSSL_PKEY_PARAM_PUB_KEY, buf + off, pqp, &got) <= 0 || got != pqp)
         goto err;
 
     *out = buf;
