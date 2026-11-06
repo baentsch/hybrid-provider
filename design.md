@@ -516,6 +516,52 @@ exactly. From analysis of `mlx_kem.c`:
 | SecP384r1MLKEM1024 | 1           | ec_pub ‖ mlkem_ct              | ec_ss ‖ mlkem_ss            |
 | curveSM2MLKEM768   | 1           | sm2_pub ‖ mlkem_ct             | sm2_ss ‖ mlkem_ss           |
 
+### N-component concatenation (2→N generalization)
+
+Historically the hybrid key held exactly two components (`key1`/`key2`,
+`a1_*`/`a2_*` sizes, a single `alg2_slot` bit). That is being generalized to an
+ordered list of *N* components, motivated by the project's experimentation goal
+and concretely by draft-preussmattsson-tls-hqckem (issue #131), whose two
+PQ/PQ/T groups (`HQCKEM192MLKEM768X25519`, `HQCKEM256MLKEM1024X448`) concatenate
+three components. The generalization is deliberately scoped so it stays an
+*honest* mechanism rather than a disguised third slot:
+
+- **Only the concatenation combiner is N-ary.** RFC 9954/10024 concat is "fixed-
+  length component blobs, in order," which maps 1:1 onto a wire-ordered list of
+  any length. The strongly-binding combiners (X-Wing,
+  `HYBRID_COMBINER_XWING`) are defined for exactly one PQ + one traditional
+  component and have no N-ary form; they assert `n_comp == 2`. N applies to
+  concat, not to every combiner.
+
+- **The component list *is* the wire layout.** Each component row carries its own
+  `{name, group, is_kem}` and the list is stored in concatenation order, so the
+  dispatch is a straight loop over components. This *removes* `alg2_slot`: the
+  per-row 0/1 bit existed only because a two-element representation could not
+  express wire order directly (hence `X25519MLKEM768` is PQ-first while
+  `SecP256r1MLKEM768` is classical-first — same primitives, opposite order). A
+  wire-ordered list expresses both uniformly.
+
+- **Two components stay byte-identical.** A two-element list under the concat
+  combiner produces exactly today's bytes, so MLX interop (the table above) and
+  every existing oqsprovider-compatible layout are preserved unchanged.
+
+- **`HYBRID_MAX_COMP` is a small single-sourced bound (4).** Components live in
+  fixed-size stack arrays and the decoder's untrusted-length split checks are
+  bounded by it. "Experimentation" requires that the count is not hardcoded to 2,
+  not that it is unbounded.
+
+- **The signature path keeps `n_comp == 2`.** `HYBRID_KEY` is shared between the
+  KEM and signature families, so the *data model* (component array) is uniform,
+  but no multi-component signature is specified anywhere today; the sign/verify
+  path asserts two components until a draft earns the generalization. No
+  speculative signature-concat work.
+
+- **Component-accessor params.** The standalone-component params
+  (`hybrid-classic-pub-spki` etc.) are a two-component contract shared with the
+  composite family and external consumers; the standardized two-component rows
+  keep them. Any N>2 (experimental) row exposes indexed component params instead
+  of the classic/pq pair.
+
 ## Operation: Signature
 
 Wire format matches oqsprovider's hybrid signatures: a big-endian `uint32`
