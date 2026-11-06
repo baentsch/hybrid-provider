@@ -920,6 +920,18 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 #define HYBRID_KEY_NCOMP(k) ((unsigned)2)
 
 /*
+ * Logical component indices (0-based) for the genuinely positional call sites —
+ * where one specific component is singled out, not iterated (an RSA/classical
+ * loader, the PQ "bits", the classic/pq component params). NOTE the numbering:
+ * component ALG1 is key1/alg1 at index 0 and ALG2 is key2/alg2 at index 1, so
+ * HYBRID_COMP_ALG1 == 0. These name the LOGICAL slot, independent of wire order
+ * (alg2_slot may place either component first on the wire). "Touch every
+ * component" sites use a plain loop to HYBRID_KEY_NCOMP instead; these few
+ * positional indices are what the N-slot step still has to generalize.
+ */
+enum { HYBRID_COMP_ALG1 = 0, HYBRID_COMP_ALG2 = 1 };
+
+/*
  * The i-th component key handle, as an LVALUE: call sites both read it and
  * assign/free it (key->key1 = ...; EVP_PKEY_free(...)), so this must be
  * assignable, not just a value. `*(cond ? &a : &b)` is a valid lvalue. When the
@@ -937,6 +949,12 @@ static inline const char *hybrid_key_comp_name(const HYBRID_KEY *k, unsigned i)
 static inline const char *hybrid_key_comp_group(const HYBRID_KEY *k, unsigned i)
 {
     return i == 0 ? HYBRID_KEY_ALG1_GROUP(k) : HYBRID_KEY_ALG2_GROUP(k);
+}
+
+/* Per-component property query (each falls back to the key's generic propq). */
+static inline const char *hybrid_key_comp_propq(const HYBRID_KEY *k, unsigned i)
+{
+    return i == 0 ? HYBRID_KEY_ALG1_PROPQ(k) : HYBRID_KEY_ALG2_PROPQ(k);
 }
 
 /* Per-component sizes (read from the constant size row copied in at key
