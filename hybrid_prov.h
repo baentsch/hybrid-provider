@@ -905,6 +905,88 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 }
 
 /*
+ * Component-indexed accessors (issue #135, 2->N generalization) -------------
+ *
+ * These are the stable interface the keymgmt/KEM/encoder/decoder paths will use
+ * instead of naming key1/key2, alg1/alg2 and the a1_/a2_ sizes directly, so a
+ * later step can replace the two fixed slots with an N-element component list
+ * WITHOUT touching call sites: only the bodies below change. Component indices
+ * are 0-based — component 0 == key1/alg1, component 1 == key2/alg2. The count is
+ * fixed at 2 today. Nothing calls these yet; they are introduced ahead of the
+ * mechanical call-site conversion (static inline / unused is warning-free).
+ */
+
+/* Number of components in the hybrid (fixed at 2 until the N-slot step). */
+#define HYBRID_KEY_NCOMP(k) ((unsigned)2)
+
+/*
+ * The i-th component key handle, as an LVALUE: call sites both read it and
+ * assign/free it (key->key1 = ...; EVP_PKEY_free(...)), so this must be
+ * assignable, not just a value. `*(cond ? &a : &b)` is a valid lvalue. When the
+ * storage becomes an array this is simply ((k)->comp[i]).
+ */
+#define HYBRID_KEY_COMP(k, i) (*((i) == 0 ? &(k)->key1 : &(k)->key2))
+
+/* Per-component identity (name / EC group), mapping the index onto the existing
+ * slot accessors so KEM and SIG info are handled uniformly. */
+static inline const char *hybrid_key_comp_name(const HYBRID_KEY *k, unsigned i)
+{
+    return i == 0 ? HYBRID_KEY_ALG1_NAME(k) : HYBRID_KEY_ALG2_NAME(k);
+}
+
+static inline const char *hybrid_key_comp_group(const HYBRID_KEY *k, unsigned i)
+{
+    return i == 0 ? HYBRID_KEY_ALG1_GROUP(k) : HYBRID_KEY_ALG2_GROUP(k);
+}
+
+/* Per-component sizes (read from the constant size row copied in at key
+ * construction). sig bytes are 0 for KEM rows and vice versa. */
+static inline size_t hybrid_key_comp_pub_bytes(const HYBRID_KEY *k, unsigned i)
+{
+    return i == 0 ? k->sizes->a1_pub : k->sizes->a2_pub;
+}
+
+static inline size_t hybrid_key_comp_prv_bytes(const HYBRID_KEY *k, unsigned i)
+{
+    return i == 0 ? k->sizes->a1_prv : k->sizes->a2_prv;
+}
+
+static inline size_t hybrid_key_comp_ss_bytes(const HYBRID_KEY *k, unsigned i)
+{
+    return i == 0 ? k->sizes->a1_ss : k->sizes->a2_ss;
+}
+
+static inline size_t hybrid_key_comp_ct_bytes(const HYBRID_KEY *k, unsigned i)
+{
+    return i == 0 ? k->sizes->a1_ct : k->sizes->a2_ct;
+}
+
+static inline size_t hybrid_key_comp_sig_bytes(const HYBRID_KEY *k, unsigned i)
+{
+    return i == 0 ? k->sizes->a1_sig : k->sizes->a2_sig;
+}
+
+/*
+ * Wire-order iterator: map a wire position (0-based, in concatenation order) to
+ * a component index. For KEMs the PQ component (component 1 / alg2) leads when
+ * alg2_slot == 0 (reverse-share, e.g. X25519MLKEM768); otherwise component 0
+ * leads. SIG keys always concatenate component 0 first. This centralizes the
+ * ordering that the encap/decap/encoder/decoder paths currently open-code as an
+ * `alg2_slot == 0 ? ... : ...` branch; with the N-slot step it becomes a lookup
+ * into the row's wire-ordered component list, same signature.
+ */
+static inline unsigned hybrid_wire_to_comp(const HYBRID_KEY *k,
+                                           unsigned wire_pos)
+{
+    int alg2_first = k->is_kem
+        && ((const HYBRID_KEM_INFO *)k->info)->alg2_slot == 0;
+
+    if (alg2_first)
+        return wire_pos == 0 ? 1u : 0u;
+    return wire_pos;
+}
+
+/*
  * Maximum hybrid signature size:
  * ENCODE_UINT32(comp1_len) + max component-1 sig + max component-2 sig.
  */
