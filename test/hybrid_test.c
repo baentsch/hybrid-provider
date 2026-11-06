@@ -16,6 +16,10 @@
 #include <openssl/params.h>
 #include <openssl/param_build.h>
 #include "hybrid_prov.h"   /* HYBRID_KEM/SIG tables + origin side-tables (#78) */
+#ifdef HYBRID_COMPOSITE
+# include "composite_kem_prov.h"   /* composite KEM master table (names + pq_alg),
+                                    * rolled into this generic KEM suite */
+#endif
 
 /* OSSL_SIGNATURE_PARAM_CONTEXT_STRING landed in core_names.h in OpenSSL 3.2. The
  * context-string test below exercises an operable hybrid signature, which needs
@@ -534,13 +538,16 @@ err:
 }
 
 /*
- * Test 5: Deterministic handling of malformed KEM ciphertext (issue #46).
+ * Test 5: Negative KEM paths — malformed ciphertext (issue #46) and undersized
+ * output buffers (EVP capacity contract).
  *
  * A truncated, oversized or otherwise wrong-length ciphertext must make
  * decapsulate fail cleanly (return <= 0, no crash/hang, no shared secret), and a
  * corrupted-but-correct-length ciphertext must never yield the encapsulator's
- * shared secret (no implicit success). All error paths are expected, so the
- * error queue is cleared after each.
+ * shared secret (no implicit success). Encapsulate must also reject an output
+ * buffer whose caller-supplied capacity (in *ctlen / *secretlen) is smaller than
+ * the required length, rather than overwriting the capacity and writing past the
+ * buffer. All error paths are expected, so the error queue is cleared after each.
  */
 static int test_kem_negative(OSSL_LIB_CTX *libctx, const char *algname)
 {
@@ -551,7 +558,7 @@ static int test_kem_negative(OSSL_LIB_CTX *libctx, const char *algname)
     size_t ctlen = 0, ss_enc_len = 0, ss_dec_len = 0;
     int ret = 0;
 
-    snprintf(label, sizeof(label), "kem malformed-ciphertext %s", algname);
+    snprintf(label, sizeof(label), "kem negative paths %s", algname);
     TEST_START(label);
 
     gctx = EVP_PKEY_CTX_new_from_name(libctx, algname, "provider=hybrid");
@@ -577,6 +584,34 @@ static int test_kem_negative(OSSL_LIB_CTX *libctx, const char *algname)
     if (EVP_PKEY_encapsulate(ectx, ctext, &ctlen, ss_enc, &ss_enc_len) <= 0) {
         TEST_FAIL("encapsulate failed");
         goto err;
+    }
+
+    /*
+     * Undersized output buffers must be rejected before any write: per the EVP
+     * contract *ctlen / *secretlen carry the caller's capacity in, so a capacity
+     * one byte short of the required length must fail rather than overwrite the
+     * length and write past the buffer. The buffers themselves stay full-sized, so
+     * a capacity-ignoring regression trips ASan on the out-of-bounds write as well
+     * as this return-value check. ctext/ss_enc are left intact for the reuse below
+     * because our encaps bails before writing.
+     */
+    {
+        size_t cap_ctlen = ctlen - 1, cap_sslen = ss_enc_len;
+
+        if (EVP_PKEY_encapsulate(ectx, ctext, &cap_ctlen, ss_enc,
+                                 &cap_sslen) > 0) {
+            TEST_FAIL("encapsulate accepted undersized ciphertext buffer");
+            goto err;
+        }
+        ERR_clear_error();
+        cap_ctlen = ctlen;
+        cap_sslen = ss_enc_len - 1;
+        if (EVP_PKEY_encapsulate(ectx, ctext, &cap_ctlen, ss_enc,
+                                 &cap_sslen) > 0) {
+            TEST_FAIL("encapsulate accepted undersized secret buffer");
+            goto err;
+        }
+        ERR_clear_error();
     }
 
     dctx = EVP_PKEY_CTX_new_from_pkey(libctx, key, "provider=hybrid");
@@ -642,6 +677,44 @@ err:
     EVP_PKEY_free(key);
     return ret;
 }
+
+#ifdef HYBRID_COMPOSITE
+/*
+ * Composite KEMs self-skip when their components are unavailable: the ML-KEM half
+ * needs the default provider's native ML-KEM (3.5+), so the standardized tier is
+ * not registered below 3.5, and the experimental tier's PQ half (Frodo/BIKE/HQC)
+ * needs oqsprovider. Resolve the PQ component from ANY loaded provider and confirm
+ * the composite itself is registered (keygen) before running the shared KEM tests,
+ * so an unbuilt combo prints SKIP rather than FAIL. Mirrors the self-skip the
+ * former composite_kem_prov_test did per combo.
+ */
+static int composite_kem_available(OSSL_LIB_CTX *libctx,
+                                   const COMPOSITE_KEM_INFO *info)
+{
+    EVP_PKEY_CTX *c;
+    EVP_PKEY *k = NULL;
+    int ok;
+
+    c = EVP_PKEY_CTX_new_from_name(libctx, info->pq_alg, NULL);
+    ok = c != NULL && EVP_PKEY_keygen_init(c) > 0;
+    EVP_PKEY_CTX_free(c);
+    if (!ok) {
+        printf("  [%s] SKIP (%s unavailable)\n", info->name, info->pq_alg);
+        ERR_clear_error();
+        return 0;
+    }
+    c = EVP_PKEY_CTX_new_from_name(libctx, info->name, "provider=hybrid");
+    ok = c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &k) > 0;
+    EVP_PKEY_free(k);
+    EVP_PKEY_CTX_free(c);
+    if (!ok) {
+        printf("  [%s] SKIP (not registered here)\n", info->name);
+        ERR_clear_error();
+        return 0;
+    }
+    return 1;
+}
+#endif /* HYBRID_COMPOSITE */
 
 /*
  * Signature test: self-consistency — keygen, sign, verify.
@@ -1177,6 +1250,34 @@ int main(int argc, char **argv)
         if (bcrust_prov != NULL)
             OSSL_PROVIDER_unload(bcrust_prov);
     }
+
+#ifdef HYBRID_COMPOSITE
+    /*
+     * Composite (LAMPS) ML-KEM family — the same generic KEM encaps/decaps tests
+     * as the MLX builtins above, driven from the composite master table. Rolled in
+     * here rather than kept in a bespoke composite_kem_prov_test.c; the key-file
+     * (SPKI/PKCS8) round-trip that test also did lives with the other KEM
+     * serialization coverage in hybrid_kem_encode_test. The experimental tier's PQ
+     * half comes from oqsprovider, loaded optionally; unavailable combos self-skip.
+     */
+    {
+        OSSL_PROVIDER *oqs_prov = OSSL_PROVIDER_load(libctx, "oqsprovider");
+
+        ERR_clear_error();
+        printf("[composite (LAMPS) ML-KEM]\n");
+        for (size_t i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++) {
+            const COMPOSITE_KEM_INFO *info = &composite_kem_table[i];
+
+            if (!composite_kem_available(libctx, info))
+                continue;
+            test_self_consistency(libctx, info->name, NULL);
+            test_kem_negative(libctx, info->name);
+        }
+        if (oqs_prov != NULL)
+            OSSL_PROVIDER_unload(oqs_prov);
+        printf("\n");
+    }
+#endif
 
     /* --- Signature tests --- */
     {

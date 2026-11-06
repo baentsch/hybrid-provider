@@ -174,8 +174,9 @@ asserts the version contract per running OpenSSL:
 - **composite KEMs** — standardized (ML-KEM) tier OpenSSL **3.5+** (seed private
   key); experimental (FrodoKEM/BIKE/HQC) tier **3.2+** (raw private key, no seed
   API). Below 3.5 the standardized ML-KEM combos self-deactivate and only the
-  experimental composite KEMs are served; `composite_kem_prov_test` self-skips the
-  rows it cannot serve on a given version.
+  experimental composite KEMs are served; the composite rows in `hybrid_test`
+  (iterated under `-DHYBRID_COMPOSITE`) self-skip the rows it cannot serve on a
+  given version.
 
 The provider's encodable KEMs are also exercised as CMS `EnvelopedData` KEMRI
 recipients (RFC 9629, `hybrid_cms_kem_test`): per composite combo, an in-process
@@ -317,6 +318,22 @@ files when `HYBRID_KEM_ENCODERS=ON` for the few KEMs with an assigned OID; those
 round-trips are covered by `hybrid_encode_test` / `hybrid_kem_encode_test`. Only
 the MLX KEM groups (which have no key-file encoders anywhere) stay non-reproducible
 as CLI key files.
+
+**Decoder provider selection changed in OpenSSL 3.5.** When the hybrid provider
+and [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) are co-loaded
+and both register the same KEM keytype name + OID (the standardized MLX and
+`mlkem512` rows below 3.5, before those cede to the default provider), the
+`provider=` query on `OSSL_DECODER_CTX_new_for_pkey()` is only honoured from
+OpenSSL **3.5**. On **3.4** it is ignored entirely — even a bogus `provider=` is a
+no-op — so a decoded key is owned by whichever provider the decoder chain reaches
+first (observed: SPKI → oqsprovider, PKCS#8 → hybrid), regardless of the requested
+property. `hybrid_kem_encode_test` therefore pins each encapsulate/decapsulate to
+the decoded key's **actual** owning provider (`EVP_PKEY_get0_provider()`), not the
+property it asked the decoder for; otherwise the KEM fetch crosses providers and
+`evp_kem_init` fails with "operation not supported for this keytype" on 3.4. The
+round-trip still proves the serialized key is consumable and that its shared
+secret matches the original. In real drop-in deployments the ambiguity does not
+arise, because ceding leaves only one provider serving a given name.
 
 The hybrid provider is configured exclusively through an `openssl.cnf` (see
 [Configuration](USAGE.md#configuration) in the usage guide), so the CLI harness

@@ -28,6 +28,9 @@
 #include <openssl/decoder.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"   /* HYBRID_KEM_* master table (issue #78) */
+#ifdef HYBRID_COMPOSITE
+# include "composite_kem_prov.h"   /* composite KEM master table (names + pq_alg) */
+#endif
 
 static int tests, passed, failed;
 
@@ -143,6 +146,31 @@ end:
 }
 
 /*
+ * Property query pinning an operation to a key's ACTUAL owning provider. When
+ * two co-loaded providers register the same keytype name+OID (hybrid and
+ * oqsprovider both serve the MLX/mlkem512 rows below 3.5), OSSL_DECODER cannot be
+ * steered to one of them: the "provider=" query on OSSL_DECODER_CTX_new_for_pkey
+ * is only honoured from OpenSSL 3.5 (verified: on 3.4 the query — even a bogus
+ * one — is ignored and the decoded key's owner is fixed by decoder-chain order,
+ * SPKI->oqs / PKCS8->hybrid). So the key a decode hands back may be owned by
+ * either provider regardless of the requested dstprop. Operating it under a
+ * mismatched provider= then fails evp_kem_init ("operation not supported for this
+ * keytype"). Deriving the op property from the key's real provider makes the KEM
+ * fetch match the keymgmt on every OpenSSL version; the round-trip still proves
+ * the serialized key is consumable and its shared secret matches the original.
+ */
+static const char *key_prop(EVP_PKEY *k, char *buf, size_t n)
+{
+    const OSSL_PROVIDER *p = k != NULL ? EVP_PKEY_get0_provider(k) : NULL;
+    const char *name = p != NULL ? OSSL_PROVIDER_get0_name(p) : NULL;
+
+    if (name == NULL)
+        return NULL;
+    snprintf(buf, n, "provider=%s", name);
+    return buf;
+}
+
+/*
  * Encapsulate to `encaps_key` (via encaps_prop) and decapsulate with
  * `decaps_key` (via decaps_prop); the shared secrets must match. Used to prove a
  * key survived a key-file round-trip across the two providers.
@@ -173,6 +201,7 @@ static void one_dir(OSSL_LIB_CTX *ctx, const char *alg, const char *label,
     EVP_PKEY *a = NULL, *pub_b = NULL, *prv_b = NULL;
     unsigned char *spki = NULL, *p8 = NULL;
     size_t spkilen = 0, p8len = 0;
+    char bprop[64];
 
     /* --- SPKI (public) round-trip --- */
     tests++;
@@ -184,8 +213,10 @@ static void one_dir(OSSL_LIB_CTX *ctx, const char *alg, const char *label,
                   &spki, &spkilen)
         && (pub_b = decode(ctx, "SubjectPublicKeyInfo", EVP_PKEY_PUBLIC_KEY,
                            dstprop, spki, spkilen)) != NULL
-        /* encaps to the decoded pub (dst), decaps with the original priv (src) */
-        && ss_match(ctx, pub_b, dstprop, a, srcprop)) {
+        /* encaps to the decoded pub (its real owner, see key_prop), decaps with
+         * the original priv (src) */
+        && ss_match(ctx, pub_b, key_prop(pub_b, bprop, sizeof(bprop)),
+                    a, srcprop)) {
         printf("PASS\n"); passed++;
     } else {
         printf("FAIL\n"); ERR_print_errors_fp(stdout); failed++;
@@ -199,8 +230,10 @@ static void one_dir(OSSL_LIB_CTX *ctx, const char *alg, const char *label,
         && encode(a, EVP_PKEY_KEYPAIR, "PrivateKeyInfo", srcprop, &p8, &p8len)
         && (prv_b = decode(ctx, "PrivateKeyInfo", EVP_PKEY_KEYPAIR, dstprop,
                            p8, p8len)) != NULL
-        /* encaps to the original pub (src), decaps with the decoded priv (dst) */
-        && ss_match(ctx, a, srcprop, prv_b, dstprop)) {
+        /* encaps to the original pub (src), decaps with the decoded priv (its
+         * real owner, see key_prop) */
+        && ss_match(ctx, a, srcprop, prv_b,
+                    key_prop(prv_b, bprop, sizeof(bprop)))) {
         printf("PASS\n"); passed++;
     } else {
         printf("FAIL\n"); ERR_print_errors_fp(stdout); failed++;
@@ -214,11 +247,43 @@ static void one_dir(OSSL_LIB_CTX *ctx, const char *alg, const char *label,
     EVP_PKEY_CTX_free(g);
 }
 
+#ifdef HYBRID_COMPOSITE
+/*
+ * A composite KEM combo is key-file-testable here when its PQ component resolves
+ * (from ANY provider: ML-KEM from the default provider on 3.5+, Frodo/BIKE/HQC
+ * from oqsprovider) and the composite itself is registered in the hybrid provider
+ * (keygen). A combo that is not built on this version (standardized ML-KEM tier
+ * below 3.5) or whose PQ half is absent self-skips rather than failing.
+ */
+static int composite_available(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info)
+{
+    EVP_PKEY_CTX *c;
+    EVP_PKEY *k = NULL;
+    int ok;
+
+    c = EVP_PKEY_CTX_new_from_name(ctx, info->pq_alg, NULL);
+    ok = c != NULL && EVP_PKEY_keygen_init(c) > 0;
+    EVP_PKEY_CTX_free(c);
+    if (!ok) {
+        ERR_clear_error();
+        return 0;
+    }
+    c = EVP_PKEY_CTX_new_from_name(ctx, info->name, "provider=hybrid");
+    ok = c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &k) > 0;
+    EVP_PKEY_free(k);
+    EVP_PKEY_CTX_free(c);
+    if (!ok)
+        ERR_clear_error();
+    return ok;
+}
+#endif /* HYBRID_COMPOSITE */
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
     const char *mods = getenv("OPENSSL_MODULES");
     const char *sample = NULL;
+    OSSL_PROVIDER *oqs;
     size_t i;
 
     /* First encodable row — representative for the HYBRID_KEM_ENCODERS probe. */
@@ -235,43 +300,70 @@ int main(void)
         fprintf(stderr, "failed to load default/hybrid\n");
         return 1;
     }
-    if (OSSL_PROVIDER_load(ctx, "oqsprovider") == NULL) {
-        printf("oqsprovider unavailable -- SKIPPING\n");
-        return 0;
-    }
-    if (sample == NULL || !hybrid_kem_encoders_present(ctx, sample)) {
-        printf("hybrid provider built without HYBRID_KEM_ENCODERS -- SKIPPING\n");
-        return 0;
-    }
+    /* oqsprovider is the peer for the hybrid<->oqs interop section AND the source
+     * of the experimental composite tier's PQ half; optional, so its absence only
+     * skips the sections that need it, not the whole test. */
+    oqs = OSSL_PROVIDER_load(ctx, "oqsprovider");
+    ERR_clear_error();
 
-    printf("hybrid <-> oqsprovider KEM key-file interop\n");
-    printf("==========================================\n");
-    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
-        const char *alg = hybrid_kem_table[i].hybrid_name;
+    /*
+     * Section 1: hybrid<->oqsprovider KEM key-file interop. Needs both the peer
+     * (oqsprovider) and this provider's HYBRID_KEM_ENCODERS; otherwise skipped.
+     */
+    if (oqs != NULL && sample != NULL && hybrid_kem_encoders_present(ctx, sample)) {
+        printf("hybrid <-> oqsprovider KEM key-file interop\n");
+        printf("==========================================\n");
+        for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+            const char *alg = hybrid_kem_table[i].hybrid_name;
 
-        if (!KEM_IS_ENCODABLE(i))
-            continue;
-        if (!provider_has(ctx, alg, "provider=oqsprovider")) {
-            /*
-             * No oqsprovider peer: an experimental private-arc hybrid that only
-             * this provider owns (e.g. exphyb_p256_frodo640aes, OID 1.3.9999.99.x).
-             * Exercise our OWN encode + decode with a hybrid->hybrid self round-
-             * trip. decode() uses a keytype-agnostic OSSL_DECODER (keytype NULL),
-             * so this drives the OID-driven generic SPKI decode -- the path that
-             * `cms -encrypt -recip <hybrid-cert-file>` relies on and that had NO
-             * coverage before (the cross-provider peer check skipped these rows,
-             * which is exactly how the decode gap went unnoticed). It works only
-             * because the provider registers the hybrid KEM OID<->name mapping
-             * (hybrid_prov.c), so OpenSSL resolves the SPKI OID to our keytype. */
-            one_dir(ctx, alg, "hybrid->hybrid self", "provider=hybrid",
+            if (!KEM_IS_ENCODABLE(i))
+                continue;
+            if (!provider_has(ctx, alg, "provider=oqsprovider")) {
+                /*
+                 * No oqsprovider peer: an experimental private-arc hybrid that only
+                 * this provider owns (e.g. exphyb_p256_frodo640aes, OID 1.3.9999.99.x).
+                 * Exercise our OWN encode + decode with a hybrid->hybrid self round-
+                 * trip. decode() uses a keytype-agnostic OSSL_DECODER (keytype NULL),
+                 * so this drives the OID-driven generic SPKI decode -- the path that
+                 * `cms -encrypt -recip <hybrid-cert-file>` relies on and that had NO
+                 * coverage before (the cross-provider peer check skipped these rows,
+                 * which is exactly how the decode gap went unnoticed). It works only
+                 * because the provider registers the hybrid KEM OID<->name mapping
+                 * (hybrid_prov.c), so OpenSSL resolves the SPKI OID to our keytype. */
+                one_dir(ctx, alg, "hybrid->hybrid self", "provider=hybrid",
+                        "provider=hybrid");
+                continue;
+            }
+            one_dir(ctx, alg, "hybrid->oqs", "provider=hybrid",
+                    "provider=oqsprovider");
+            one_dir(ctx, alg, "oqs->hybrid", "provider=oqsprovider",
                     "provider=hybrid");
-            continue;
         }
-        one_dir(ctx, alg, "hybrid->oqs", "provider=hybrid",
-                "provider=oqsprovider");
-        one_dir(ctx, alg, "oqs->hybrid", "provider=oqsprovider",
-                "provider=hybrid");
+    } else {
+        printf("hybrid <-> oqsprovider KEM key-file interop -- SKIPPING "
+               "(oqsprovider or HYBRID_KEM_ENCODERS unavailable)\n");
     }
+
+#ifdef HYBRID_COMPOSITE
+    /*
+     * Section 2: composite (LAMPS) KEM key-file round-trips. Composite encoders
+     * ride with HYBRID_COMPOSITE, independent of HYBRID_KEM_ENCODERS, and the
+     * default provider owns no composite KEM, so every combo is a hybrid->hybrid
+     * self round-trip (same OID-driven decode path as the experimental hybrids).
+     * Formerly composite_kem_prov_test steps 3-4; moved here so all KEM key-file
+     * serialization lives in one place. Unavailable combos self-skip.
+     */
+    printf("\ncomposite (LAMPS) KEM key-file round-trips\n");
+    printf("=========================================\n");
+    for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++) {
+        const COMPOSITE_KEM_INFO *info = &composite_kem_table[i];
+
+        if (composite_available(ctx, info))
+            one_dir(ctx, info->name, "composite self", "provider=hybrid",
+                    "provider=hybrid");
+    }
+#endif /* HYBRID_COMPOSITE */
+
     printf("\nResults: %d/%d passed, %d failed\n", passed, tests, failed);
 
     OSSL_LIB_CTX_free(ctx);
