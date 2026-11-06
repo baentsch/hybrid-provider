@@ -112,6 +112,67 @@ the tables drive keymgmt, KEM/sig dispatch and capability advertising. Update th
 inventory tables in the [README](README.md#supported-algorithms) to match, and
 add coverage to the relevant test.
 
+### Step by step
+
+Self-contained recipe for one new hybrid KEM or signature. Component sizes are
+compile-time constants (not computed at runtime), so a new row needs a matching
+size row — which you do **not** hand-count: a generator derives them from live
+component keygens.
+
+1. **Add the master-list row** in `hybrid_prov.h` — `HYBRID_SIG_LIST` for a
+   signature, `HYBRID_KEM_LIST` for a KEM. Each row's `X(...)` field order is
+   documented in the comment directly above the list. The component names
+   (`alg1` / `alg2`) are the EVP fetch names their provider registers (e.g.
+   `"MLDSA65"`, `"snova2454"`, `"CROSSrsdp128balanced"`); a classical EC half
+   carries its curve in `alg1_group` / `alg2_group`, everything else is `NULL`.
+   For identifiers, follow
+   [Experimenting with a provider-private combination](#experimenting-with-a-provider-private-combination-no-interop-peer)
+   below: operation-only (`NULL` OID, code point `0`) to start, or private-use
+   identifiers to make it serialize/negotiate.
+2. **Add a placeholder size row** at the **same ordinal** in the matching array
+   (`hybrid_sig_sizes[]` / `hybrid_kem_sizes[]`, just below the list) — the index
+   is positional (`HYBRID_*_IDX_*`), so it must line up with your new list row:
+
+   ```c
+   { 0 },   /* snova2454_crossrsdp128balanced */   /* filled in step 4 */
+   ```
+   (A non-concatenation KEM additionally needs a `hybrid_kem_combiner[]` entry —
+   see the combiner note above.)
+3. **Build the provider**, with the component providers reachable. If a component
+   lives in oqsprovider (any non-ML-DSA/ML-KEM PQ family: Falcon, MAYO, SNOVA,
+   CROSS, UOV, MQOM, Frodo, BIKE, HQC), put an oqsprovider built against the
+   *same* OpenSSL on the module path — `./test/setup_oqs_interop.sh` builds and
+   symlinks one into the build dir. Without it the new row self-skips
+   "component provider absent" (and the generator can't resolve its sizes).
+
+   ```sh
+   cmake --build build -j4
+   ```
+4. **Generate the real sizes** and paste them over the placeholder. From the
+   build dir, `emit` re-derives every row from live keygens and prints both size
+   tables as C initializers:
+
+   ```sh
+   cd build
+   OPENSSL_MODULES=$PWD ./hybrid_sizes_test emit     # add LD_LIBRARY_PATH=<ossl>/lib64 if needed
+   ```
+   Copy the line for your new algorithm (a row that printed `{ 0 } ... UNRESOLVED`
+   means its components were not fetchable — fix step 3 first) back into the array
+   from step 2, then rebuild.
+5. **Verify.** The table-driven tests pick the row up automatically:
+   `hybrid_sizes_test` goes green once the sizes match (it fails CI on any drift);
+   `hybrid_leakcheck_test` round-trips it in-provider (keygen / sign-verify or
+   encaps-decaps / SPKI+PKCS8 encode→decode→`eq`); a non-zero code point pulls it
+   into `hybrid_cert_tls_test`, an OID into `hybrid_cms_test`, and both into
+   `hybrid_capability_test`.
+
+   ```sh
+   ctest
+   ```
+6. **Update the README counts and inventory tables**
+   ([Supported algorithms](README.md#supported-algorithms)); `hybrid_count_test`
+   fails the suite until the counts match the tables.
+
 A hybrid KEM whose shared secret is **not** the plain concatenation of the
 component secrets (the RFC 10024 default) selects a combiner in
 `hybrid_kem_combiner[]` (next to `hybrid_kem_sizes[]` in `hybrid_prov.h`), keyed
@@ -133,6 +194,57 @@ X-Wing (`draft-connolly-cfrg-xwing-kem`, a SHA3-256 strongly-binding combiner) i
 the standards-backed instance — additionally pinned by a KAT against the draft's
 reference vectors (`xwing_kat_test`) with a weekly vector-coherence guard
 (`scripts/check-xwing-kat-drift.sh`).
+
+### Experimenting with a provider-private combination (no interop peer)
+
+A first principle of this provider: **any component reachable through the public
+EVP API can be paired with any other, from any provider.** The hybrid code never
+touches the raw cryptography — it orchestrates the components over EVP and is
+agnostic to which provider implements them (steer each slot with
+`alg1-propquery` / `alg2-propquery`; see
+[USAGE.md](USAGE.md#selecting-component-providers-alg1-propquery--alg2-propquery),
+where sourcing a hybrid's PQ half from
+[wolfProvider](https://github.com/wolfSSL/wolfProvider) is a worked example). So
+experimenting with a pairing no standard defines and no other provider serves is
+deliberately cheap.
+
+Such a combination has **no interop peer**, so do not invent — or reuse — a
+standardized identifier for it. Two levels, cheapest first:
+
+- **Operation-only.** Leave the row's `oid` `NULL` and its TLS code point `0`. The
+  combination can be keygen'd, signed/verified or encaps/decaps'd and KAT-checked,
+  but is not serializable (no X.509/PKCS8/CMS) or TLS-negotiable. This is the
+  smallest possible experiment — one table line (plus a `hybrid_kem_combiner[]`
+  entry for a non-concatenation KEM).
+- **Serializable / TLS-negotiable.** Give it **private-use** identifiers: an OID
+  in this provider's `1.3.9999.99.*` arc and a TLS code point in the private-use
+  range (`0xFE00..0xFFFF` — signatures use the `0xFFE5..` sub-block after the
+  composite rows; KEMs the NamedGroup private-use space). **Never shadow a
+  standardized identifier**; `hybrid_capability_test` enforces that every code
+  point sits in a known IANA-assigned span or a provisional/private-use range.
+  The `xwing_*` KEM rows (operation-only) and the §3.4 signature rows
+  `mldsa65_falcon1024` / `mldsa44_mayo1` / `falcon512_mayo1` / `mldsa65_p256`
+  (private-use, issue #126) are the worked examples.
+
+For **signatures** the sign/verify path, the construction, and the private-key
+serialization are all **slot-symmetric** (issues #114 / #125 / #126), so either
+slot may be classical (ECDSA/RSA, with its curve on `alg1_group` / `alg2_group`)
+or md-less PQ, in either order, with no code change. For a **PQ/PQ** signature
+`nist_level` no longer selects a digest; set it to the **min** of the two
+components' NIST categories — the advertised TLS security bits, the weaker
+survivor if one scheme is broken (see [STANDARDS.md §3.4](STANDARDS.md)).
+
+The table-driven tests then pick the row up automatically: `hybrid_leakcheck_test`
+round-trips it in-provider (keygen / sign-verify / SPKI+PKCS8 encode→decode→`eq`);
+a non-zero code point pulls it into `hybrid_cert_tls_test`, and an OID into
+`hybrid_cms_test`. Cross-provider tests (`hybrid_encode_test`,
+`hybrid_matrix_test`, `hybrid_coexist_test`) skip a row by probing whether another
+provider actually serves the name — not by whether it has an OID — so a
+provider-private row is correctly left out of the interop sweep.
+
+A fully **config-declared** form — arbitrary pairings at runtime with no table
+edit or rebuild — is the planned "define-a-hybrid" mechanism, tracked in
+[#112](https://github.com/baentsch/hybrid-provider/issues/112).
 
 ### The oqsprovider coverage invariant
 

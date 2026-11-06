@@ -6,11 +6,12 @@
  * byte-compatible with oqsprovider so the two interoperate on key files.
  *
  * SPKI = AlgorithmIdentifier(OID) + BIT STRING(pubblob), where
- *   pubblob = ENCODE_UINT32(classical_pub_len)
- *             || classical_pub || pq_pub          (alg2_slot == 1, classical first)
- *             || pq_pub || classical_pub          (alg2_slot == 0, PQ first)
- * The UINT32 always encodes the classical component length; the classical part
- * is the raw EC point / X25519 key. Signature hybrids are always classical-first.
+ *   pubblob = ENCODE_UINT32(slot1_pub_len) || slot1_pub || slot2_pub
+ * The UINT32 encodes the slot-1 component's public-key length. For KEMs slot 1 is
+ * the classical share unless alg2_slot == 0 (reverse-share, PQ first). Signature
+ * hybrids are classical-first by oqsprovider convention, except the provider-
+ * private §3.4 rows that put a PQ or EC component in slot 1 (the private key is
+ * serialized slot-symmetrically by component kind; see hybrid_encode_priv_blob).
  */
 
 #include "hybrid_prov.h"
@@ -127,21 +128,6 @@ static int get_component_pub(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
     }
 }
 
-/*
- * oqsprovider's classical component set — rendered in its on-wire form
- * (EC/RSA DER, raw X25519/X448, or a BN scalar) via get_component_{priv,pub}
- * rather than as a raw PQ octet. EC carries a named curve; RSA and the raw-key
- * types do not. Lets the component dump be slot-symmetric: a classical half is
- * rendered the same way whichever slot (1 or 2) it occupies.
- */
-static int component_is_classical(const char *alg, const char *group)
-{
-    return group != NULL                   /* any named-curve EC */
-        || strcmp(alg, "RSA") == 0
-        || strcmp(alg, "X25519") == 0
-        || strcmp(alg, "X448") == 0;
-}
-
 int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
     unsigned char *cbuf = NULL, *pqbuf = NULL, *buf = NULL;
@@ -185,11 +171,101 @@ end:
 }
 
 /*
- * Build the oqsprovider private-key blob:
+ * Serialize one component's private material in this provider's on-wire form,
+ * dispatched by kind so a half renders the same way whichever slot it occupies:
+ * a classical component via get_component_priv (i2d_PrivateKey DER for EC/RSA, or
+ * raw for X25519/X448); a PQ component as raw private || raw public (the public
+ * appended so a research keytype that cannot re-derive it still decodes to a
+ * complete key). `prv`/`pub` are the fixed PQ component sizes.
+ *
+ * This is a transient scratch buffer holding private-key material, so it is a
+ * regular-heap allocation wiped on free (OPENSSL_clear_free), not a secure-heap
+ * one: the serialized private key unavoidably lands on the regular heap at the
+ * ASN.1/PKCS#8 stage regardless (so securing the scratch is only partial), and
+ * the fixed-size secure arena is a scarce resource that large PQ private keys
+ * (e.g. UOV's ~405 KB uncompressed secret key) can exhaust, turning a
+ * defence-in-depth nicety into an encode failure. Caller frees *buf with
+ * OPENSSL_clear_free.
+ */
+static int encode_component_priv(EVP_PKEY *pkey, const char *alg,
+                                 const char *group, size_t prv, size_t pub,
+                                 unsigned char **buf, size_t *len)
+{
+    unsigned char *b;
+    size_t got;
+
+    if (hybrid_component_is_classical(alg, group))
+        return get_component_priv(pkey, buf, len);
+
+    if ((b = OPENSSL_malloc(prv + pub)) == NULL)
+        return 0;
+    if (EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PRIV_KEY,
+                                        b, prv, &got) <= 0 || got != prv
+        || EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
+                                           b + prv, pub, &got) <= 0 || got != pub) {
+        OPENSSL_clear_free(b, prv + pub);
+        return 0;
+    }
+    *buf = b;
+    *len = prv + pub;
+    return 1;
+}
+
+/*
+ * Slot-symmetric signature private blob:
+ *   UINT32(len1) || slot1 || slot2
+ * where each slot is encode_component_priv() of that slot's component. For the
+ * classical-first rows this is byte-identical to the historical layout
+ * (UINT32(classical_der_len) || classical_DER || pq_priv || pq_pub); a PQ-first
+ * or EC-in-slot-2 row simply reverses which kind lands where. Signatures only —
+ * KEMs keep their alg2_slot-ordered layout below. Regular-heap, wiped on free;
+ * caller frees *out with OPENSSL_clear_free.
+ */
+static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
+                                size_t *outlen)
+{
+    unsigned char *b1 = NULL, *b2 = NULL, *buf = NULL;
+    size_t l1 = 0, l2 = 0, total = 0;
+    int ret = 0;
+
+    if (!encode_component_priv(key->key1, HYBRID_KEY_ALG1_NAME(key),
+                               HYBRID_KEY_ALG1_GROUP(key),
+                               key->sizes->a1_prv, key->sizes->a1_pub, &b1, &l1)
+        || !encode_component_priv(key->key2, HYBRID_KEY_ALG2_NAME(key),
+                                  HYBRID_KEY_ALG2_GROUP(key),
+                                  key->sizes->a2_prv, key->sizes->a2_pub,
+                                  &b2, &l2))
+        goto err;
+
+    total = sizeof(uint32_t) + l1 + l2;
+    if ((buf = OPENSSL_malloc(total)) == NULL)
+        goto err;
+    buf[0] = (unsigned char)(l1 >> 24);
+    buf[1] = (unsigned char)(l1 >> 16);
+    buf[2] = (unsigned char)(l1 >> 8);
+    buf[3] = (unsigned char)(l1);
+    memcpy(buf + sizeof(uint32_t), b1, l1);
+    memcpy(buf + sizeof(uint32_t) + l1, b2, l2);
+
+    *out = buf;
+    *outlen = total;
+    buf = NULL;
+    ret = 1;
+err:
+    /* All three are regular-heap private-key scratch, wiped on free. */
+    OPENSSL_clear_free(b1, l1);
+    OPENSSL_clear_free(b2, l2);
+    OPENSSL_clear_free(buf, total);
+    return ret;
+}
+
+/*
+ * Build the private-key blob. Signatures use the slot-symmetric layout above.
+ * KEMs keep oqsprovider's alg2_slot-ordered layout:
  *   UINT32(classical_der_len) || classical_privkey_DER || pq_privkey || pq_pubkey
- * The classical private key is i2d_PrivateKey DER (EC/RSA); the PQ private and
- * (appended, matching oqsprovider's default) PQ public keys are raw. Classical
- * first for signature hybrids. Caller frees *out with OPENSSL_clear_free.
+ * (PQ private first for reverse-share KEMs). Regular-heap, wiped on free (see
+ * encode_component_priv for why not the secure heap); caller frees *out with
+ * OPENSSL_clear_free.
  */
 int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
@@ -199,6 +275,8 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
 
     if (!hybrid_have_prvkey(key))
         return 0;
+    if (!key->is_kem)                  /* signatures: slot-symmetric by kind */
+        return encode_priv_blob_sig(key, out, outlen);
     a2v = key->sizes->a2_prv;
     a2p = key->sizes->a2_pub;
 
@@ -206,7 +284,7 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
         return 0;
 
     total = sizeof(uint32_t) + clen + a2v + a2p;
-    if ((buf = OPENSSL_secure_malloc(total)) == NULL)
+    if ((buf = OPENSSL_malloc(total)) == NULL)
         goto err;
 
     /* UINT32 big-endian classical private-key length */
@@ -240,7 +318,7 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
     ret = 1;
 err:
     OPENSSL_clear_free(cbuf, clen);
-    OPENSSL_secure_clear_free(buf, total);
+    OPENSSL_clear_free(buf, total);
     return ret;
 }
 
@@ -266,13 +344,13 @@ static PKCS8_PRIV_KEY_INFO *hybrid_key_to_p8info(HYBRID_KEY *key)
     /* Transfers ownership of oid and inner to p8. */
     if (!PKCS8_pkey_set0(p8, oid, 0, V_ASN1_UNDEF, NULL, inner, innerlen))
         goto err;
-    OPENSSL_secure_clear_free(blob, bloblen);
+    OPENSSL_clear_free(blob, bloblen);
     ASN1_OCTET_STRING_free(oct);
     return p8;
 err:
     ASN1_OBJECT_free(oid);
     OPENSSL_free(inner);
-    OPENSSL_secure_clear_free(blob, bloblen);
+    OPENSSL_clear_free(blob, bloblen);
     ASN1_OCTET_STRING_free(oct);
     PKCS8_PRIV_KEY_INFO_free(p8);
     return NULL;
@@ -545,7 +623,7 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     if (priv) {
         if (!get_component_priv(hkey->key1, &slot1buf, &slot1len))
             goto end;
-        if (component_is_classical(HYBRID_KEY_ALG2_NAME(hkey),
+        if (hybrid_component_is_classical(HYBRID_KEY_ALG2_NAME(hkey),
                                    HYBRID_KEY_ALG2_GROUP(hkey))) {
             if (!get_component_priv(hkey->key2, &slot2buf, &slot2len))
                 goto end;
@@ -560,7 +638,7 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     } else {
         if (!get_component_pub(hkey->key1, &slot1buf, &slot1len))
             goto end;
-        if (component_is_classical(HYBRID_KEY_ALG2_NAME(hkey),
+        if (hybrid_component_is_classical(HYBRID_KEY_ALG2_NAME(hkey),
                                    HYBRID_KEY_ALG2_GROUP(hkey))) {
             if (!get_component_pub(hkey->key2, &slot2buf, &slot2len))
                 goto end;

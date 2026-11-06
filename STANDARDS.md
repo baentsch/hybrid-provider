@@ -328,7 +328,7 @@ crypto-path generalization). Construction is slot-symmetric too: each slot carri
 its own group (`alg1_group`/`alg2_group`), so a classical **EC** component may
 occupy either slot, while RSA or any PQ algorithm is groupless
 ([#125](https://github.com/baentsch/hybrid-provider/issues/125) — the
-construction-symmetry follow-up). Four operation-only rows exercise it, under the
+construction-symmetry follow-up). Four provider-private rows exercise it, under the
 same `uint32(len1) || sig1 || sig2` wire layout (the length prefix is on
 component 1 regardless of kind, so a variable-length Falcon component 1 is handled
 as naturally as ECDSA DER):
@@ -341,11 +341,21 @@ as naturally as ECDSA DER):
 | `mldsa65_p256` | ML-DSA-65 + P-256 | a classical **EC** (digest-taking) half in slot 2, via `alg2_group`; md-less + digest-taking, PQ-first |
 
 No standard defines a PQ/PQ concatenation signature (RFC 9955 gives only the
-taxonomy) and there is no interop peer, so — like the `xwing_*` KEM rows — these
-carry **no OID and no TLS code point**: sign/verify only, within this provider.
-Giving them private-use identifiers so they serialize (X.509/CMS) and negotiate
-(TLS) — and the security-bits policy that then becomes live — is tracked in
-[#126](https://github.com/baentsch/hybrid-provider/issues/126). The context
+taxonomy) and there is no interop peer, so these carry **private-use identifiers**
+— an OID in this provider's `1.3.9999.99.*` arc and a TLS SignatureScheme in the
+private-use range (`0xFFE5..`, the sub-block after the composite signatures) —
+which make them serializable (X.509/PKCS8/CMS) and TLS-negotiable **within this
+provider only** ([#126](https://github.com/baentsch/hybrid-provider/issues/126);
+the round-trips are self-consistency, not cross-provider, and the code point /
+security bits are self-asserted against the private-use range only, with no origin
+peer). The advertised TLS security bits take the **min** of the two components'
+NIST categories: a concatenation signature's forgery resistance is max *while both
+schemes stand*, but a PQ/PQ pair exists to survive one being cryptanalytically
+broken, and a rational adversary breaks the stronger half — so the honest
+guaranteed floor is the weaker survivor (consistent with the "security = weakest
+component" rule above; the classical×PQ rows, by the same "trusted survivor"
+logic, advertise the PQ half's level because the classical half is the one quantum
+is expected to break). The context
 string, when set, is applied to every md-less component (so both halves of a PQ/PQ
 pair); a component that does not support one ignores it (no hard failure), which
 is why `falcon512_mayo1` cannot enforce separation across both halves. The generic

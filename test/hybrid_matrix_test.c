@@ -122,7 +122,7 @@ end:
 }
 
 /* Can `prov` generate a key for `alg`? (Used to pick the cross-check peer.) */
-static int provider_has_kem(OSSL_LIB_CTX *ctx, const char *alg, const char *prov)
+static int provider_serves(OSSL_LIB_CTX *ctx, const char *alg, const char *prov)
 {
     EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, alg, prov);
     EVP_PKEY *tmp = NULL;
@@ -141,9 +141,9 @@ static void check_kem(OSSL_LIB_CTX *ctx, const char *alg)
      * non-standardized hybrids live in oqsprovider; the standardized MLX groups
      * live only in the default provider (oqsprovider has no keygen for them), so
      * those are proven hybrid<->default instead. */
-    const char *peer = provider_has_kem(ctx, alg, "provider=oqsprovider")
+    const char *peer = provider_serves(ctx, alg, "provider=oqsprovider")
                            ? "oqsprovider"
-                           : provider_has_kem(ctx, alg, "provider=default")
+                           : provider_serves(ctx, alg, "provider=default")
                                  ? "default"
                                  : NULL;
     char peerprop[32];
@@ -256,10 +256,13 @@ int main(void)
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         check_kem(ctx, hybrid_kem_table[i].hybrid_name);
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
-        /* Operation-only rows (§3.4 PQ/PQ) carry no OID: not SPKI-serializable
-         * and no oqsprovider peer, so the SPKI+sig cross has no second peer. */
-        if (hybrid_sig_table[i].oid == NULL) {
-            printf("  %-24s SIG hybrid<->oqs (SPKI+sig) ... SKIP (operation-only)\n",
+        /* Provider-private rows (§3.4 PQ/PQ, EC-in-slot-2) have no oqsprovider
+         * peer — even now that they carry a private-use OID + code point — so the
+         * hybrid<->oqs SPKI+sig cross has no second peer. Skip by probing whether
+         * oqsprovider serves the name, not by OID (which these now have). */
+        if (!provider_serves(ctx, hybrid_sig_table[i].hybrid_name,
+                             "provider=oqsprovider")) {
+            printf("  %-24s SIG hybrid<->oqs (SPKI+sig) ... SKIP (no oqs peer)\n",
                    hybrid_sig_table[i].hybrid_name);
             skipped++;
             continue;

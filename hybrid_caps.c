@@ -188,9 +188,12 @@ static const OSSL_PARAM hybrid_param_group_list[][11] = {
  * signature-side analogue of the TLS groups above, so hybrid signatures can be
  * negotiated for certificate authentication in a TLS 1.3 handshake. Generated
  * from HYBRID_SIG_LIST: each signature becomes a TLS SignatureScheme with its
- * code point (oqsprovider's, from `oqs-template/generate.yml`) and the same OID
- * the encoders use. Security bits derive from the PQ NIST level (1/2 -> 128,
- * 3/4 -> 192, 5 -> 256). Drift is caught by hybrid_capability_test.
+ * code point (oqsprovider's, from `oqs-template/generate.yml`, or a private-use
+ * value for the provider-private PQ/PQ rows) and the same OID the encoders use.
+ * Security bits derive from the NIST level (1/2 -> 128, 3/4 -> 192, 5 -> 256):
+ * for a classical×PQ row that is the PQ component's level; for a PQ/PQ row the
+ * level column holds the MIN of the two components (the weaker survivor — §3.4,
+ * issue #126). Drift is caught by hybrid_capability_test.
  */
 #ifdef HYBRID_HAVE_TLS_SIGALG
 typedef struct {

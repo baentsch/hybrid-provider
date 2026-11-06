@@ -321,6 +321,10 @@ int main(void)
         const char *alg = hybrid_sig_table[i].hybrid_name;
 
         if (!provider_has(ctx, alg, "provider=oqsprovider")) {
+            /* No oqs peer (the §3.4 provider-private rows): their SPKI/PKCS8
+             * round-trip is proven self-consistently by hybrid_leakcheck_test
+             * (encode -> decode -> EVP_PKEY_eq), so there is nothing to cross
+             * here. The cross-provider peer tests below need oqsprovider. */
             printf("  %-28s SKIPPED (oqsprovider does not serve it here)\n", alg);
             skipped++;
             continue;
