@@ -143,8 +143,8 @@ int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 
     /* Gather every component's public key, then lay them down in wire order
      * (the iterator places the PQ share first for reverse-share KEMs) behind a
-     * UINT32 big-endian length of the classical (component ALG1) share — the
-     * oqsprovider SPKI layout. */
+     * UINT32 big-endian length of component ALG1 (the classical share for KEMs)
+     * — the oqsprovider SPKI split reference. */
     total = sizeof(uint32_t);
     for (i = 0; i < n; i++) {
         if (!get_component_pub(HYBRID_KEY_COMP(key, i), &cpub[i], &cplen[i]))
@@ -273,54 +273,71 @@ err:
  * concatenation: the PQ component's public key is always pinned to the trailing
  * block, whatever the share order —
  *   UINT32(classical_der_len) || <private parts, wire order> || pq_pubkey
- * where each private part is the classical DER (component ALG1) or the PQ raw
- * private key (component ALG2), ordered by the wire iterator (PQ private first
- * for reverse-share KEMs). That trailing-public rule is the one asymmetry a loop
- * cannot absorb; the private parts themselves are placed by the same wire-order
- * loop the public blob uses. Regular-heap, wiped on free (see
- * encode_component_priv for why not the secure heap); caller frees *out with
- * OPENSSL_clear_free.
+ * where each private part is the classical share's private DER/raw or the PQ
+ * share's raw private key, ordered by the wire iterator (PQ private first for
+ * reverse-share KEMs). Which component is which is decided by KIND
+ * (hybrid_component_is_classical), never by slot, so either share may sit in
+ * either position. That trailing-public rule is the one asymmetry a loop cannot
+ * absorb; the private parts themselves are placed by the same wire-order loop
+ * the public blob uses. Regular-heap, wiped on free (see encode_component_priv
+ * for why not the secure heap); caller frees *out with OPENSSL_clear_free.
  */
 int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
-    unsigned n = HYBRID_KEY_NCOMP(key), w;
-    unsigned char *cbuf = NULL, *buf = NULL;
-    size_t clen = 0, pqv, pqp, total = 0, off, got;
-    int ret = 0;
+    unsigned n = HYBRID_KEY_NCOMP(key), w, i, pqc = 0;
+    unsigned char *clas = NULL, *buf = NULL;
+    size_t claslen = 0, pqv = 0, pqp = 0, total = 0, off, got;
+    int have_pq = 0, ret = 0;
 
     if (!hybrid_have_prvkey(key))
         return 0;
     if (!key->is_kem)                  /* signatures: slot-symmetric by kind */
         return encode_priv_blob_sig(key, out, outlen);
 
-    /* Classical (ALG1) private part, and PQ (ALG2) raw private/public sizes. */
-    pqv = hybrid_key_comp_prv_bytes(key, HYBRID_COMP_ALG2);
-    pqp = hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG2);
-    if (!get_component_priv(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1), &cbuf, &clen))
-        return 0;
+    /*
+     * Split the components by kind, not by slot: the classical share serializes
+     * as its private DER/raw bytes, the PQ share as raw private (its public key
+     * is pinned to the trailing block below). This format carries exactly one of
+     * each; a second classical or a missing PQ share is rejected.
+     */
+    for (i = 0; i < n; i++) {
+        if (hybrid_component_is_classical(hybrid_key_comp_name(key, i),
+                                          hybrid_key_comp_group(key, i))) {
+            if (clas != NULL
+                || !get_component_priv(HYBRID_KEY_COMP(key, i), &clas, &claslen))
+                goto err;
+        } else {
+            pqc = i;
+            have_pq = 1;
+            pqv = hybrid_key_comp_prv_bytes(key, i);
+            pqp = hybrid_key_comp_pub_bytes(key, i);
+        }
+    }
+    if (clas == NULL || !have_pq)
+        goto err;
 
-    total = sizeof(uint32_t) + clen + pqv + pqp;
+    total = sizeof(uint32_t) + claslen + pqv + pqp;
     if ((buf = OPENSSL_malloc(total)) == NULL)
         goto err;
-    enc_uint32_be(buf, (uint32_t)clen);
+    enc_uint32_be(buf, (uint32_t)claslen);
 
     off = sizeof(uint32_t);
     for (w = 0; w < n; w++) {
         unsigned ci = hybrid_wire_to_comp(key, w);
 
-        if (ci == HYBRID_COMP_ALG1) {         /* classical share: DER (clen) */
-            memcpy(buf + off, cbuf, clen);
-            off += clen;
-        } else {                              /* PQ share: raw private (pqv) */
+        if (ci == pqc) {                      /* PQ share: raw private key */
             if (EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, ci),
                     OSSL_PKEY_PARAM_PRIV_KEY, buf + off, pqv, &got) <= 0
                 || got != pqv)
                 goto err;
             off += pqv;
+        } else {                              /* classical share: private DER */
+            memcpy(buf + off, clas, claslen);
+            off += claslen;
         }
     }
     /* PQ public key: the trailing block in every share order. */
-    if (EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
+    if (EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, pqc),
             OSSL_PKEY_PARAM_PUB_KEY, buf + off, pqp, &got) <= 0 || got != pqp)
         goto err;
 
@@ -329,7 +346,7 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
     buf = NULL;
     ret = 1;
 err:
-    OPENSSL_clear_free(cbuf, clen);
+    OPENSSL_clear_free(clas, claslen);
     OPENSSL_clear_free(buf, total);
     return ret;
 }
