@@ -29,10 +29,12 @@ static const char *hybrid_key_oid(const HYBRID_KEY *key)
                        : ((const HYBRID_SIG_INFO *)key->info)->oid;
 }
 
-/* Is this a reverse-share KEM (PQ component stored first)? */
+/* Is this a reverse-share KEM (PQ/alg2 component first on the wire)? Routed
+ * through the wire-order iterator so no call site here reads alg2_slot directly;
+ * for signature keys component 0 always leads, so this is false. */
 static int hybrid_key_reverse(const HYBRID_KEY *key)
 {
-    return key->is_kem && ((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0;
+    return hybrid_wire_to_comp(key, 0) == HYBRID_COMP_ALG2;
 }
 
 /*
@@ -136,8 +138,9 @@ int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 
     if (!hybrid_have_pubkey(key))
         return 0;
-    if (!get_component_pub(key->key1, &cbuf, &clen)
-        || !get_component_pub(key->key2, &pqbuf, &pqlen))
+    if (!get_component_pub(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1), &cbuf, &clen)
+        || !get_component_pub(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
+                              &pqbuf, &pqlen))
         goto end;
 
     total = sizeof(uint32_t) + clen + pqlen;
@@ -228,12 +231,17 @@ static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
     size_t l1 = 0, l2 = 0, total = 0;
     int ret = 0;
 
-    if (!encode_component_priv(key->key1, HYBRID_KEY_ALG1_NAME(key),
-                               HYBRID_KEY_ALG1_GROUP(key),
-                               key->sizes->a1_prv, key->sizes->a1_pub, &b1, &l1)
-        || !encode_component_priv(key->key2, HYBRID_KEY_ALG2_NAME(key),
-                                  HYBRID_KEY_ALG2_GROUP(key),
-                                  key->sizes->a2_prv, key->sizes->a2_pub,
+    if (!encode_component_priv(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1),
+                               hybrid_key_comp_name(key, HYBRID_COMP_ALG1),
+                               hybrid_key_comp_group(key, HYBRID_COMP_ALG1),
+                               hybrid_key_comp_prv_bytes(key, HYBRID_COMP_ALG1),
+                               hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG1),
+                               &b1, &l1)
+        || !encode_component_priv(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
+                                  hybrid_key_comp_name(key, HYBRID_COMP_ALG2),
+                                  hybrid_key_comp_group(key, HYBRID_COMP_ALG2),
+                                  hybrid_key_comp_prv_bytes(key, HYBRID_COMP_ALG2),
+                                  hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG2),
                                   &b2, &l2))
         goto err;
 
@@ -277,10 +285,10 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
         return 0;
     if (!key->is_kem)                  /* signatures: slot-symmetric by kind */
         return encode_priv_blob_sig(key, out, outlen);
-    a2v = key->sizes->a2_prv;
-    a2p = key->sizes->a2_pub;
+    a2v = hybrid_key_comp_prv_bytes(key, HYBRID_COMP_ALG2);
+    a2p = hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG2);
 
-    if (!get_component_priv(key->key1, &cbuf, &clen))
+    if (!get_component_priv(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1), &cbuf, &clen))
         return 0;
 
     total = sizeof(uint32_t) + clen + a2v + a2p;
@@ -306,9 +314,10 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
         pqdst = buf + sizeof(uint32_t) + clen;
     }
     memcpy(cdst, cbuf, clen);
-    if (EVP_PKEY_get_octet_string_param(key->key2, OSSL_PKEY_PARAM_PRIV_KEY,
-            pqdst, a2v, &got) <= 0 || got != a2v
-        || EVP_PKEY_get_octet_string_param(key->key2, OSSL_PKEY_PARAM_PUB_KEY,
+    if (EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
+            OSSL_PKEY_PARAM_PRIV_KEY, pqdst, a2v, &got) <= 0 || got != a2v
+        || EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2),
+            OSSL_PKEY_PARAM_PUB_KEY,
             buf + sizeof(uint32_t) + clen + a2v, a2p, &got) <= 0 || got != a2p)
         goto err;
 
@@ -621,31 +630,39 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
     if (!hybrid_have_pubkey(hkey))
         goto end;
     if (priv) {
-        if (!get_component_priv(hkey->key1, &slot1buf, &slot1len))
+        if (!get_component_priv(HYBRID_KEY_COMP(hkey, HYBRID_COMP_ALG1),
+                                &slot1buf, &slot1len))
             goto end;
-        if (hybrid_component_is_classical(HYBRID_KEY_ALG2_NAME(hkey),
-                                   HYBRID_KEY_ALG2_GROUP(hkey))) {
-            if (!get_component_priv(hkey->key2, &slot2buf, &slot2len))
+        if (hybrid_component_is_classical(
+                    hybrid_key_comp_name(hkey, HYBRID_COMP_ALG2),
+                    hybrid_key_comp_group(hkey, HYBRID_COMP_ALG2))) {
+            if (!get_component_priv(HYBRID_KEY_COMP(hkey, HYBRID_COMP_ALG2),
+                                    &slot2buf, &slot2len))
                 goto end;
         } else {
-            slot2len = hkey->sizes->a2_prv;
+            slot2len = hybrid_key_comp_prv_bytes(hkey, HYBRID_COMP_ALG2);
             if ((slot2buf = OPENSSL_malloc(slot2len)) == NULL
-                || EVP_PKEY_get_octet_string_param(hkey->key2,
+                || EVP_PKEY_get_octet_string_param(
+                       HYBRID_KEY_COMP(hkey, HYBRID_COMP_ALG2),
                        OSSL_PKEY_PARAM_PRIV_KEY, slot2buf, slot2len, &got) <= 0
                 || got != slot2len)
                 goto end;
         }
     } else {
-        if (!get_component_pub(hkey->key1, &slot1buf, &slot1len))
+        if (!get_component_pub(HYBRID_KEY_COMP(hkey, HYBRID_COMP_ALG1),
+                               &slot1buf, &slot1len))
             goto end;
-        if (hybrid_component_is_classical(HYBRID_KEY_ALG2_NAME(hkey),
-                                   HYBRID_KEY_ALG2_GROUP(hkey))) {
-            if (!get_component_pub(hkey->key2, &slot2buf, &slot2len))
+        if (hybrid_component_is_classical(
+                    hybrid_key_comp_name(hkey, HYBRID_COMP_ALG2),
+                    hybrid_key_comp_group(hkey, HYBRID_COMP_ALG2))) {
+            if (!get_component_pub(HYBRID_KEY_COMP(hkey, HYBRID_COMP_ALG2),
+                                   &slot2buf, &slot2len))
                 goto end;
         } else {
-            slot2len = hkey->sizes->a2_pub;
+            slot2len = hybrid_key_comp_pub_bytes(hkey, HYBRID_COMP_ALG2);
             if ((slot2buf = OPENSSL_malloc(slot2len)) == NULL
-                || EVP_PKEY_get_octet_string_param(hkey->key2,
+                || EVP_PKEY_get_octet_string_param(
+                       HYBRID_KEY_COMP(hkey, HYBRID_COMP_ALG2),
                        OSSL_PKEY_PARAM_PUB_KEY, slot2buf, slot2len, &got) <= 0
                 || got != slot2len)
                 goto end;
@@ -654,12 +671,12 @@ static int hybrid_encode_text(void *vctx, OSSL_CORE_BIO *cout, const void *key,
 
     /* Label each component with its curve ("P-256") if it has one, else its
      * algorithm name ("RSA", "MLDSA65", …) — symmetric across both slots. */
-    slot1name = HYBRID_KEY_ALG1_GROUP(hkey);
+    slot1name = hybrid_key_comp_group(hkey, HYBRID_COMP_ALG1);
     if (slot1name == NULL)
-        slot1name = HYBRID_KEY_ALG1_NAME(hkey);
-    slot2name = HYBRID_KEY_ALG2_GROUP(hkey);
+        slot1name = hybrid_key_comp_name(hkey, HYBRID_COMP_ALG1);
+    slot2name = hybrid_key_comp_group(hkey, HYBRID_COMP_ALG2);
     if (slot2name == NULL)
-        slot2name = HYBRID_KEY_ALG2_NAME(hkey);
+        slot2name = hybrid_key_comp_name(hkey, HYBRID_COMP_ALG2);
     if ((mem = BIO_new(BIO_s_mem())) == NULL
         || BIO_printf(mem, "%s hybrid %s key:\n", hybrid_key_name(hkey),
                       priv ? "private" : "public") <= 0
