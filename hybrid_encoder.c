@@ -176,8 +176,10 @@ end:
  * a classical component via get_component_priv (i2d_PrivateKey DER for EC/RSA, or
  * raw for X25519/X448); a PQ component as raw private || raw public (the public
  * appended so a research keytype that cannot re-derive it still decodes to a
- * complete key). `prv`/`pub` are the fixed PQ component sizes. Caller frees *buf
- * with OPENSSL_clear_free.
+ * complete key). `prv`/`pub` are the fixed PQ component sizes. The PQ branch
+ * allocates from the secure heap, so the caller MUST free *buf with
+ * OPENSSL_secure_clear_free (safe for the classical branch's regular-heap
+ * buffer too — CRYPTO_secure_free falls back to CRYPTO_free for it).
  */
 static int encode_component_priv(EVP_PKEY *pkey, const char *alg,
                                  const char *group, size_t prv, size_t pub,
@@ -210,7 +212,8 @@ static int encode_component_priv(EVP_PKEY *pkey, const char *alg,
  * classical-first rows this is byte-identical to the historical layout
  * (UINT32(classical_der_len) || classical_DER || pq_priv || pq_pub); a PQ-first
  * or EC-in-slot-2 row simply reverses which kind lands where. Signatures only —
- * KEMs keep their alg2_slot-ordered layout below. Free with OPENSSL_clear_free.
+ * KEMs keep their alg2_slot-ordered layout below. Free *out with
+ * OPENSSL_secure_clear_free.
  */
 static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
                                 size_t *outlen)
@@ -243,8 +246,11 @@ static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
     buf = NULL;
     ret = 1;
 err:
-    OPENSSL_clear_free(b1, l1);
-    OPENSSL_clear_free(b2, l2);
+    /* b1/b2 may come from the secure heap (PQ component) or the regular heap
+     * (classical, via get_component_priv); OPENSSL_secure_clear_free is correct
+     * for both — it falls back to CRYPTO_free for non-secure pointers. */
+    OPENSSL_secure_clear_free(b1, l1);
+    OPENSSL_secure_clear_free(b2, l2);
     OPENSSL_secure_clear_free(buf, total);
     return ret;
 }
@@ -253,8 +259,8 @@ err:
  * Build the private-key blob. Signatures use the slot-symmetric layout above.
  * KEMs keep oqsprovider's alg2_slot-ordered layout:
  *   UINT32(classical_der_len) || classical_privkey_DER || pq_privkey || pq_pubkey
- * (PQ private first for reverse-share KEMs). Caller frees *out with
- * OPENSSL_clear_free.
+ * (PQ private first for reverse-share KEMs). *out is secure-heap allocated;
+ * caller frees it with OPENSSL_secure_clear_free.
  */
 int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
