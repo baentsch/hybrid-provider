@@ -128,4 +128,19 @@ void   bench_guard_kem(OSSL_LIB_CTX *ctx, const char *composed_name,
                        const char *trad_alg, const char *trad_group,
                        int trad_rsa_bits, double ceil, int *failures);
 
+/*
+ * N-component generalization of bench_guard_kem (issue #135 item 11): assert a
+ * composed KEM's encaps/decaps within ceil x the sum over ALL n components, each
+ * timed standalone by kind — a native KEM (is_kem[i]) via encaps/decaps, a
+ * key-exchange primitive via bench_time_trad_kem. names[]/groups[]/is_kem[] are
+ * in logical order; wire order is irrelevant to the summed time. Covers the
+ * 2-component rows too (n == 2 reduces to bench_guard_kem). A missing composed
+ * alg or component is silently skipped.
+ */
+void   bench_guard_kem_ncomp(OSSL_LIB_CTX *ctx, const char *composed_name,
+                             const char *composed_propq, unsigned n,
+                             const char *const names[],
+                             const char *const groups[], const int is_kem[],
+                             double ceil, int *failures);
+
 #endif /* HYBRID_TEST_BENCH_UTIL_H */
