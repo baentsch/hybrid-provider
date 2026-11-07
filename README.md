@@ -26,7 +26,7 @@ relying on internal OpenSSL headers.
 
 ## Supported Algorithms
 
-**Algorithms served:** 54 hybrid KEMs + 30 hybrid signatures = 84 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 136 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 84 hybrids (106 total).
+**Algorithms served:** 56 hybrid KEMs + 30 hybrid signatures = 86 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 138 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 86 hybrids (108 total).
 
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
@@ -121,15 +121,16 @@ Adding another is two central lines — a row in `HYBRID_KEM_LIST` and an entry 
 `hybrid_kem_combiner[]` — with no combiner-code change (see
 [CONTRIBUTING.md](CONTRIBUTING.md)).
 
-**HQC-KEM groups** (`draft-preussmattsson-tls-hqckem`) — the draft's four
-**2-component** hybrids: two PQ/T (HQC + ECDHE) and two PQ/PQ (HQC + ML-KEM). The
-combiner is RFC 9954 fixed-length concatenation in name order (HQC first), which
-is our default concat combiner. HQC resolves from
+**HQC-KEM groups** (`draft-preussmattsson-tls-hqckem`) — six of the draft's
+hybrids: four **2-component** (two PQ/T = HQC + ECDHE, two PQ/PQ = HQC + ML-KEM)
+and two **3-component** PQ/PQ/T (HQC + ML-KEM + ECDHE). The combiner is RFC 9954
+fixed-length concatenation in name order (HQC first), which is our default concat
+combiner — the 3-component groups exercise the 2→N-component generalization
+(issue #135). HQC resolves from
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider); the ML-KEM half
 from the default provider (3.5+) or oqsprovider. The draft is an individual
 submission with code points still TBD, so these are **operation-only**: no TLS
-code point (KEM API only) and no OID. The two 3-component PQ/PQ/T groups (a
-2→N-slot generalization) and standalone HQC are out of scope here.
+code point (KEM API only) and no OID. Standalone HQC is out of scope here.
 
 | Algorithm | Components |
 |---|---|
@@ -137,6 +138,8 @@ code point (KEM API only) and no OID. The two 3-component PQ/PQ/T groups (a
 | `HQCKEM256X448` | HQC-256 + X448 — **PQ/T** (needs oqsprovider) |
 | `HQCKEM192MLKEM768` | HQC-192 + ML-KEM-768 — **PQ/PQ** (needs oqsprovider) |
 | `HQCKEM256MLKEM1024` | HQC-256 + ML-KEM-1024 — **PQ/PQ** (needs oqsprovider) |
+| `HQCKEM192MLKEM768X25519` | HQC-192 + ML-KEM-768 + X25519 — **PQ/PQ/T**, 3-component (needs oqsprovider) |
+| `HQCKEM256MLKEM1024X448` | HQC-256 + ML-KEM-1024 + X448 — **PQ/PQ/T**, 3-component (needs oqsprovider) |
 
 ### Hybrid Signatures
 

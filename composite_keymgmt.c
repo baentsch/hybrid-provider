@@ -37,12 +37,12 @@ static void *composite_key_new(void *provctx, const COMPOSITE_SIG_INFO *info)
      * ML-DSA combos (whose seed-based private key needs it) or from whichever
      * loaded provider offers it for the experimental research sigs.
      */
-    k->alg2_propq = pc != NULL && pc->alg2_propq != NULL
-                      ? pc->alg2_propq
+    k->alg2_propq = pc != NULL && pc->comp_propq[HYBRID_COMP_ALG2] != NULL
+                      ? pc->comp_propq[HYBRID_COMP_ALG2]
                       : (info->tier == COMPOSITE_TIER_EXPERIMENTAL
                              ? NULL : "provider=default");
-    k->trad_propq = pc != NULL && pc->alg1_propq != NULL
-                        ? pc->alg1_propq : "provider=default";
+    k->trad_propq = pc != NULL && pc->comp_propq[HYBRID_COMP_ALG1] != NULL
+                        ? pc->comp_propq[HYBRID_COMP_ALG1] : "provider=default";
     k->state = COMPOSITE_HAVE_NOKEYS;
     return k;
 }

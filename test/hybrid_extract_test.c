@@ -449,11 +449,22 @@ int main(void)
     /* Every row of the master tables — no hardcoded combos. The PQ component
      * name (alg2/pq_alg) lets a row tell a genuine keygen bug from a component
      * whose provider simply is not loaded here. */
-    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
+        /* Component extraction exposes exactly a classical + a PQ half via
+         * HYBRID_PKEY_PARAM_{CLASSIC,PQ}_*; indexed per-component params for
+         * N>2-component hybrids are deferred to issue #135 item 11 (PR11), so
+         * the 3-component rows cannot be fully extracted/recomposed yet. */
+        if (hybrid_kem_table[i].n_comp > 2) {
+            printf("  %-24s (hybrid   ) ... SKIP (N>2 extraction params: PR11)\n",
+                   hybrid_kem_table[i].hybrid_name);
+            skipped++;
+            continue;
+        }
         check(ctx, hybrid_kem_table[i].hybrid_name, HYBRID,
               hybrid_kem_table[i].component[1].name,
               hybrid_kem_table[i].component[0].name,
               hybrid_kem_table[i].component[0].group);
+    }
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         check(ctx, hybrid_sig_table[i].hybrid_name, HYBRID,
               hybrid_sig_table[i].alg2_name, hybrid_sig_table[i].alg1_name,

@@ -72,13 +72,9 @@ static int hybrid_group_operable(HYBRID_PROV_CTX *ctx,
     int ok = 1;
 
     ERR_set_mark();
-    for (i = 0; i < info->n_comp && ok; i++) {
-        /* Per-component propq: slot ALG1 vs ALG2 (only two props today). */
-        const char *propq = (i == HYBRID_COMP_ALG1) ? ctx->alg1_propq
-                                                     : ctx->alg2_propq;
-
-        ok = component_operable(libctx, info->component[i].name, propq);
-    }
+    for (i = 0; i < info->n_comp && ok; i++)
+        ok = component_operable(libctx, info->component[i].name,
+                                ctx->comp_propq[i]);
     ERR_pop_to_mark();
     return ok;
 }
@@ -91,8 +87,10 @@ static int hybrid_sigalg_operable(HYBRID_PROV_CTX *ctx,
     int ok;
 
     ERR_set_mark();
-    ok = component_operable(libctx, info->alg1_name, ctx->alg1_propq)
-        && component_operable(libctx, info->alg2_name, ctx->alg2_propq);
+    ok = component_operable(libctx, info->alg1_name,
+                            ctx->comp_propq[HYBRID_COMP_ALG1])
+        && component_operable(libctx, info->alg2_name,
+                              ctx->comp_propq[HYBRID_COMP_ALG2]);
     ERR_pop_to_mark();
     return ok;
 }
@@ -143,10 +141,14 @@ typedef struct {
  */
 #define HYBRID_CAPS_CONST_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid) \
     { (cp), (sb), TLS1_3_VERSION, 0, -1, -1, 1 },
+#define HYBRID_CAPS_CONST_ROW_3(cf, nm, a1, g1, k1, a2, g2, k2, a3, g3, k3,   \
+                                w0, w1, w2, cp, sb, ds, oid)                  \
+    { (cp), (sb), TLS1_3_VERSION, 0, -1, -1, 1 },
 static const HYBRID_TLS_GROUP_CONSTANTS hybrid_group_list[] = {
-    HYBRID_KEM_LIST(HYBRID_CAPS_CONST_ROW)
+    HYBRID_KEM_LIST(HYBRID_CAPS_CONST_ROW, HYBRID_CAPS_CONST_ROW_3)
 };
 #undef HYBRID_CAPS_CONST_ROW
+#undef HYBRID_CAPS_CONST_ROW_3
 
 /*
  * One OSSL_PARAM array per group. NAME and ALG are the algorithm name; the ALG
@@ -181,10 +183,14 @@ static const HYBRID_TLS_GROUP_CONSTANTS hybrid_group_list[] = {
 
 #define HYBRID_CAPS_PARAM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid) \
     HYBRID_TLS_GROUP_ENTRY(nm, HYBRID_KEM_IDX_##cf),
+#define HYBRID_CAPS_PARAM_ROW_3(cf, nm, a1, g1, k1, a2, g2, k2, a3, g3, k3,   \
+                                w0, w1, w2, cp, sb, ds, oid)                  \
+    HYBRID_TLS_GROUP_ENTRY(nm, HYBRID_KEM_IDX_##cf),
 static const OSSL_PARAM hybrid_param_group_list[][11] = {
-    HYBRID_KEM_LIST(HYBRID_CAPS_PARAM_ROW)
+    HYBRID_KEM_LIST(HYBRID_CAPS_PARAM_ROW, HYBRID_CAPS_PARAM_ROW_3)
 };
 #undef HYBRID_CAPS_PARAM_ROW
+#undef HYBRID_CAPS_PARAM_ROW_3
 
 #define HYBRID_TLS_GROUP_COUNT \
     (sizeof(hybrid_param_group_list) / sizeof(hybrid_param_group_list[0]))
