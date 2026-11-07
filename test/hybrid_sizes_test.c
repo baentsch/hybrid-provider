@@ -167,14 +167,14 @@ static void verify(OSSL_LIB_CTX *lc)
             continue;
         }
         checked++;
-        cmp(r->hybrid_name, "a1_pub", t->a1_pub, a1p);
-        cmp(r->hybrid_name, "a1_prv", t->a1_prv, a1v);
-        cmp(r->hybrid_name, "a1_ss",  t->a1_ss,  a1s);
-        cmp(r->hybrid_name, "a1_ct",  t->a1_ct,  a1c);
-        cmp(r->hybrid_name, "a2_pub", t->a2_pub, a2p);
-        cmp(r->hybrid_name, "a2_prv", t->a2_prv, a2v);
-        cmp(r->hybrid_name, "a2_ss",  t->a2_ss,  a2s);
-        cmp(r->hybrid_name, "a2_ct",  t->a2_ct,  a2c);
+        cmp(r->hybrid_name, "comp0.pub", t->comp[0].pub, a1p);
+        cmp(r->hybrid_name, "comp0.prv", t->comp[0].prv, a1v);
+        cmp(r->hybrid_name, "comp0.ss",  t->comp[0].ss,  a1s);
+        cmp(r->hybrid_name, "comp0.ct",  t->comp[0].ct,  a1c);
+        cmp(r->hybrid_name, "comp1.pub", t->comp[1].pub, a2p);
+        cmp(r->hybrid_name, "comp1.prv", t->comp[1].prv, a2v);
+        cmp(r->hybrid_name, "comp1.ss",  t->comp[1].ss,  a2s);
+        cmp(r->hybrid_name, "comp1.ct",  t->comp[1].ct,  a2c);
     }
 
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
@@ -189,12 +189,12 @@ static void verify(OSSL_LIB_CTX *lc)
             continue;
         }
         checked++;
-        cmp(r->hybrid_name, "a1_pub", t->a1_pub, a1p);
-        cmp(r->hybrid_name, "a1_prv", t->a1_prv, a1v);
-        cmp(r->hybrid_name, "a2_pub", t->a2_pub, a2p);
-        cmp(r->hybrid_name, "a2_prv", t->a2_prv, a2v);
-        cmp(r->hybrid_name, "a1_sig", t->a1_sig, a1g);
-        cmp(r->hybrid_name, "a2_sig", t->a2_sig, a2g);
+        cmp(r->hybrid_name, "comp0.pub", t->comp[0].pub, a1p);
+        cmp(r->hybrid_name, "comp0.prv", t->comp[0].prv, a1v);
+        cmp(r->hybrid_name, "comp1.pub", t->comp[1].pub, a2p);
+        cmp(r->hybrid_name, "comp1.prv", t->comp[1].prv, a2v);
+        cmp(r->hybrid_name, "comp0.sig", t->comp[0].sig, a1g);
+        cmp(r->hybrid_name, "comp1.sig", t->comp[1].sig, a2g);
     }
 }
 
@@ -212,7 +212,7 @@ static void emit(OSSL_LIB_CTX *lc)
             printf("    { 0 },  /* %-22s UNRESOLVED */\n", r->hybrid_name);
             continue;
         }
-        printf("    { %zu,%zu,%zu,%zu, %zu,%zu,%zu,%zu, 0,0 },  /* %s */\n",
+        printf("    { { {%zu,%zu,%zu,%zu,0}, {%zu,%zu,%zu,%zu,0} } },  /* %s */\n",
                a1p, a1v, a1s, a1c, a2p, a2v, a2s, a2c, r->hybrid_name);
     }
     printf("};\n\nstatic const HYBRID_SIZES hybrid_sig_sizes[HYBRID_SIG_ALG_COUNT] = {\n");
@@ -225,8 +225,8 @@ static void emit(OSSL_LIB_CTX *lc)
             printf("    { 0 },  /* %-22s UNRESOLVED */\n", r->hybrid_name);
             continue;
         }
-        printf("    { %zu,%zu,0,0, %zu,%zu,0,0, %zu,%zu },  /* %s */\n",
-               a1p, a1v, a2p, a2v, a1g, a2g, r->hybrid_name);
+        printf("    { { {%zu,%zu,0,0,%zu}, {%zu,%zu,0,0,%zu} } },  /* %s */\n",
+               a1p, a1v, a1g, a2p, a2v, a2g, r->hybrid_name);
     }
     printf("};\n");
 }

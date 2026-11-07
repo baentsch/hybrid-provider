@@ -400,8 +400,8 @@ int main(int argc, char **argv)
     {
         const HYBRID_SIZES *xw = &hybrid_kem_sizes[HYBRID_KEM_IDX_xwing];
 
-        if (MLKEM768_PRV != xw->a2_prv || MLKEM768_CT != xw->a2_ct
-                || X25519_PRV != xw->a1_prv) {
+        if (MLKEM768_PRV != xw->comp[1].prv || MLKEM768_CT != xw->comp[1].ct
+                || X25519_PRV != xw->comp[0].prv) {
             fprintf(stderr, "KAT size constants disagree with "
                             "hybrid_kem_sizes[xwing] — update them together\n");
             return 1;
