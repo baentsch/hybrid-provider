@@ -330,8 +330,8 @@ static int hybrid_kem_encapsulate(void *vctx,
 
     /*
      * Lay each component's ciphertext and secret at its wire offset. The wire
-     * iterator places the PQ component first for reverse-share KEMs
-     * (alg2_slot == 0) and component ALG1 first otherwise; for a two-element
+     * iterator (the row's wire[] permutation) places the PQ component first for
+     * reverse-share KEMs and component ALG1 first otherwise; for a two-element
      * list this reproduces today's [alg2|alg1] / [alg1|alg2] layout exactly.
      */
     coff = soff = 0;

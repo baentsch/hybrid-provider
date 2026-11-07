@@ -158,10 +158,10 @@ static void verify(OSSL_LIB_CTX *lc)
         const HYBRID_SIZES *t = &hybrid_kem_sizes[i];
         size_t a1p, a1v, a1s, a1c, a2p, a2v, a2s, a2c;
 
-        if (!disc_kem(lc, r->alg1_name, r->alg1_group, r->alg1_is_kem,
-                      &a1p, &a1v, &a1s, &a1c)
-                || !disc_kem(lc, r->alg2_name, r->alg2_group, r->alg2_is_kem,
-                             &a2p, &a2v, &a2s, &a2c)) {
+        if (!disc_kem(lc, r->component[0].name, r->component[0].group,
+                      r->component[0].is_kem, &a1p, &a1v, &a1s, &a1c)
+                || !disc_kem(lc, r->component[1].name, r->component[1].group,
+                             r->component[1].is_kem, &a2p, &a2v, &a2s, &a2c)) {
             skipped++;
             ERR_clear_error();
             continue;
@@ -207,8 +207,8 @@ static void emit(OSSL_LIB_CTX *lc)
         const HYBRID_KEM_INFO *r = &hybrid_kem_table[i];
         size_t a1p, a1v, a1s, a1c, a2p, a2v, a2s, a2c;
 
-        if (!disc_kem(lc, r->alg1_name, r->alg1_group, r->alg1_is_kem, &a1p, &a1v, &a1s, &a1c)
-                || !disc_kem(lc, r->alg2_name, r->alg2_group, r->alg2_is_kem, &a2p, &a2v, &a2s, &a2c)) {
+        if (!disc_kem(lc, r->component[0].name, r->component[0].group, r->component[0].is_kem, &a1p, &a1v, &a1s, &a1c)
+                || !disc_kem(lc, r->component[1].name, r->component[1].group, r->component[1].is_kem, &a2p, &a2v, &a2s, &a2c)) {
             printf("    { 0 },  /* %-22s UNRESOLVED */\n", r->hybrid_name);
             continue;
         }

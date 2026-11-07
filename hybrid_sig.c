@@ -448,7 +448,7 @@ hybrid_sig_digest_sign(void *vctx,
      * (no multi-component signature is specified — issue #135), so unlike the
      * concat-KEM path this does not loop over N. The components are the logical
      * slots HYBRID_COMP_ALG1/ALG2 (sig keys concatenate ALG1 first). */
-    assert(HYBRID_KEY_NCOMP(key) == 2);
+    assert(HYBRID_KEY_NCOMP(key) == HYBRID_SIG_NCOMP);
 
     hybrid_sig_component(key, HYBRID_COMP_ALG1, &c0);
     hybrid_sig_component(key, HYBRID_COMP_ALG2, &c1);
@@ -515,7 +515,7 @@ hybrid_sig_digest_verify(void *vctx,
     }
     len1 = siglen - sizeof(uint32_t) - len0;
 
-    assert(HYBRID_KEY_NCOMP(key) == 2);   /* 2-component wire format, see sign */
+    assert(HYBRID_KEY_NCOMP(key) == HYBRID_SIG_NCOMP);  /* see sign */
 
     hybrid_sig_component(key, HYBRID_COMP_ALG1, &c0);
     hybrid_sig_component(key, HYBRID_COMP_ALG2, &c1);
