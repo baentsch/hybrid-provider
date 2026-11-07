@@ -134,8 +134,9 @@ static int get_component_pub(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
 int hybrid_encode_pub_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen)
 {
     unsigned n = HYBRID_KEY_NCOMP(key), i, w;
-    unsigned char *cpub[HYBRID_KEY_NCOMP(key)] = { 0 }, *buf = NULL;
-    size_t cplen[HYBRID_KEY_NCOMP(key)] = { 0 }, total, off;
+    /* Fixed-capacity (HYBRID_MAX_COMP) scratch; only n entries are populated. */
+    unsigned char *cpub[HYBRID_MAX_COMP] = { 0 }, *buf = NULL;
+    size_t cplen[HYBRID_MAX_COMP] = { 0 }, total, off;
     int ret = 0;
 
     if (!hybrid_have_pubkey(key))
@@ -229,8 +230,9 @@ static int encode_priv_blob_sig(HYBRID_KEY *key, unsigned char **out,
                                 size_t *outlen)
 {
     unsigned n = HYBRID_KEY_NCOMP(key), i, w;
-    unsigned char *cb[HYBRID_KEY_NCOMP(key)] = { 0 }, *buf = NULL;
-    size_t cl[HYBRID_KEY_NCOMP(key)] = { 0 }, total = 0, off;
+    /* Fixed-capacity (HYBRID_MAX_COMP) scratch; only n entries are populated. */
+    unsigned char *cb[HYBRID_MAX_COMP] = { 0 }, *buf = NULL;
+    size_t cl[HYBRID_MAX_COMP] = { 0 }, total = 0, off;
     int ret = 0;
 
     total = sizeof(uint32_t);

@@ -216,9 +216,11 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     int pklen = 0, variant, is_kem = 0, ret = 1; /* default: not ours, continue */
     char oidbuf[128];
     HYBRID_KEY *key = NULL;
-    const unsigned char *compptr[HYBRID_KEY_NCOMP(key)];
-    size_t complen[HYBRID_KEY_NCOMP(key)];
-    unsigned n = HYBRID_KEY_NCOMP(key), w;
+    /* Fixed-capacity (HYBRID_MAX_COMP) scratch; n (set once the key exists, below)
+     * entries are used. key is NULL here, so n can only be read after it loads. */
+    const unsigned char *compptr[HYBRID_MAX_COMP];
+    size_t complen[HYBRID_MAX_COMP];
+    unsigned n, w;
     uint32_t clen;
     size_t pqlen, off;
 
@@ -266,6 +268,7 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     complen[HYBRID_COMP_ALG1] = clen;
     complen[HYBRID_COMP_ALG2] = pqlen;
     off = sizeof(uint32_t);
+    n = HYBRID_KEY_NCOMP(key);
     for (w = 0; w < n; w++) {
         unsigned ci = hybrid_wire_to_comp(key, w);
 

@@ -65,7 +65,10 @@ hybrid_key_new(int is_kem, unsigned int variant,
      * signatures have none. Stored as a value so the KEM op need not re-derive
      * the variant index from the (possibly cross-TU) info pointer. */
     key->combiner = is_kem ? hybrid_kem_combiner[variant] : HYBRID_COMBINER_CONCAT;
-    /* Component handles are already NULL (OPENSSL_zalloc above). */
+    /* Component handles are already NULL (OPENSSL_zalloc above). Component count
+     * is 2 for every current KEM and signature hybrid; per-variant counts (the
+     * deferred 3-component groups) arrive with the wire-ordered descriptors. */
+    key->n_comp = 2;
     key->state = HYBRID_HAVE_NOKEYS;
     key->propq = propq;
     return key;
@@ -122,6 +125,7 @@ static void *hybrid_kem_dup(const void *vkey, int selection)
     ret->info = key->info;
     ret->sizes = key->sizes;
     ret->combiner = key->combiner;
+    ret->n_comp = key->n_comp;
     ret->state = HYBRID_HAVE_NOKEYS;
     ret->propq = NULL;
     ret->alg2_propq = key->alg2_propq;
