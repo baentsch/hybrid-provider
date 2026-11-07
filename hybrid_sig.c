@@ -21,6 +21,7 @@
 
 #include "hybrid_prov.h"
 #include "hybrid_msg_accum.h"
+#include <assert.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 #include <openssl/proverr.h>
@@ -234,16 +235,17 @@ static const EVP_MD *classical_md(int nist_level)
 }
 
 /*
- * A resolved view of one hybrid signature component, by slot (0 = alg1-first in
- * the wire layout, 1 = the tail). The sign/verify path is slot-SYMMETRIC: each
- * slot is handled by its own component kind (digest-taking vs md-less), never by
- * assuming "slot 0 is classical". Either slot may hold a classical (ECDSA/RSA) or
- * a PQ (ML-DSA/Falcon/…) algorithm. Resolved from the key by hybrid_sig_component.
+ * A resolved view of one hybrid signature component, by component index
+ * (HYBRID_COMP_ALG1 = wire-first, HYBRID_COMP_ALG2 = the tail). The sign/verify
+ * path is slot-SYMMETRIC: each component is handled by its own kind (digest-taking
+ * vs md-less), never by assuming "component 0 is classical". Either component may
+ * hold a classical (ECDSA/RSA) or a PQ (ML-DSA/Falcon/…) algorithm. Resolved from
+ * the key by hybrid_sig_component.
  */
 typedef struct {
-    EVP_PKEY   *pkey;          /* the component key (key1 for slot 0, key2 for 1) */
-    const char *propq;         /* per-slot property query (positional, see below) */
-    size_t      max_sig;       /* signing output bound: sizes->a{1,2}_sig */
+    EVP_PKEY   *pkey;          /* the component key, HYBRID_KEY_COMP(key, i) */
+    const char *propq;         /* per-component property query */
+    size_t      max_sig;       /* signing output bound: hybrid_key_comp_sig_bytes */
     int         digest_taking; /* 1 = ECDSA/RSA over an external digest; 0 = md-less */
     int         is_rsa;        /* digest-taking RSA -> PKCS#1 v1.5 padding */
 } HYBRID_SIG_COMP;
@@ -262,22 +264,21 @@ static int hybrid_sig_is_digest_taking(const char *alg_name)
     return strcmp(alg_name, "EC") == 0 || strcmp(alg_name, "RSA") == 0;
 }
 
-/* Resolve slot `slot` (0 or 1) of `key` into *c. The per-slot property query is
- * positional (slot 0 -> alg1_propq, slot 1 -> alg2_propq); the type-named
- * accessors are a provider-steering concern shared with the KEM family and are
- * orthogonal to which component kind sits in the slot. */
-static void hybrid_sig_component(const HYBRID_KEY *key, int slot,
+/* Resolve component `i` (HYBRID_COMP_ALG1/ALG2) of `key` into *c, through the
+ * component-indexed accessors (issue #135). The per-component property query
+ * (hybrid_key_comp_propq) and the type-named accessors are a provider-steering
+ * concern shared with the KEM family and are orthogonal to which component kind
+ * sits in the slot. */
+static void hybrid_sig_component(const HYBRID_KEY *key, unsigned i,
                                  HYBRID_SIG_COMP *c)
 {
-    const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
-    const char *alg = slot == 0 ? info->alg1_name : info->alg2_name;
+    const char *alg = hybrid_key_comp_name(key, i);
 
     c->digest_taking = hybrid_sig_is_digest_taking(alg);
     c->is_rsa = (strcmp(alg, "RSA") == 0);
-    c->pkey = slot == 0 ? key->key1 : key->key2;
-    c->propq = slot == 0 ? HYBRID_KEY_ALG1_PROPQ(key)
-                         : HYBRID_KEY_ALG2_PROPQ(key);
-    c->max_sig = slot == 0 ? key->sizes->a1_sig : key->sizes->a2_sig;
+    c->pkey = HYBRID_KEY_COMP(key, i);
+    c->propq = hybrid_key_comp_propq(key, i);
+    c->max_sig = hybrid_key_comp_sig_bytes(key, i);
 }
 
 /*
@@ -442,8 +443,15 @@ hybrid_sig_digest_sign(void *vctx,
         return 0;
     }
 
-    hybrid_sig_component(key, 0, &c0);
-    hybrid_sig_component(key, 1, &c1);
+    /* The hybrid signature wire format carries a single length prefix and exactly
+     * two component signatures (comp0 || comp1); it is intrinsically 2-component
+     * (no multi-component signature is specified — issue #135), so unlike the
+     * concat-KEM path this does not loop over N. The components are the logical
+     * slots HYBRID_COMP_ALG1/ALG2 (sig keys concatenate ALG1 first). */
+    assert(HYBRID_KEY_NCOMP(key) == 2);
+
+    hybrid_sig_component(key, HYBRID_COMP_ALG1, &c0);
+    hybrid_sig_component(key, HYBRID_COMP_ALG2, &c1);
 
     /* component 0 signature, written after the 4-byte length prefix */
     if (!hybrid_sig_component_op(ctx, key, &c0, 1, tbs, tbslen,
@@ -507,8 +515,10 @@ hybrid_sig_digest_verify(void *vctx,
     }
     len1 = siglen - sizeof(uint32_t) - len0;
 
-    hybrid_sig_component(key, 0, &c0);
-    hybrid_sig_component(key, 1, &c1);
+    assert(HYBRID_KEY_NCOMP(key) == 2);   /* 2-component wire format, see sign */
+
+    hybrid_sig_component(key, HYBRID_COMP_ALG1, &c0);
+    hybrid_sig_component(key, HYBRID_COMP_ALG2, &c1);
 
     /* verify component 0 (after the length prefix) */
     if (!hybrid_sig_component_op(ctx, key, &c0, 0, tbs, tbslen,
