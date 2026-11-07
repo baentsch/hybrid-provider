@@ -172,6 +172,14 @@ typedef struct {
 } HYBRID_SIG_INFO;
 
 /*
+ * Upper bound on the number of components in a hybrid (issue #135, 2->N). Sizes
+ * both the per-key component array (HYBRID_KEY.comp) and the per-component size
+ * row below; the actual count is HYBRID_KEY->n_comp (fixed at 2 today). The two
+ * deferred 3-component HQC groups fit within 4.
+ */
+#define HYBRID_MAX_COMP 4
+
+/*
  * Per-component sizes for a hybrid. These are fixed per algorithm (pinned by the
  * component names, which the hybrid name selects), so they are compile-time
  * CONSTANTS held in hybrid_kem_sizes[] / hybrid_sig_sizes[] below; each key just
@@ -179,24 +187,25 @@ typedef struct {
  * there is no shared mutable size cache to synchronize. The values are
  * machine-generated (see test/hybrid_sizes_test.c, which regenerates and, in CI,
  * re-derives them from live component keygens and fails on any drift). `ct` is
- * the ciphertext
- * contribution (ephemeral public-key length for a key-exchange component, KEM
- * ciphertext otherwise); `a1_prv`/`a2_prv` follow the same convention the
+ * the ciphertext contribution (ephemeral public-key length for a key-exchange
+ * component, KEM ciphertext otherwise); `prv` follows the same convention the
  * discovery used (RSA/EC private reported as the scalar/modulus byte width, not
- * the variable DER length, which the encoders length-prefix instead).
+ * the variable DER length, which the encoders length-prefix instead). A row is a
+ * fixed-size array indexed by logical component (comp[HYBRID_COMP_ALG1],
+ * comp[HYBRID_COMP_ALG2], ...); only the first n_comp entries are populated. A
+ * component's classical-vs-PQ role is NOT implied by its index — either slot may
+ * be classical or PQ (hybrid_component_is_classical decides by kind), so the
+ * fields carry no positional meaning. KEMs use ss/ct (sig == 0); signatures use
+ * sig (ss == ct == 0).
  */
 typedef struct {
-    size_t a1_pub, a1_prv, a1_ss, a1_ct;   /* classical (alg1); KEM: ss/ct */
-    size_t a2_pub, a2_prv, a2_ss, a2_ct;   /* PQ (alg2); KEM: ss/ct */
-    size_t a1_sig, a2_sig;                 /* SIG only: max signature sizes */
-} HYBRID_SIZES;
+    size_t pub, prv, ss, ct;   /* KEM: ss/ct; SIG: both 0 */
+    size_t sig;                /* SIG: max signature size; KEM: 0 */
+} HYBRID_COMP_SIZES;
 
-/*
- * Upper bound on the number of components in a hybrid (issue #135, 2->N). Sizes
- * the per-key component array below; the actual count is HYBRID_KEY->n_comp
- * (fixed at 2 today). The two deferred 3-component HQC groups fit within 4.
- */
-#define HYBRID_MAX_COMP 4
+typedef struct {
+    HYBRID_COMP_SIZES comp[HYBRID_MAX_COMP];
+} HYBRID_SIZES;
 
 /* Hybrid key — used for both KEM and SIG hybrids */
 typedef struct hybrid_key_st {
@@ -483,8 +492,9 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
  * Constant component sizes, one row per hybrid KEM in HYBRID_KEM_LIST order
  * (index = HYBRID_KEM_IDX_*). MACHINE-GENERATED — do not hand-edit; regenerate
  * with `hybrid_sizes_test emit` and paste. hybrid_sizes_test re-derives these
- * from live component keygens in CI and fails on drift. Fields, in order:
- * a1_pub,a1_prv,a1_ss,a1_ct, a2_pub,a2_prv,a2_ss,a2_ct, a1_sig(0), a2_sig(0).
+ * from live component keygens in CI and fails on drift. Each row is one
+ * HYBRID_SIZES, i.e. a component array; per component the fields are, in order:
+ * { pub, prv, ss, ct, sig } — sig is 0 for every KEM component.
  *
  * (The composite family needs no such table: it always has its two component
  * EVP_PKEYs present when a size is needed and reads EVP_PKEY_get_size() off them
@@ -492,73 +502,73 @@ enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
  * size to split an incoming key blob *before* the component keys exist.)
  */
 static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
-    { 32,32,32,32, 1184,2400,32,1088, 0,0 },        /* X25519MLKEM768 */
-    { 56,56,56,56, 1568,3168,32,1568, 0,0 },        /* X448MLKEM1024 */
-    { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* SecP256r1MLKEM768 */
-    { 97,48,48,97, 1568,3168,32,1568, 0,0 },        /* SecP384r1MLKEM1024 */
-    { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* curveSM2MLKEM768 */
-    { 32,32,32,32, 800,1632,32,768, 0,0 },          /* x25519_mlkem512 */
-    { 65,32,32,65, 800,1632,32,768, 0,0 },          /* SecP256r1MLKEM512 */
-    { 65,32,32,65, 800,1632,32,768, 0,0 },          /* bp256_mlkem512 */
-    { 97,48,48,97, 1184,2400,32,1088, 0,0 },        /* p384_mlkem768 */
-    { 56,56,56,56, 1184,2400,32,1088, 0,0 },        /* x448_mlkem768 */
-    { 97,48,48,97, 1184,2400,32,1088, 0,0 },        /* bp384_mlkem768 */
-    { 133,66,66,133, 1568,3168,32,1568, 0,0 },      /* p521_mlkem1024 */
-    { 129,64,64,129, 1568,3168,32,1568, 0,0 },      /* bp512_mlkem1024 */
-    { 65,32,32,65, 9616,19888,16,9752, 0,0 },       /* p256_frodo640aes */
-    { 32,32,32,32, 9616,19888,16,9752, 0,0 },       /* x25519_frodo640aes */
-    { 65,32,32,65, 9616,19888,16,9752, 0,0 },       /* p256_frodo640shake */
-    { 32,32,32,32, 9616,19888,16,9752, 0,0 },       /* x25519_frodo640shake */
-    { 97,48,48,97, 15632,31296,24,15792, 0,0 },     /* p384_frodo976aes */
-    { 56,56,56,56, 15632,31296,24,15792, 0,0 },     /* x448_frodo976aes */
-    { 97,48,48,97, 15632,31296,24,15792, 0,0 },     /* p384_frodo976shake */
-    { 56,56,56,56, 15632,31296,24,15792, 0,0 },     /* x448_frodo976shake */
-    { 133,66,66,133, 21520,43088,32,21696, 0,0 },   /* p521_frodo1344aes */
-    { 133,66,66,133, 21520,43088,32,21696, 0,0 },   /* p521_frodo1344shake */
-    { 65,32,32,65, 9616,19888,16,9720, 0,0 },       /* p256_efrodo640aes */
-    { 32,32,32,32, 9616,19888,16,9720, 0,0 },       /* x25519_efrodo640aes */
-    { 65,32,32,65, 9616,19888,16,9720, 0,0 },       /* p256_efrodo640shake */
-    { 32,32,32,32, 9616,19888,16,9720, 0,0 },       /* x25519_efrodo640shake */
-    { 97,48,48,97, 15632,31296,24,15744, 0,0 },     /* p384_efrodo976aes */
-    { 56,56,56,56, 15632,31296,24,15744, 0,0 },     /* x448_efrodo976aes */
-    { 97,48,48,97, 15632,31296,24,15744, 0,0 },     /* p384_efrodo976shake */
-    { 56,56,56,56, 15632,31296,24,15744, 0,0 },     /* x448_efrodo976shake */
-    { 133,66,66,133, 21520,43088,32,21632, 0,0 },   /* p521_efrodo1344aes */
-    { 133,66,66,133, 21520,43088,32,21632, 0,0 },   /* p521_efrodo1344shake */
-    { 65,32,32,65, 1541,5223,32,1573, 0,0 },        /* p256_bikel1 */
-    { 32,32,32,32, 1541,5223,32,1573, 0,0 },        /* x25519_bikel1 */
-    { 97,48,48,97, 3083,10105,32,3115, 0,0 },       /* p384_bikel3 */
-    { 56,56,56,56, 3083,10105,32,3115, 0,0 },       /* x448_bikel3 */
-    { 133,66,66,133, 5122,16494,32,5154, 0,0 },     /* p521_bikel5 */
-    { 65,32,32,65, 2241,2321,32,4433, 0,0 },        /* p256_hqc1 */
-    { 32,32,32,32, 2241,2321,32,4433, 0,0 },        /* x25519_hqc1 */
-    { 97,48,48,97, 4514,4602,32,8978, 0,0 },        /* p384_hqc3 */
-    { 56,56,56,56, 4514,4602,32,8978, 0,0 },        /* x448_hqc3 */
-    { 133,66,66,133, 7237,7333,32,14421, 0,0 },     /* p521_hqc5 */
-    { 32,32,32,32, 1184,2400,32,1088, 0,0 },        /* X-Wing (same components
-                                                     * as X25519MLKEM768; the
-                                                     * combiner, not these sizes,
-                                                     * is what differs) */
+    { { {32,32,32,32,0}, {1184,2400,32,1088,0} } },         /* X25519MLKEM768 */
+    { { {56,56,56,56,0}, {1568,3168,32,1568,0} } },         /* X448MLKEM1024 */
+    { { {65,32,32,65,0}, {1184,2400,32,1088,0} } },         /* SecP256r1MLKEM768 */
+    { { {97,48,48,97,0}, {1568,3168,32,1568,0} } },         /* SecP384r1MLKEM1024 */
+    { { {65,32,32,65,0}, {1184,2400,32,1088,0} } },         /* curveSM2MLKEM768 */
+    { { {32,32,32,32,0}, {800,1632,32,768,0} } },           /* x25519_mlkem512 */
+    { { {65,32,32,65,0}, {800,1632,32,768,0} } },           /* SecP256r1MLKEM512 */
+    { { {65,32,32,65,0}, {800,1632,32,768,0} } },           /* bp256_mlkem512 */
+    { { {97,48,48,97,0}, {1184,2400,32,1088,0} } },         /* p384_mlkem768 */
+    { { {56,56,56,56,0}, {1184,2400,32,1088,0} } },         /* x448_mlkem768 */
+    { { {97,48,48,97,0}, {1184,2400,32,1088,0} } },         /* bp384_mlkem768 */
+    { { {133,66,66,133,0}, {1568,3168,32,1568,0} } },       /* p521_mlkem1024 */
+    { { {129,64,64,129,0}, {1568,3168,32,1568,0} } },       /* bp512_mlkem1024 */
+    { { {65,32,32,65,0}, {9616,19888,16,9752,0} } },        /* p256_frodo640aes */
+    { { {32,32,32,32,0}, {9616,19888,16,9752,0} } },        /* x25519_frodo640aes */
+    { { {65,32,32,65,0}, {9616,19888,16,9752,0} } },        /* p256_frodo640shake */
+    { { {32,32,32,32,0}, {9616,19888,16,9752,0} } },        /* x25519_frodo640shake */
+    { { {97,48,48,97,0}, {15632,31296,24,15792,0} } },      /* p384_frodo976aes */
+    { { {56,56,56,56,0}, {15632,31296,24,15792,0} } },      /* x448_frodo976aes */
+    { { {97,48,48,97,0}, {15632,31296,24,15792,0} } },      /* p384_frodo976shake */
+    { { {56,56,56,56,0}, {15632,31296,24,15792,0} } },      /* x448_frodo976shake */
+    { { {133,66,66,133,0}, {21520,43088,32,21696,0} } },    /* p521_frodo1344aes */
+    { { {133,66,66,133,0}, {21520,43088,32,21696,0} } },    /* p521_frodo1344shake */
+    { { {65,32,32,65,0}, {9616,19888,16,9720,0} } },        /* p256_efrodo640aes */
+    { { {32,32,32,32,0}, {9616,19888,16,9720,0} } },        /* x25519_efrodo640aes */
+    { { {65,32,32,65,0}, {9616,19888,16,9720,0} } },        /* p256_efrodo640shake */
+    { { {32,32,32,32,0}, {9616,19888,16,9720,0} } },        /* x25519_efrodo640shake */
+    { { {97,48,48,97,0}, {15632,31296,24,15744,0} } },      /* p384_efrodo976aes */
+    { { {56,56,56,56,0}, {15632,31296,24,15744,0} } },      /* x448_efrodo976aes */
+    { { {97,48,48,97,0}, {15632,31296,24,15744,0} } },      /* p384_efrodo976shake */
+    { { {56,56,56,56,0}, {15632,31296,24,15744,0} } },      /* x448_efrodo976shake */
+    { { {133,66,66,133,0}, {21520,43088,32,21632,0} } },    /* p521_efrodo1344aes */
+    { { {133,66,66,133,0}, {21520,43088,32,21632,0} } },    /* p521_efrodo1344shake */
+    { { {65,32,32,65,0}, {1541,5223,32,1573,0} } },         /* p256_bikel1 */
+    { { {32,32,32,32,0}, {1541,5223,32,1573,0} } },         /* x25519_bikel1 */
+    { { {97,48,48,97,0}, {3083,10105,32,3115,0} } },        /* p384_bikel3 */
+    { { {56,56,56,56,0}, {3083,10105,32,3115,0} } },        /* x448_bikel3 */
+    { { {133,66,66,133,0}, {5122,16494,32,5154,0} } },      /* p521_bikel5 */
+    { { {65,32,32,65,0}, {2241,2321,32,4433,0} } },         /* p256_hqc1 */
+    { { {32,32,32,32,0}, {2241,2321,32,4433,0} } },         /* x25519_hqc1 */
+    { { {97,48,48,97,0}, {4514,4602,32,8978,0} } },         /* p384_hqc3 */
+    { { {56,56,56,56,0}, {4514,4602,32,8978,0} } },         /* x448_hqc3 */
+    { { {133,66,66,133,0}, {7237,7333,32,14421,0} } },      /* p521_hqc5 */
+    { { {32,32,32,32,0}, {1184,2400,32,1088,0} } },         /* X-Wing (same components
+                                                             * as X25519MLKEM768; the
+                                                             * combiner, not these sizes,
+                                                             * is what differs) */
     /* Experimental X-Wing-style rows — component sizes only; the 32-byte combined
      * secret is produced by the combiner, not recorded here (see HYBRID_SIZES). */
-    { 32,32,32,32, 1568,3168,32,1568, 0,0 },        /* xwing_x25519_mlkem1024 */
-    { 65,32,32,65, 1184,2400,32,1088, 0,0 },        /* xwing_p256_mlkem768 */
-    { 56,56,56,56, 1568,3168,32,1568, 0,0 },        /* xwing_x448_mlkem1024 */
-    { 32,32,32,32, 9616,19888,16,9720, 0,0 },       /* xwing_x25519_efrodo640aes */
+    { { {32,32,32,32,0}, {1568,3168,32,1568,0} } },         /* xwing_x25519_mlkem1024 */
+    { { {65,32,32,65,0}, {1184,2400,32,1088,0} } },         /* xwing_p256_mlkem768 */
+    { { {56,56,56,56,0}, {1568,3168,32,1568,0} } },         /* xwing_x448_mlkem1024 */
+    { { {32,32,32,32,0}, {9616,19888,16,9720,0} } },        /* xwing_x25519_efrodo640aes */
     /* PQ/PQ: alg1 = ML-KEM-768 (pub/prv/ss/ct), alg2 = HQC-3 (pub/prv/ss/ct). */
-    { 1184,2400,32,1088, 4514,4602,32,8978, 0,0 },  /* xwing_mlkem768_hqc3 */
-    { 65,32,32,65, 9616,19888,16,9752, 0,0 },        /* exphyb_p256_frodo640aes
-                                                      * (= p256_frodo640aes:
-                                                      * same P-256 + FrodoKEM-640-
-                                                      * AES components) */
+    { { {1184,2400,32,1088,0}, {4514,4602,32,8978,0} } },   /* xwing_mlkem768_hqc3 */
+    { { {65,32,32,65,0}, {9616,19888,16,9752,0} } },        /* exphyb_p256_frodo640aes
+                                                             * (= p256_frodo640aes:
+                                                             * same P-256 + FrodoKEM-640-
+                                                             * AES components) */
     /* draft-preussmattsson-tls-hqckem: alg1 then alg2 (HQC) — the HQC-first wire
      * order is the slot, not this table. Sizes reuse the ML-KEM/HQC/X25519/X448
      * component figures already proven above (e.g. the ML-KEM-768+HQC-3 row equals
      * xwing_mlkem768_hqc3). Regenerate with `hybrid_sizes_test emit` after build. */
-    { 32,32,32,32, 4514,4602,32,8978, 0,0 },        /* HQCKEM192X25519  (X25519 + HQC-3) */
-    { 56,56,56,56, 7237,7333,32,14421, 0,0 },       /* HQCKEM256X448    (X448 + HQC-5) */
-    { 1184,2400,32,1088, 4514,4602,32,8978, 0,0 },  /* HQCKEM192MLKEM768  (ML-KEM-768 + HQC-3) */
-    { 1568,3168,32,1568, 7237,7333,32,14421, 0,0 }, /* HQCKEM256MLKEM1024 (ML-KEM-1024 + HQC-5) */
+    { { {32,32,32,32,0}, {4514,4602,32,8978,0} } },         /* HQCKEM192X25519  (X25519 + HQC-3) */
+    { { {56,56,56,56,0}, {7237,7333,32,14421,0} } },        /* HQCKEM256X448    (X448 + HQC-5) */
+    { { {1184,2400,32,1088,0}, {4514,4602,32,8978,0} } },   /* HQCKEM192MLKEM768  (ML-KEM-768 + HQC-3) */
+    { { {1568,3168,32,1568,0}, {7237,7333,32,14421,0} } },  /* HQCKEM256MLKEM1024 (ML-KEM-1024 + HQC-5) */
 };
 
 /*
@@ -828,42 +838,42 @@ static inline int hybrid_sig_pq_is_default_builtin(size_t i)
 /*
  * Constant component sizes, one row per hybrid signature in HYBRID_SIG_LIST
  * order (index = HYBRID_SIG_IDX_*). MACHINE-GENERATED — see hybrid_kem_sizes[].
- * Fields, in order: a1_pub,a1_prv,a1_ss(0),a1_ct(0),
- * a2_pub,a2_prv,a2_ss(0),a2_ct(0), a1_sig, a2_sig.
+ * Each row is one HYBRID_SIZES component array; per component the fields are, in
+ * order: { pub, prv, ss, ct, sig } — ss and ct are 0 for every SIG component.
  */
 static const HYBRID_SIZES hybrid_sig_sizes[HYBRID_SIG_ALG_COUNT] = {
-    { 65,32,0,0, 1312,2560,0,0, 72,2420 },          /* p256_mldsa44 */
-    { 398,384,0,0, 1312,2560,0,0, 384,2420 },       /* rsa3072_mldsa44 */
-    { 97,48,0,0, 1952,4032,0,0, 104,3309 },         /* p384_mldsa65 */
-    { 133,66,0,0, 2592,4896,0,0, 139,4627 },        /* p521_mldsa87 */
-    { 65,32,0,0, 897,1281,0,0, 72,752 },            /* p256_falcon512 */
-    { 398,384,0,0, 897,1281,0,0, 384,752 },         /* rsa3072_falcon512 */
-    { 133,66,0,0, 1793,2305,0,0, 139,1462 },        /* p521_falcon1024 */
-    { 65,32,0,0, 897,1281,0,0, 72,666 },            /* p256_falconpadded512 */
-    { 398,384,0,0, 897,1281,0,0, 384,666 },         /* rsa3072_falconpadded512 */
-    { 133,66,0,0, 1793,2305,0,0, 139,1280 },        /* p521_falconpadded1024 */
-    { 65,32,0,0, 1420,24,0,0, 72,454 },             /* p256_mayo1 */
-    { 65,32,0,0, 4912,24,0,0, 72,186 },             /* p256_mayo2 */
-    { 97,48,0,0, 2986,32,0,0, 104,681 },            /* p384_mayo3 */
-    { 133,66,0,0, 5554,40,0,0, 139,964 },           /* p521_mayo5 */
-    { 65,32,0,0, 66576,348704,0,0, 72,96 },         /* p256_OV_Is_pkc */
-    { 65,32,0,0, 43576,237896,0,0, 72,128 },        /* p256_OV_Ip_pkc */
-    { 65,32,0,0, 66576,32,0,0, 72,96 },             /* p256_OV_Is_pkc_skc */
-    { 65,32,0,0, 43576,32,0,0, 72,128 },            /* p256_OV_Ip_pkc_skc */
-    { 65,32,0,0, 1016,48,0,0, 72,248 },             /* p256_snova2454 */
-    { 65,32,0,0, 1016,36848,0,0, 72,248 },          /* p256_snova2454esk */
-    { 65,32,0,0, 9842,48,0,0, 72,124 },             /* p256_snova37172 */
-    { 97,48,0,0, 1579,48,0,0, 104,379 },            /* p384_snova2455 */
-    { 133,66,0,0, 2716,48,0,0, 139,454 },           /* p521_snova2965 */
-    { 65,32,0,0, 60,88,0,0, 72,3280 },              /* p256_mqom2cat1gf16fastr5 */
-    { 97,48,0,0, 90,132,0,0, 104,7738 },            /* p384_mqom2cat3gf16fastr5 */
-    { 133,66,0,0, 122,180,0,0, 139,13772 },         /* p521_mqom2cat5gf16fastr5 */
+    { { {65,32,0,0,72}, {1312,2560,0,0,2420} } },        /* p256_mldsa44 */
+    { { {398,384,0,0,384}, {1312,2560,0,0,2420} } },     /* rsa3072_mldsa44 */
+    { { {97,48,0,0,104}, {1952,4032,0,0,3309} } },       /* p384_mldsa65 */
+    { { {133,66,0,0,139}, {2592,4896,0,0,4627} } },      /* p521_mldsa87 */
+    { { {65,32,0,0,72}, {897,1281,0,0,752} } },          /* p256_falcon512 */
+    { { {398,384,0,0,384}, {897,1281,0,0,752} } },       /* rsa3072_falcon512 */
+    { { {133,66,0,0,139}, {1793,2305,0,0,1462} } },      /* p521_falcon1024 */
+    { { {65,32,0,0,72}, {897,1281,0,0,666} } },          /* p256_falconpadded512 */
+    { { {398,384,0,0,384}, {897,1281,0,0,666} } },       /* rsa3072_falconpadded512 */
+    { { {133,66,0,0,139}, {1793,2305,0,0,1280} } },      /* p521_falconpadded1024 */
+    { { {65,32,0,0,72}, {1420,24,0,0,454} } },           /* p256_mayo1 */
+    { { {65,32,0,0,72}, {4912,24,0,0,186} } },           /* p256_mayo2 */
+    { { {97,48,0,0,104}, {2986,32,0,0,681} } },          /* p384_mayo3 */
+    { { {133,66,0,0,139}, {5554,40,0,0,964} } },         /* p521_mayo5 */
+    { { {65,32,0,0,72}, {66576,348704,0,0,96} } },       /* p256_OV_Is_pkc */
+    { { {65,32,0,0,72}, {43576,237896,0,0,128} } },      /* p256_OV_Ip_pkc */
+    { { {65,32,0,0,72}, {66576,32,0,0,96} } },           /* p256_OV_Is_pkc_skc */
+    { { {65,32,0,0,72}, {43576,32,0,0,128} } },          /* p256_OV_Ip_pkc_skc */
+    { { {65,32,0,0,72}, {1016,48,0,0,248} } },           /* p256_snova2454 */
+    { { {65,32,0,0,72}, {1016,36848,0,0,248} } },        /* p256_snova2454esk */
+    { { {65,32,0,0,72}, {9842,48,0,0,124} } },           /* p256_snova37172 */
+    { { {97,48,0,0,104}, {1579,48,0,0,379} } },          /* p384_snova2455 */
+    { { {133,66,0,0,139}, {2716,48,0,0,454} } },         /* p521_snova2965 */
+    { { {65,32,0,0,72}, {60,88,0,0,3280} } },            /* p256_mqom2cat1gf16fastr5 */
+    { { {97,48,0,0,104}, {90,132,0,0,7738} } },          /* p384_mqom2cat3gf16fastr5 */
+    { { {133,66,0,0,139}, {122,180,0,0,13772} } },       /* p521_mqom2cat5gf16fastr5 */
     /* PQ/PQ (§3.4): a1 is the first PQ component, a2 the second. */
-    { 1952,4032,0,0, 1793,2305,0,0, 3309,1462 },    /* mldsa65_falcon1024 */
-    { 1312,2560,0,0, 1420,24,0,0, 2420,454 },       /* mldsa44_mayo1 */
-    { 897,1281,0,0, 1420,24,0,0, 752,454 },         /* falcon512_mayo1 */
+    { { {1952,4032,0,0,3309}, {1793,2305,0,0,1462} } },  /* mldsa65_falcon1024 */
+    { { {1312,2560,0,0,2420}, {1420,24,0,0,454} } },     /* mldsa44_mayo1 */
+    { { {897,1281,0,0,752}, {1420,24,0,0,454} } },       /* falcon512_mayo1 */
     /* EC in slot 2: a1 is the PQ component, a2 the classical EC half. */
-    { 1952,4032,0,0, 65,32,0,0, 3309,72 },          /* mldsa65_p256 */
+    { { {1952,4032,0,0,3309}, {65,32,0,0,72} } },        /* mldsa65_p256 */
 };
 
 /* Accessor macros — work for both KEM and SIG info via HYBRID_KEY */
@@ -901,20 +911,31 @@ static inline int hybrid_component_is_classical(const char *alg,
  * Size accessors read key->sizes (the constant sizes copied in at construction)
  * for both KEM and SIG keys.
  */
-#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) ((k)->sizes->a1_pub)
-#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) ((k)->sizes->a2_pub)
-#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) ((k)->sizes->a1_prv)
-#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) ((k)->sizes->a2_prv)
+#define HYBRID_KEY_ALG1_PUBKEY_BYTES(k) ((k)->sizes->comp[HYBRID_COMP_ALG1].pub)
+#define HYBRID_KEY_ALG2_PUBKEY_BYTES(k) ((k)->sizes->comp[HYBRID_COMP_ALG2].pub)
+#define HYBRID_KEY_ALG1_PRVKEY_BYTES(k) ((k)->sizes->comp[HYBRID_COMP_ALG1].prv)
+#define HYBRID_KEY_ALG2_PRVKEY_BYTES(k) ((k)->sizes->comp[HYBRID_COMP_ALG2].prv)
 
-/* Total ciphertext / shared-secret sizes for a KEM key. */
+/* Total ciphertext / shared-secret sizes for a KEM key: sum over all
+ * components (the concatenated wire secret / ciphertext). */
 static inline size_t hybrid_kem_ctext_bytes(const HYBRID_KEY *key)
 {
-    return key->sizes->a1_ct + key->sizes->a2_ct;
+    size_t total = 0;
+    unsigned i;
+
+    for (i = 0; i < key->n_comp; i++)
+        total += key->sizes->comp[i].ct;
+    return total;
 }
 
 static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 {
-    return key->sizes->a1_ss + key->sizes->a2_ss;
+    size_t total = 0;
+    unsigned i;
+
+    for (i = 0; i < key->n_comp; i++)
+        total += key->sizes->comp[i].ss;
+    return total;
 }
 
 /*
@@ -973,27 +994,27 @@ static inline const char *hybrid_key_comp_propq(const HYBRID_KEY *k, unsigned i)
  * construction). sig bytes are 0 for KEM rows and vice versa. */
 static inline size_t hybrid_key_comp_pub_bytes(const HYBRID_KEY *k, unsigned i)
 {
-    return i == 0 ? k->sizes->a1_pub : k->sizes->a2_pub;
+    return k->sizes->comp[i].pub;
 }
 
 static inline size_t hybrid_key_comp_prv_bytes(const HYBRID_KEY *k, unsigned i)
 {
-    return i == 0 ? k->sizes->a1_prv : k->sizes->a2_prv;
+    return k->sizes->comp[i].prv;
 }
 
 static inline size_t hybrid_key_comp_ss_bytes(const HYBRID_KEY *k, unsigned i)
 {
-    return i == 0 ? k->sizes->a1_ss : k->sizes->a2_ss;
+    return k->sizes->comp[i].ss;
 }
 
 static inline size_t hybrid_key_comp_ct_bytes(const HYBRID_KEY *k, unsigned i)
 {
-    return i == 0 ? k->sizes->a1_ct : k->sizes->a2_ct;
+    return k->sizes->comp[i].ct;
 }
 
 static inline size_t hybrid_key_comp_sig_bytes(const HYBRID_KEY *k, unsigned i)
 {
-    return i == 0 ? k->sizes->a1_sig : k->sizes->a2_sig;
+    return k->sizes->comp[i].sig;
 }
 
 /*
@@ -1031,22 +1052,37 @@ static inline unsigned hybrid_wire_to_comp(const HYBRID_KEY *k,
 
 /*
  * Maximum hybrid signature size:
- * ENCODE_UINT32(comp1_len) + max component-1 sig + max component-2 sig.
+ * ENCODE_UINT32(comp1_len) + sum of each component's max signature size.
  */
 static inline size_t hybrid_sig_max_sig_bytes(const HYBRID_KEY *key)
 {
-    return sizeof(uint32_t) + key->sizes->a1_sig + key->sizes->a2_sig;
+    size_t total = sizeof(uint32_t);
+    unsigned i;
+
+    for (i = 0; i < key->n_comp; i++)
+        total += key->sizes->comp[i].sig;
+    return total;
 }
 
-/* Generic total sizes via HYBRID_KEY. */
+/* Generic total sizes via HYBRID_KEY: concatenated length over all components. */
 static inline size_t hybrid_key_pubkey_bytes(const HYBRID_KEY *key)
 {
-    return key->sizes->a1_pub + key->sizes->a2_pub;
+    size_t total = 0;
+    unsigned i;
+
+    for (i = 0; i < key->n_comp; i++)
+        total += key->sizes->comp[i].pub;
+    return total;
 }
 
 static inline size_t hybrid_key_prvkey_bytes(const HYBRID_KEY *key)
 {
-    return key->sizes->a1_prv + key->sizes->a2_prv;
+    size_t total = 0;
+    unsigned i;
+
+    for (i = 0; i < key->n_comp; i++)
+        total += key->sizes->comp[i].prv;
+    return total;
 }
 
 /* Extern declarations for dispatch tables */

@@ -185,8 +185,8 @@ static void check_malformed_p8(OSSL_LIB_CTX *ctx, const char *oid)
     blob[0] = blob[1] = blob[2] = blob[3] = 0xFF;
     all &= reject_p8(ctx, oid, "clen=0xFFFFFFFF", blob, 32);
 
-    /* (b) clen = 0: slot 1 is empty. A PQ slot-1 component (len < a1_prv) and a
-     * classical slot-1 (d2i over 0 bytes) both reject. */
+    /* (b) clen = 0: slot 1 is empty. A PQ slot-1 component (len < the classical
+     * component's prv size) and a classical slot-1 (d2i over 0 bytes) both reject. */
     memset(blob, 0xAB, sizeof(blob));
     blob[0] = blob[1] = blob[2] = blob[3] = 0x00;
     all &= reject_p8(ctx, oid, "clen=0 (empty slot1)", blob, 32);
