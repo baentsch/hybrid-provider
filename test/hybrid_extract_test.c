@@ -423,6 +423,134 @@ done:
     EVP_PKEY_free(key);
 }
 
+/*
+ * Indexed component-extraction param names, one per logical component. Single-
+ * sourced on the HYBRID_PKEY_PARAM_COMP* macros (hybrid_prov.h) — the same
+ * literals the provider advertises — so this test and the provider cannot drift.
+ */
+static const char *const comp_pub_param[HYBRID_MAX_COMP] = {
+    HYBRID_PKEY_PARAM_COMP0_PUB, HYBRID_PKEY_PARAM_COMP1_PUB,
+    HYBRID_PKEY_PARAM_COMP2_PUB, HYBRID_PKEY_PARAM_COMP3_PUB,
+};
+static const char *const comp_priv_param[HYBRID_MAX_COMP] = {
+    HYBRID_PKEY_PARAM_COMP0_PRIV, HYBRID_PKEY_PARAM_COMP1_PRIV,
+    HYBRID_PKEY_PARAM_COMP2_PRIV, HYBRID_PKEY_PARAM_COMP3_PRIV,
+};
+
+/*
+ * N-component variant (issue #135 item 11). The 2-slot check() above splits a key
+ * into exactly one classical + one PQ half; the draft-preussmattsson-tls-hqckem
+ * PQ/PQ/T groups have three components, reachable through the indexed
+ * hybrid-compN-* params. For every logical component this verifies standalone
+ * pub/priv extraction + priv/pub consistency; then INNER == STANDALONE parity (the
+ * concatenated PUB_KEY blob equals the components' raw pubs taken in WIRE order)
+ * and composition (re-importing the rebuilt blob yields a key EVP_PKEY_eq the
+ * original). A component whose provider cannot serialize it standalone — the oqs
+ * research KEM HQC — makes the row self-skip, exactly as the 2-component HQC rows
+ * do, but only after the serializable components were actually extracted.
+ */
+static void check_ncomp(OSSL_LIB_CTX *ctx, const HYBRID_KEM_INFO *row)
+{
+    unsigned n = row->n_comp, i, w;
+    EVP_PKEY *key = NULL;
+    EVP_PKEY *cpub[HYBRID_MAX_COMP] = { NULL };
+    EVP_PKEY *cpriv[HYBRID_MAX_COMP] = { NULL };
+    unsigned char *raw[HYBRID_MAX_COMP] = { NULL };
+    size_t rawlen[HYBRID_MAX_COMP] = { 0 };
+    unsigned char *blob = NULL, *composed = NULL;
+    size_t blen = 0, total = 0, off = 0;
+
+    tests++;
+    printf("  %-24s (hybrid   ) ... ", row->hybrid_name);
+    fflush(stdout);
+
+    /* All components must be generatable here, else the row self-skips. */
+    for (i = 0; i < n; i++) {
+        if (!component_available(ctx, row->component[i].name,
+                                 row->component[i].group)) {
+            printf("SKIP (component provider absent)\n");
+            skipped++; tests--; return;
+        }
+    }
+
+    if ((key = gen(ctx, row->hybrid_name)) == NULL) {
+        printf("FAIL (keygen)\n");
+        ERR_print_errors_fp(stdout); failed++; return;
+    }
+
+    /* (1) per-component extraction + priv/pub consistency. */
+    for (i = 0; i < n; i++) {
+        cpub[i] = extract_pub(ctx, key, comp_pub_param[i]);
+        cpriv[i] = extract_priv(ctx, key, comp_priv_param[i]);
+        if (cpub[i] == NULL || cpriv[i] == NULL) {
+            /* Only a genuinely non-serializable component is a skip (HQC); an
+             * otherwise-serializable one failing to extract is a real bug. */
+            if (!component_serializable(ctx, row->component[i].name,
+                                        row->component[i].group)) {
+                printf("SKIP (component %u not serializable by its provider)\n", i);
+                skipped++; tests--; goto done;
+            }
+            printf("FAIL (component %u extraction: pub=%d priv=%d)\n",
+                   i, cpub[i] != NULL, cpriv[i] != NULL);
+            ERR_print_errors_fp(stdout); failed++; goto done;
+        }
+        if (EVP_PKEY_eq(cpriv[i], cpub[i]) != 1) {
+            printf("FAIL (component %u priv/pub inconsistent)\n", i);
+            failed++; goto done;
+        }
+        if (!raw_pub(cpub[i], &raw[i], &rawlen[i])) {
+            printf("FAIL (component %u raw pub)\n", i);
+            ERR_print_errors_fp(stdout); failed++; goto done;
+        }
+        total += rawlen[i];
+    }
+
+    /* (2) INNER == STANDALONE: the concatenated PUB_KEY blob equals the
+     * components' raw pubs taken in wire order (wire[w] -> logical index). */
+    if (!get_octet(key, OSSL_PKEY_PARAM_PUB_KEY, &blob, &blen) || blen != total) {
+        printf("FAIL (hybrid pub blob length)\n");
+        ERR_print_errors_fp(stdout); failed++; goto done;
+    }
+    if ((composed = OPENSSL_malloc(total)) == NULL) {
+        printf("FAIL (alloc)\n");
+        failed++; goto done;
+    }
+    for (w = 0; w < n; w++) {
+        unsigned c = row->wire[w];
+
+        memcpy(composed + off, raw[c], rawlen[c]);
+        off += rawlen[c];
+    }
+    if (memcmp(blob, composed, total) != 0) {
+        printf("FAIL (hybrid inner!=standalone parity)\n");
+        failed++; goto done;
+    }
+
+    /* (3) composition: re-import the rebuilt blob -> must equal the original. */
+    {
+        EVP_PKEY *composed_key = import_pub(ctx, row->hybrid_name, composed, total);
+        int eq = composed_key != NULL && EVP_PKEY_eq(composed_key, key) == 1;
+
+        EVP_PKEY_free(composed_key);
+        if (!eq) {
+            printf("FAIL (compose/re-import mismatch)\n");
+            ERR_print_errors_fp(stdout); failed++; goto done;
+        }
+    }
+
+    printf("PASS (%u components)\n", n);
+    passed++;
+done:
+    for (i = 0; i < HYBRID_MAX_COMP; i++) {
+        OPENSSL_free(raw[i]);
+        EVP_PKEY_free(cpub[i]);
+        EVP_PKEY_free(cpriv[i]);
+    }
+    OPENSSL_free(blob);
+    OPENSSL_free(composed);
+    EVP_PKEY_free(key);
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -450,14 +578,11 @@ int main(void)
      * name (alg2/pq_alg) lets a row tell a genuine keygen bug from a component
      * whose provider simply is not loaded here. */
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
-        /* Component extraction exposes exactly a classical + a PQ half via
-         * HYBRID_PKEY_PARAM_{CLASSIC,PQ}_*; indexed per-component params for
-         * N>2-component hybrids are deferred to issue #135 item 11 (PR11), so
-         * the 3-component rows cannot be fully extracted/recomposed yet. */
+        /* 2-component rows split into a classical + a PQ half via
+         * HYBRID_PKEY_PARAM_{CLASSIC,PQ}_*; N>2-component rows use the indexed
+         * hybrid-compN-* params (issue #135 item 11). */
         if (hybrid_kem_table[i].n_comp > 2) {
-            printf("  %-24s (hybrid   ) ... SKIP (N>2 extraction params: PR11)\n",
-                   hybrid_kem_table[i].hybrid_name);
-            skipped++;
+            check_ncomp(ctx, &hybrid_kem_table[i]);
             continue;
         }
         check(ctx, hybrid_kem_table[i].hybrid_name, HYBRID,

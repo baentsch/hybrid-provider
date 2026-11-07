@@ -511,11 +511,12 @@ int main(int argc, char **argv)
     }
 
     /*
-     * Composition-overhead guard: each hybrid's steady-state ops vs the sum of its
-     * two components, iterating the provider's OWN tables so the peer fetches each
-     * component by the exact name the provider composes with (same impl -> tax
-     * cancels; see bench_util.h). Unlike Part 1 this needs no native peer -- only
-     * the two components -- so it covers every hybrid, including those Part 1 skips.
+     * Composition-overhead guard: each hybrid's steady-state ops vs the sum of
+     * ALL its components, iterating the provider's OWN tables so the peer fetches
+     * each component by the exact name the provider composes with (same impl ->
+     * tax cancels; see bench_util.h). Unlike Part 1 this needs no native peer --
+     * only the components -- so it covers every hybrid, including those Part 1
+     * skips and the N>2-component HQC groups (issue #135 item 11).
      */
     if (bench_timing_unreliable()) {
         printf("\ncomposition-overhead guard — SKIPPED "
@@ -525,16 +526,18 @@ int main(int argc, char **argv)
                "(ceiling %.1fx, keygen excluded)\n", HYBRID_OVERHEAD_CEIL);
         for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
             const HYBRID_KEM_INFO *r = &hybrid_kem_table[i];
+            const char *names[HYBRID_MAX_COMP], *groups[HYBRID_MAX_COMP];
+            int is_kem[HYBRID_MAX_COMP];
+            unsigned j;
 
-            /* The sum-of-components guard models exactly a classical + a PQ
-             * half; N>2-component hybrids need an N-way sum (future work), so
-             * skip them here rather than measure a short, misleading sum. */
-            if (r->n_comp > 2)
-                continue;
-            bench_guard_kem(libctx, r->hybrid_name, "provider=hybrid",
-                            r->component[1].name, r->component[0].name,
-                            r->component[0].group, 0,
-                            HYBRID_OVERHEAD_CEIL, &guard_failures);
+            for (j = 0; j < r->n_comp; j++) {
+                names[j] = r->component[j].name;
+                groups[j] = r->component[j].group;
+                is_kem[j] = r->component[j].is_kem;
+            }
+            bench_guard_kem_ncomp(libctx, r->hybrid_name, "provider=hybrid",
+                                  r->n_comp, names, groups, is_kem,
+                                  HYBRID_OVERHEAD_CEIL, &guard_failures);
         }
         for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
             const HYBRID_SIG_INFO *r = &hybrid_sig_table[i];
