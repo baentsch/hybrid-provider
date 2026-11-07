@@ -285,9 +285,10 @@ static int hybrid_kem_encapsulate(void *vctx,
      * output into shsec itself. 2*EVP_MAX_MD_SIZE comfortably holds both. */
     uint8_t sscomp[2 * EVP_MAX_MD_SIZE];
     uint8_t *ssbuf;
-    /* Per-component ciphertext/secret destinations and lengths. */
-    uint8_t *ctp[HYBRID_KEY_NCOMP(key)], *ssp[HYBRID_KEY_NCOMP(key)];
-    size_t ctl[HYBRID_KEY_NCOMP(key)], ssl[HYBRID_KEY_NCOMP(key)];
+    /* Per-component ciphertext/secret destinations and lengths. Fixed-capacity
+     * (HYBRID_MAX_COMP) stack arrays; only the key's n_comp entries are used. */
+    uint8_t *ctp[HYBRID_MAX_COMP], *ssp[HYBRID_MAX_COMP];
+    size_t ctl[HYBRID_MAX_COMP], ssl[HYBRID_MAX_COMP];
 
     if (!hybrid_have_pubkey(key))
         return 0;
@@ -393,10 +394,11 @@ static int hybrid_kem_decapsulate(void *vctx,
     size_t total_clen = 0, total_slen = 0, comb_slen, coff, soff;
     uint8_t sscomp[2 * EVP_MAX_MD_SIZE];
     uint8_t *ssbuf;
-    /* Per-component ciphertext sources (read-only) and secret destinations. */
-    const uint8_t *ctp[HYBRID_KEY_NCOMP(key)];
-    uint8_t *ssp[HYBRID_KEY_NCOMP(key)];
-    size_t ctl[HYBRID_KEY_NCOMP(key)], ssl[HYBRID_KEY_NCOMP(key)];
+    /* Per-component ciphertext sources (read-only) and secret destinations.
+     * Fixed-capacity (HYBRID_MAX_COMP); only the key's n_comp entries are used. */
+    const uint8_t *ctp[HYBRID_MAX_COMP];
+    uint8_t *ssp[HYBRID_MAX_COMP];
+    size_t ctl[HYBRID_MAX_COMP], ssl[HYBRID_MAX_COMP];
 
     if (!hybrid_have_prvkey(key))
         return 0;

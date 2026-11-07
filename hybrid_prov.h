@@ -191,6 +191,13 @@ typedef struct {
     size_t a1_sig, a2_sig;                 /* SIG only: max signature sizes */
 } HYBRID_SIZES;
 
+/*
+ * Upper bound on the number of components in a hybrid (issue #135, 2->N). Sizes
+ * the per-key component array below; the actual count is HYBRID_KEY->n_comp
+ * (fixed at 2 today). The two deferred 3-component HQC groups fit within 4.
+ */
+#define HYBRID_MAX_COMP 4
+
 /* Hybrid key — used for both KEM and SIG hybrids */
 typedef struct hybrid_key_st {
     OSSL_LIB_CTX *libctx;
@@ -200,8 +207,14 @@ typedef struct hybrid_key_st {
     int combiner;               /* KEM shared-secret combiner (HYBRID_COMBINER_*);
                                  * copied from hybrid_kem_combiner[] at construction.
                                  * 0 (CONCAT) for every concat hybrid and all sigs. */
-    EVP_PKEY *key1;             /* classical component */
-    EVP_PKEY *key2;             /* PQ component */
+    /*
+     * Component key handles, indexed 0..n_comp-1 (component 0 == logical alg1,
+     * component 1 == alg2). Accessed only through HYBRID_KEY_COMP /
+     * HYBRID_KEY_NCOMP (issue #135). n_comp is fixed at 2 until per-variant
+     * counts arrive with the wire-ordered descriptors; sized to HYBRID_MAX_COMP.
+     */
+    EVP_PKEY *comp[HYBRID_MAX_COMP];
+    unsigned n_comp;
     unsigned int state;
     const HYBRID_SIZES *sizes;  /* -> this variant's row in the constant size
                                  * table (hybrid_kem_sizes[]/hybrid_sig_sizes[]);
@@ -211,8 +224,8 @@ typedef struct hybrid_key_st {
      * context, which outlives the key; not freed here). NULL when unset, in
      * which case the per-component accessors fall back to propq.
      */
-    const char *alg2_propq;       /* for the PQ component (key2 / alg2) */
-    const char *alg1_propq;  /* for the classical component (key1 / alg1) */
+    const char *alg2_propq;       /* for the PQ component (alg2, component 1) */
+    const char *alg1_propq;  /* for the classical component (alg1, component 0) */
 } HYBRID_KEY;
 
 /* Per-component property query, falling back to the key's generic propq. */
@@ -907,17 +920,17 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
 /*
  * Component-indexed accessors (issue #135, 2->N generalization) -------------
  *
- * These are the stable interface the keymgmt/KEM/encoder/decoder paths will use
- * instead of naming key1/key2, alg1/alg2 and the a1_/a2_ sizes directly, so a
- * later step can replace the two fixed slots with an N-element component list
- * WITHOUT touching call sites: only the bodies below change. Component indices
- * are 0-based — component 0 == key1/alg1, component 1 == key2/alg2. The count is
- * fixed at 2 today. Nothing calls these yet; they are introduced ahead of the
- * mechanical call-site conversion (static inline / unused is warning-free).
+ * These are the stable interface the keymgmt/KEM/encoder/decoder/sig paths use
+ * instead of naming comp[]/alg1/alg2 and the a1_/a2_ sizes directly, so the
+ * storage flip to an N-element component list happens WITHOUT touching call
+ * sites: only the bodies below (and the struct) change. Component indices are
+ * 0-based — component 0 == comp[0]/alg1, component 1 == comp[1]/alg2. The count
+ * (HYBRID_KEY->n_comp) is fixed at 2 until per-variant counts arrive with the
+ * wire-ordered descriptors.
  */
 
-/* Number of components in the hybrid (fixed at 2 until the N-slot step). */
-#define HYBRID_KEY_NCOMP(k) ((unsigned)2)
+/* Number of components in the hybrid (n_comp, fixed at 2 until per-variant). */
+#define HYBRID_KEY_NCOMP(k) ((k)->n_comp)
 
 /*
  * Logical component indices (0-based) for the genuinely positional call sites —
@@ -927,17 +940,16 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
  * HYBRID_COMP_ALG1 == 0. These name the LOGICAL slot, independent of wire order
  * (alg2_slot may place either component first on the wire). "Touch every
  * component" sites use a plain loop to HYBRID_KEY_NCOMP instead; these few
- * positional indices are what the N-slot step still has to generalize.
+ * positional indices (alg1/alg2) are what a later step still has to generalize.
  */
 enum { HYBRID_COMP_ALG1 = 0, HYBRID_COMP_ALG2 = 1 };
 
 /*
  * The i-th component key handle, as an LVALUE: call sites both read it and
- * assign/free it (key->key1 = ...; EVP_PKEY_free(...)), so this must be
- * assignable, not just a value. `*(cond ? &a : &b)` is a valid lvalue. When the
- * storage becomes an array this is simply ((k)->comp[i]).
+ * assign/free it (HYBRID_KEY_COMP(k, i) = ...; EVP_PKEY_free(...)), so this must
+ * be assignable, not just a value — an array element is.
  */
-#define HYBRID_KEY_COMP(k, i) (*((i) == 0 ? &(k)->key1 : &(k)->key2))
+#define HYBRID_KEY_COMP(k, i) ((k)->comp[i])
 
 /* Per-component identity (name / EC group), mapping the index onto the existing
  * slot accessors so KEM and SIG info are handled uniformly. */
