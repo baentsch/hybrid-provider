@@ -217,10 +217,11 @@ static const uint8_t XWING_LABEL[6] = {
  *
  * Called only for a HYBRID_COMBINER_XWING key, but component-agnostic within
  * that: ss_pq/ss_cl/ct_cl are passed by (ptr, len) and pk_cl is read here at its
- * own length (key->sizes->a1_pub), so an X-Wing-style row over any classical
- * key-exchange + PQ KEM pair (e.g. ML-KEM-1024, or an experimental KEM) is
- * combined by this same code with nothing component-specific hardcoded. ss_pq is
- * the PQ (alg2) secret, ss_cl/ct_cl the classical (alg1) secret and ciphertext.
+ * own length (component ALG1's public-key bytes), so an X-Wing-style row over
+ * any classical key-exchange + PQ KEM pair (e.g. ML-KEM-1024, or an experimental
+ * KEM) is combined by this same code with nothing component-specific hardcoded.
+ * ss_pq is the PQ (alg2) secret, ss_cl/ct_cl the classical (alg1) secret and
+ * ciphertext.
  * The output is always one SHA3-256 digest (a property of the combiner, not the
  * components); the digest is fetched with a NULL property query (not the
  * component propq, which may pin a provider without SHA-3) so it resolves from
@@ -236,7 +237,7 @@ hybrid_xwing_combine(const HYBRID_KEY *key,
 {
     EVP_MD *sha3 = NULL;
     EVP_MD_CTX *mdctx = NULL;
-    size_t pklen = key->sizes->a1_pub, pkgot = 0;
+    size_t pklen = hybrid_key_comp_pub_bytes(key, HYBRID_COMP_ALG1), pkgot = 0;
     uint8_t *pk_cl = NULL;
     unsigned int dlen = 0;
     int ret = 0;
@@ -246,7 +247,8 @@ hybrid_xwing_combine(const HYBRID_KEY *key,
     /* Recipient classical public key (pk_cl). Works for both an encapsulation
      * (public) key and a decapsulation (private) key, since the classical key
      * always exposes its public half via OSSL_PKEY_PARAM_PUB_KEY. */
-    if (EVP_PKEY_get_octet_string_param(key->key1, OSSL_PKEY_PARAM_PUB_KEY,
+    if (EVP_PKEY_get_octet_string_param(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1),
+                                        OSSL_PKEY_PARAM_PUB_KEY,
                                         pk_cl, pklen, &pkgot) <= 0)
         goto end;
 
@@ -276,29 +278,31 @@ static int hybrid_kem_encapsulate(void *vctx,
 {
     HYBRID_KEM_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
-    const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)key->info;
     int xwing = (key->combiner == HYBRID_COMBINER_XWING);
-    size_t total_clen, total_slen, comb_slen;
+    unsigned n = HYBRID_KEY_NCOMP(key), w, i;
+    size_t total_clen = 0, total_slen = 0, comb_slen, coff, soff;
     /* Scratch for the component secrets when the X-Wing combiner derives the
      * output into shsec itself. 2*EVP_MAX_MD_SIZE comfortably holds both. */
     uint8_t sscomp[2 * EVP_MAX_MD_SIZE];
     uint8_t *ssbuf;
-    uint8_t *ct1, *ct2, *ss1, *ss2;
-    size_t ct1len, ct2len, ss1len, ss2len;
+    /* Per-component ciphertext/secret destinations and lengths. */
+    uint8_t *ctp[HYBRID_KEY_NCOMP(key)], *ssp[HYBRID_KEY_NCOMP(key)];
+    size_t ctl[HYBRID_KEY_NCOMP(key)], ssl[HYBRID_KEY_NCOMP(key)];
 
     if (!hybrid_have_pubkey(key))
         return 0;
 
     /*
-     * For key-exchange alg1, "ciphertext" = ephemeral public key.
-     * For native KEM alg2, ciphertext = KEM ciphertext.
+     * Per-component ciphertext/secret sizes. For a key-exchange component the
+     * "ciphertext" is the ephemeral public key; for a native KEM it is the KEM
+     * ciphertext.
      */
-    ct1len = key->sizes->a1_ct;
-    ct2len = key->sizes->a2_ct;
-    ss1len = key->sizes->a1_ss;
-    ss2len = key->sizes->a2_ss;
-    total_clen = ct1len + ct2len;
-    total_slen = ss1len + ss2len;           /* concatenated component secrets */
+    for (i = 0; i < n; i++) {
+        ctl[i] = hybrid_key_comp_ct_bytes(key, i);
+        ssl[i] = hybrid_key_comp_ss_bytes(key, i);
+        total_clen += ctl[i];
+        total_slen += ssl[i];           /* concatenated component secrets */
+    }
     /* Output secret length: the X-Wing combiner hashes the component secrets
      * down to a fixed 32 bytes; plain concat returns their concatenation. */
     comb_slen = xwing ? HYBRID_XWING_SS_LEN : total_slen;
@@ -320,49 +324,50 @@ static int hybrid_kem_encapsulate(void *vctx,
 
     /* The X-Wing combiner assembles the component secrets in scratch and
      * derives the output into shsec; plain concat writes them straight into the
-     * caller's secret, slot-ordered. */
+     * caller's secret, in wire order. */
     ssbuf = xwing ? sscomp : shsec;
 
     /*
-     * Slot ordering:
-     * If alg2_slot == 0: [alg2_ct | alg1_ct], [alg2_ss | alg1_ss]
-     * If alg2_slot == 1: [alg1_ct | alg2_ct], [alg1_ss | alg2_ss]
+     * Lay each component's ciphertext and secret at its wire offset. The wire
+     * iterator places the PQ component first for reverse-share KEMs
+     * (alg2_slot == 0) and component ALG1 first otherwise; for a two-element
+     * list this reproduces today's [alg2|alg1] / [alg1|alg2] layout exactly.
      */
-    if (info->alg2_slot == 0) {
-        ct2 = ctext;
-        ct1 = ctext + ct2len;
-        ss2 = ssbuf;
-        ss1 = ssbuf + ss2len;
-    } else {
-        ct1 = ctext;
-        ct2 = ctext + ct1len;
-        ss1 = ssbuf;
-        ss2 = ssbuf + ss1len;
+    coff = soff = 0;
+    for (w = 0; w < n; w++) {
+        unsigned ci = hybrid_wire_to_comp(key, w);
+
+        ctp[ci] = ctext + coff;
+        coff += ctl[ci];
+        ssp[ci] = ssbuf + soff;
+        soff += ssl[ci];
     }
 
-    /* Encapsulate alg2 (PQ KEM) */
-    if (info->alg2_is_kem) {
-        if (!encap_kem(key->libctx, HYBRID_KEY_ALG2_PROPQ(key), key->key2,
-                       ct2, &ct2len, ss2, &ss2len))
-            goto err;
-    }
-
-    /* Encapsulate alg1 (key-exchange or KEM) */
-    if (info->alg1_is_kem) {
-        if (!encap_kem(key->libctx, HYBRID_KEY_ALG1_PROPQ(key), key->key1,
-                       ct1, &ct1len, ss1, &ss1len))
-            goto err;
-    } else {
-        if (!encap_keyexchange(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
-                               key->key1, ct1, &ct1len, ss1, &ss1len))
-            goto err;
+    /* Encapsulate each component by kind: native KEM or key-exchange. */
+    for (i = 0; i < n; i++) {
+        if (hybrid_key_comp_is_kem(key, i)) {
+            if (!encap_kem(key->libctx, hybrid_key_comp_propq(key, i),
+                           HYBRID_KEY_COMP(key, i),
+                           ctp[i], &ctl[i], ssp[i], &ssl[i]))
+                goto err;
+        } else {
+            if (!encap_keyexchange(key->libctx, hybrid_key_comp_propq(key, i),
+                                   HYBRID_KEY_COMP(key, i),
+                                   ctp[i], &ctl[i], ssp[i], &ssl[i]))
+                goto err;
+        }
     }
 
     /* X-Wing combiner: derive the bound secret from the component outputs and
-     * the recipient classical public key (read inside, per the key's row). */
+     * the recipient classical public key (read inside, per the key's row).
+     * X-Wing is exactly one PQ (ALG2) + one classical (ALG1) component (n == 2);
+     * ss_pq/ss_cl/ct_cl are those logical components wherever they sit on wire. */
     if (xwing) {
-        if (!hybrid_xwing_combine(key, ss2, ss2len, ss1, ss1len,
-                                  ct1, ct1len, shsec, comb_slen))
+        if (!hybrid_xwing_combine(key,
+                                  ssp[HYBRID_COMP_ALG2], ssl[HYBRID_COMP_ALG2],
+                                  ssp[HYBRID_COMP_ALG1], ssl[HYBRID_COMP_ALG1],
+                                  ctp[HYBRID_COMP_ALG1], ctl[HYBRID_COMP_ALG1],
+                                  shsec, comb_slen))
             goto err;
         OPENSSL_cleanse(sscomp, sizeof(sscomp));
     }
@@ -383,24 +388,25 @@ static int hybrid_kem_decapsulate(void *vctx,
 {
     HYBRID_KEM_CTX *ctx = vctx;
     HYBRID_KEY *key = ctx->key;
-    const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)key->info;
     int xwing = (key->combiner == HYBRID_COMBINER_XWING);
-    size_t total_clen, total_slen, comb_slen;
+    unsigned n = HYBRID_KEY_NCOMP(key), w, i;
+    size_t total_clen = 0, total_slen = 0, comb_slen, coff, soff;
     uint8_t sscomp[2 * EVP_MAX_MD_SIZE];
     uint8_t *ssbuf;
-    const uint8_t *ct1, *ct2;
-    uint8_t *ss1, *ss2;
-    size_t ct1len, ct2len, ss1len, ss2len;
+    /* Per-component ciphertext sources (read-only) and secret destinations. */
+    const uint8_t *ctp[HYBRID_KEY_NCOMP(key)];
+    uint8_t *ssp[HYBRID_KEY_NCOMP(key)];
+    size_t ctl[HYBRID_KEY_NCOMP(key)], ssl[HYBRID_KEY_NCOMP(key)];
 
     if (!hybrid_have_prvkey(key))
         return 0;
 
-    ct1len = key->sizes->a1_ct;
-    ct2len = key->sizes->a2_ct;
-    ss1len = key->sizes->a1_ss;
-    ss2len = key->sizes->a2_ss;
-    total_clen = ct1len + ct2len;
-    total_slen = ss1len + ss2len;           /* concatenated component secrets */
+    for (i = 0; i < n; i++) {
+        ctl[i] = hybrid_key_comp_ct_bytes(key, i);
+        ssl[i] = hybrid_key_comp_ss_bytes(key, i);
+        total_clen += ctl[i];
+        total_slen += ssl[i];           /* concatenated component secrets */
+    }
     comb_slen = xwing ? HYBRID_XWING_SS_LEN : total_slen;  /* see hybrid_kem_encapsulate */
 
     /* Size query */
@@ -416,10 +422,10 @@ static int hybrid_kem_decapsulate(void *vctx,
         return 0;
     /*
      * Length/count sanity check BEFORE splitting the concatenated ciphertext at
-     * its fixed component offsets (issue #46). The two component ciphertext
-     * lengths are compile-time constants for the variant, so the only valid
-     * total is their sum; a truncated, oversized or otherwise wrong-length input
-     * would make the slot pointers below run past the caller's buffer. Reject it
+     * its fixed component offsets (issue #46). The component ciphertext lengths
+     * are compile-time constants for the variant, so the only valid total is
+     * their sum; a truncated, oversized or otherwise wrong-length input would
+     * make the component pointers below run past the caller's buffer. Reject it
      * with a defined error rather than reading out of bounds or splitting garbage.
      */
     if (clen != total_clen) {
@@ -432,41 +438,40 @@ static int hybrid_kem_decapsulate(void *vctx,
 
     ssbuf = xwing ? sscomp : shsec;
 
-    /* Slot ordering */
-    if (info->alg2_slot == 0) {
-        ct2 = ctext;
-        ct1 = ctext + ct2len;
-        ss2 = ssbuf;
-        ss1 = ssbuf + ss2len;
-    } else {
-        ct1 = ctext;
-        ct2 = ctext + ct1len;
-        ss1 = ssbuf;
-        ss2 = ssbuf + ss1len;
+    /* Split the concatenated ciphertext and place each secret at its wire
+     * offset (see hybrid_kem_encapsulate for the ordering). */
+    coff = soff = 0;
+    for (w = 0; w < n; w++) {
+        unsigned ci = hybrid_wire_to_comp(key, w);
+
+        ctp[ci] = ctext + coff;
+        coff += ctl[ci];
+        ssp[ci] = ssbuf + soff;
+        soff += ssl[ci];
     }
 
-    /* Decapsulate alg2 (PQ KEM) */
-    if (info->alg2_is_kem) {
-        if (!decap_kem(key->libctx, HYBRID_KEY_ALG2_PROPQ(key), key->key2,
-                       ct2, ct2len, ss2, &ss2len))
-            goto err;
-    }
-
-    /* Decapsulate alg1 (key-exchange or KEM) */
-    if (info->alg1_is_kem) {
-        if (!decap_kem(key->libctx, HYBRID_KEY_ALG1_PROPQ(key), key->key1,
-                       ct1, ct1len, ss1, &ss1len))
-            goto err;
-    } else {
-        if (!decap_keyexchange(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
-                               key->key1, ct1, ct1len, ss1, &ss1len))
-            goto err;
+    /* Decapsulate each component by kind: native KEM or key-exchange. */
+    for (i = 0; i < n; i++) {
+        if (hybrid_key_comp_is_kem(key, i)) {
+            if (!decap_kem(key->libctx, hybrid_key_comp_propq(key, i),
+                           HYBRID_KEY_COMP(key, i),
+                           ctp[i], ctl[i], ssp[i], &ssl[i]))
+                goto err;
+        } else {
+            if (!decap_keyexchange(key->libctx, hybrid_key_comp_propq(key, i),
+                                   HYBRID_KEY_COMP(key, i),
+                                   ctp[i], ctl[i], ssp[i], &ssl[i]))
+                goto err;
+        }
     }
 
     /* X-Wing combiner: derive the bound secret (see hybrid_kem_encapsulate). */
     if (xwing) {
-        if (!hybrid_xwing_combine(key, ss2, ss2len, ss1, ss1len,
-                                  ct1, ct1len, shsec, comb_slen))
+        if (!hybrid_xwing_combine(key,
+                                  ssp[HYBRID_COMP_ALG2], ssl[HYBRID_COMP_ALG2],
+                                  ssp[HYBRID_COMP_ALG1], ssl[HYBRID_COMP_ALG1],
+                                  ctp[HYBRID_COMP_ALG1], ctl[HYBRID_COMP_ALG1],
+                                  shsec, comb_slen))
             goto err;
         OPENSSL_cleanse(sscomp, sizeof(sscomp));
     }
