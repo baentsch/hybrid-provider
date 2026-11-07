@@ -156,25 +156,38 @@ static void verify(OSSL_LIB_CTX *lc)
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
         const HYBRID_KEM_INFO *r = &hybrid_kem_table[i];
         const HYBRID_SIZES *t = &hybrid_kem_sizes[i];
-        size_t a1p, a1v, a1s, a1c, a2p, a2v, a2s, a2c;
+        size_t pub[HYBRID_MAX_COMP], prv[HYBRID_MAX_COMP],
+               ss[HYBRID_MAX_COMP], ct[HYBRID_MAX_COMP];
+        unsigned j;
+        int ok = 1;
 
-        if (!disc_kem(lc, r->component[0].name, r->component[0].group,
-                      r->component[0].is_kem, &a1p, &a1v, &a1s, &a1c)
-                || !disc_kem(lc, r->component[1].name, r->component[1].group,
-                             r->component[1].is_kem, &a2p, &a2v, &a2s, &a2c)) {
+        /* Discover all n_comp components first; skip the whole row if any is
+         * unavailable (e.g. oqsprovider absent for the HQC share). */
+        for (j = 0; j < r->n_comp; j++)
+            if (!disc_kem(lc, r->component[j].name, r->component[j].group,
+                          r->component[j].is_kem,
+                          &pub[j], &prv[j], &ss[j], &ct[j])) {
+                ok = 0;
+                break;
+            }
+        if (!ok) {
             skipped++;
             ERR_clear_error();
             continue;
         }
         checked++;
-        cmp(r->hybrid_name, "comp0.pub", t->comp[0].pub, a1p);
-        cmp(r->hybrid_name, "comp0.prv", t->comp[0].prv, a1v);
-        cmp(r->hybrid_name, "comp0.ss",  t->comp[0].ss,  a1s);
-        cmp(r->hybrid_name, "comp0.ct",  t->comp[0].ct,  a1c);
-        cmp(r->hybrid_name, "comp1.pub", t->comp[1].pub, a2p);
-        cmp(r->hybrid_name, "comp1.prv", t->comp[1].prv, a2v);
-        cmp(r->hybrid_name, "comp1.ss",  t->comp[1].ss,  a2s);
-        cmp(r->hybrid_name, "comp1.ct",  t->comp[1].ct,  a2c);
+        for (j = 0; j < r->n_comp; j++) {
+            char f[16];
+
+            snprintf(f, sizeof(f), "comp%u.pub", j);
+            cmp(r->hybrid_name, f, t->comp[j].pub, pub[j]);
+            snprintf(f, sizeof(f), "comp%u.prv", j);
+            cmp(r->hybrid_name, f, t->comp[j].prv, prv[j]);
+            snprintf(f, sizeof(f), "comp%u.ss", j);
+            cmp(r->hybrid_name, f, t->comp[j].ss, ss[j]);
+            snprintf(f, sizeof(f), "comp%u.ct", j);
+            cmp(r->hybrid_name, f, t->comp[j].ct, ct[j]);
+        }
     }
 
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
@@ -205,15 +218,27 @@ static void emit(OSSL_LIB_CTX *lc)
     printf("static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {\n");
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
         const HYBRID_KEM_INFO *r = &hybrid_kem_table[i];
-        size_t a1p, a1v, a1s, a1c, a2p, a2v, a2s, a2c;
+        size_t pub[HYBRID_MAX_COMP], prv[HYBRID_MAX_COMP],
+               ss[HYBRID_MAX_COMP], ct[HYBRID_MAX_COMP];
+        unsigned j;
+        int ok = 1;
 
-        if (!disc_kem(lc, r->component[0].name, r->component[0].group, r->component[0].is_kem, &a1p, &a1v, &a1s, &a1c)
-                || !disc_kem(lc, r->component[1].name, r->component[1].group, r->component[1].is_kem, &a2p, &a2v, &a2s, &a2c)) {
+        for (j = 0; j < r->n_comp; j++)
+            if (!disc_kem(lc, r->component[j].name, r->component[j].group,
+                          r->component[j].is_kem,
+                          &pub[j], &prv[j], &ss[j], &ct[j])) {
+                ok = 0;
+                break;
+            }
+        if (!ok) {
             printf("    { 0 },  /* %-22s UNRESOLVED */\n", r->hybrid_name);
             continue;
         }
-        printf("    { { {%zu,%zu,%zu,%zu,0}, {%zu,%zu,%zu,%zu,0} } },  /* %s */\n",
-               a1p, a1v, a1s, a1c, a2p, a2v, a2s, a2c, r->hybrid_name);
+        printf("    { {");
+        for (j = 0; j < r->n_comp; j++)
+            printf(" {%zu,%zu,%zu,%zu,0}%s", pub[j], prv[j], ss[j], ct[j],
+                   j + 1 < r->n_comp ? "," : "");
+        printf(" } },  /* %s */\n", r->hybrid_name);
     }
     printf("};\n\nstatic const HYBRID_SIZES hybrid_sig_sizes[HYBRID_SIG_ALG_COUNT] = {\n");
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {

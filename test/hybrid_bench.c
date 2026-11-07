@@ -526,6 +526,11 @@ int main(int argc, char **argv)
         for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
             const HYBRID_KEM_INFO *r = &hybrid_kem_table[i];
 
+            /* The sum-of-components guard models exactly a classical + a PQ
+             * half; N>2-component hybrids need an N-way sum (future work), so
+             * skip them here rather than measure a short, misleading sum. */
+            if (r->n_comp > 2)
+                continue;
             bench_guard_kem(libctx, r->hybrid_name, "provider=hybrid",
                             r->component[1].name, r->component[0].name,
                             r->component[0].group, 0,

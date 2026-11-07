@@ -18,11 +18,31 @@
 #include <openssl/param_build.h>
 #include <string.h>
 
+/*
+ * Upper bound on the number of components in a hybrid (issue #135, 2->N). Sizes
+ * the per-key component array (HYBRID_KEY.comp), the per-component size row
+ * (HYBRID_SIZES), the KEM info's component/wire arrays, and the per-component
+ * property-query arrays (provider ctx + key); the actual count is
+ * HYBRID_KEY->n_comp (2 for most rows, from HYBRID_KEM_INFO.n_comp). The two
+ * 3-component HQC groups fit within 4.
+ */
+#define HYBRID_MAX_COMP 4
+
 /* Config-section keys for selecting component sub-algorithm providers. The keys
- * are positional (alg1 / alg2), not "classical"/"PQ", so they stay correct when
- * either slot is post-quantum (a PQ/PQ row, §3.4). */
+ * are positional (alg1 / alg2 / …, one per component index), not
+ * "classical"/"PQ", so they stay correct when any slot is post-quantum (a PQ/PQ
+ * row, §3.4). There is one key per component up to HYBRID_MAX_COMP; the N>2
+ * groups (the 3-component HQC KEMs) use alg3-propquery for their third
+ * component. HYBRID_CONF_ALGN_PROPQUERY[i] names the key for component i. */
 #define HYBRID_CONF_ALG1_PROPQUERY      "alg1-propquery"
 #define HYBRID_CONF_ALG2_PROPQUERY      "alg2-propquery"
+#define HYBRID_CONF_ALG3_PROPQUERY      "alg3-propquery"
+#define HYBRID_CONF_ALG4_PROPQUERY      "alg4-propquery"
+/* Indexed by component: HYBRID_CONF_ALGN_PROPQUERY[i] is the config key for
+ * component i's property query (sized HYBRID_MAX_COMP; see hybrid_prov.c). */
+#define HYBRID_CONF_ALGN_PROPQUERY \
+    { HYBRID_CONF_ALG1_PROPQUERY, HYBRID_CONF_ALG2_PROPQUERY, \
+      HYBRID_CONF_ALG3_PROPQUERY, HYBRID_CONF_ALG4_PROPQUERY }
 /*
  * Optional private component context. When "component-providers" is set (a
  * space-separated list of provider module names, e.g. "default oqsprovider"),
@@ -66,14 +86,13 @@ typedef struct {
     OSSL_LIB_CTX *libctx;
     const OSSL_CORE_HANDLE *handle;
     /*
-     * Optional component property queries read from the provider's config
-     * section (alg1-propquery / alg2-propquery). They steer which provider
-     * supplies each component sub-algorithm (by slot: alg1 / alg2),
-     * independently of how the hybrid algorithm itself was selected. NULL when
-     * unset. Owned here.
+     * Optional per-component property queries read from the provider's config
+     * section (alg1-propquery / alg2-propquery / …, one per component index).
+     * They steer which provider supplies each component sub-algorithm (by slot),
+     * independently of how the hybrid algorithm itself was selected. Each entry
+     * is NULL when unset. Indexed by logical component; owned here.
      */
-    char *alg1_propq;
-    char *alg2_propq;
+    char *comp_propq[HYBRID_MAX_COMP];
     /*
      * Context used to fetch component sub-algorithms. Equals `libctx` by
      * default; when "component-providers" is configured it is a private context
@@ -123,15 +142,6 @@ int hybrid_is_ceded(void *provctx, const char *name);
 #define HYBRID_HAVE_NOKEYS  0
 #define HYBRID_HAVE_PUBKEY  1
 #define HYBRID_HAVE_PRVKEY  2
-
-/*
- * Upper bound on the number of components in a hybrid (issue #135, 2->N). Sizes
- * the per-key component array (HYBRID_KEY.comp), the per-component size row
- * (HYBRID_SIZES) and the KEM info's component/wire arrays below; the actual
- * count is HYBRID_KEY->n_comp (2 today, from HYBRID_KEM_INFO.n_comp). The two
- * deferred 3-component HQC groups fit within 4.
- */
-#define HYBRID_MAX_COMP 4
 
 /*
  * One component of a hybrid KEM: its EVP fetch name, optional EC group name, and
@@ -257,19 +267,23 @@ typedef struct hybrid_key_st {
                                  * table (hybrid_kem_sizes[]/hybrid_sig_sizes[]);
                                  * borrowed, static-lifetime, not freed here */
     /*
-     * Per-component property queries (borrowed pointers into the provider
-     * context, which outlives the key; not freed here). NULL when unset, in
-     * which case the per-component accessors fall back to propq.
+     * Per-component property queries, indexed by logical component (borrowed
+     * pointers into the provider context, which outlives the key; not freed
+     * here). Each entry is NULL when unset, in which case the per-component
+     * accessor (hybrid_key_comp_propq) falls back to the generic propq.
      */
-    const char *alg2_propq;       /* for the PQ component (alg2, component 1) */
-    const char *alg1_propq;  /* for the classical component (alg1, component 0) */
+    const char *comp_propq[HYBRID_MAX_COMP];
 } HYBRID_KEY;
 
-/* Per-component property query, falling back to the key's generic propq. */
-#define HYBRID_KEY_ALG2_PROPQ(k) \
-    ((k)->alg2_propq != NULL ? (k)->alg2_propq : (k)->propq)
+/* Per-component property query by slot, falling back to the key's generic propq.
+ * ALG1/ALG2 are the two-component shorthands (components 0/1); for an arbitrary
+ * index use hybrid_key_comp_propq(). */
 #define HYBRID_KEY_ALG1_PROPQ(k) \
-    ((k)->alg1_propq != NULL ? (k)->alg1_propq : (k)->propq)
+    ((k)->comp_propq[HYBRID_COMP_ALG1] != NULL \
+         ? (k)->comp_propq[HYBRID_COMP_ALG1] : (k)->propq)
+#define HYBRID_KEY_ALG2_PROPQ(k) \
+    ((k)->comp_propq[HYBRID_COMP_ALG2] != NULL \
+         ? (k)->comp_propq[HYBRID_COMP_ALG2] : (k)->propq)
 
 #define hybrid_have_pubkey(key)  ((key)->state >= HYBRID_HAVE_PUBKEY)
 #define hybrid_have_prvkey(key)  ((key)->state >= HYBRID_HAVE_PRVKEY)
@@ -293,8 +307,24 @@ typedef struct hybrid_key_st {
  * in hybrid_kem_sizes[] below (machine-generated, CI-verified), so a new hybrid
  * needs only its component names, EC group and slot here.
  *
+ * The list takes TWO generators (issue #135, 2->N): X for the 2-component rows
+ * and X3 for the 3-component rows. Almost every hybrid is 2-component and uses
+ * X; the few 3-component rows (the draft-preussmattsson PQ/PQ/T HQC groups) use
+ * X3. (Only the storage/dispatch is N-ary up to HYBRID_MAX_COMP; the row
+ * generator is arity-specific because a C macro cannot take a variable-length
+ * component tuple — a 4-component row would add an X4, not reuse X3.) A consumer
+ * that reads only `cf` passes the SAME variadic macro for both; one that reads
+ * the component/tail columns defines an `_3` twin (the 2- and 3-component arg
+ * lists differ in width).
+ *
  * X(cfield, name, alg1, alg1_group, alg1_is_kem, alg2, slot,
  *   tls_codepoint, secbits, desc, oid)
+ * X3(cfield, name, c0, c0_group, c0_is_kem, c1, c1_group, c1_is_kem,
+ *    c2, c2_group, c2_is_kem, wire0, wire1, wire2,
+ *    tls_codepoint, secbits, desc, oid)
+ *   — components c0..c2 in LOGICAL order; wire0..wire2 give the concatenation
+ *     order as logical indices (X3 rows list their wire layout explicitly rather
+ *     than via the 2-component `slot` shorthand).
  *
  * PROVENANCE — the `tls_codepoint` and `oid` values are copied from their
  * origins and must stay in sync with them:
@@ -311,7 +341,7 @@ typedef struct hybrid_key_st {
  * oqsprovider/IETF default; a 0 code point means "no TLS group" (KEM API only,
  * e.g. X448MLKEM1024).
  */
-#define HYBRID_KEM_LIST(X)                                                    \
+#define HYBRID_KEM_LIST(X, X3)                                                \
   /* --- default-provider MLX names (raw concat) --- */                       \
   X(x25519mlkem768,    "X25519MLKEM768",     "X25519", NULL,            0,    \
       "MLKEM768",  0, 0x11ec, 192, "X25519+ML-KEM-768", NULL)\
@@ -479,22 +509,25 @@ typedef struct hybrid_key_st {
   X(exphyb_p256_frodo640aes, "exphyb_p256_frodo640aes", "EC", "P-256",       0,   \
       "frodo640aes", 1, 0x0000, 128, "Experimental P-256+FrodoKEM-640-AES (CMS)", \
       "1.3.9999.99.70")\
-  /* --- draft-preussmattsson-tls-hqckem HQC-KEM TLS groups (2-component) ---      \
-   * The draft defines nine groups; this adds the four 2-component hybrids — two    \
-   * PQ/T (HQC + ECDHE) and two PQ/PQ (HQC + ML-KEM). The combiner is RFC 9954      \
-   * fixed-length concatenation in NAME order, i.e. HQC first — exactly our default \
-   * HYBRID_COMBINER_CONCAT. HQC-first wire order is expressed by slot = 0:           \
-   * HQC is the alg2 KEM and leads the wire[] order (see hybrid_kem.c). The           \
-   * HQC half resolves from oqsprovider; the ML-KEM half from default (3.5+) or      \
-   * oqsprovider. secbits = min of the component NIST categories (HQC-192 + its      \
-   * level-3 partner -> 192; HQC-256 + its level-5 partner -> 256). PQ/T rows:       \
-   * alg1 = ECDHE key-exchange, alg2 = HQC KEM. PQ/PQ rows: both slots native KEMs   \
-   * (alg1_is_kem = 1, the xwing_mlkem768_hqc3 both-KEM path) under plain concat.    \
-   * Draft code points are still TBD (TBD1-9, un-assigned by IANA) and the draft is  \
-   * an individual submission, so these are operation-only: cp = 0 (KEM API only,    \
-   * never advertised as a TLS group), oid = NULL (HQC does not serialize to a key   \
-   * file standalone anyway). The two 3-component PQ/PQ/T groups need a 2->N-slot     \
-   * generalization and are deferred (issue #131); standalone HQC is oqsprovider's. */ \
+  /* --- draft-preussmattsson-tls-hqckem HQC-KEM TLS groups ---                     \
+   * The draft defines nine groups; this provider serves six as hybrids: four       \
+   * 2-component — two PQ/T (HQC + ECDHE) and two PQ/PQ (HQC + ML-KEM) — and the     \
+   * two 3-component PQ/PQ/T (HQC + ML-KEM + ECDHE, the X3 rows below, issue #131).  \
+   * The combiner is RFC 9954 fixed-length concatenation in NAME order, i.e. HQC    \
+   * first — exactly our default HYBRID_COMBINER_CONCAT. For the 2-component rows    \
+   * HQC-first wire order is expressed by slot = 0: HQC is the alg2 KEM and leads    \
+   * the wire[] order (see hybrid_kem.c); the 3-component rows give wire[] = {2,1,0} \
+   * explicitly (HQC, then ML-KEM, then ECDHE). The HQC half resolves from           \
+   * oqsprovider; the ML-KEM half from default (3.5+) or oqsprovider. secbits =      \
+   * min of the component NIST categories (HQC-192 + its level-3 partner -> 192;     \
+   * HQC-256 + its level-5 partner -> 256). PQ/T rows: alg1 = ECDHE key-exchange,    \
+   * alg2 = HQC KEM. PQ/PQ rows: both slots native KEMs (alg1_is_kem = 1, the        \
+   * xwing_mlkem768_hqc3 both-KEM path) under plain concat; the 3-component rows mix \
+   * one key-exchange (ECDHE) with two native KEMs (ML-KEM + HQC). Draft code points \
+   * are still TBD (TBD1-9, un-assigned by IANA) and the draft is an individual       \
+   * submission, so these are operation-only: cp = 0 (KEM API only, never advertised \
+   * as a TLS group), oid = NULL (HQC does not serialize to a key file standalone    \
+   * anyway). Standalone HQC is oqsprovider's. */                                    \
   X(x25519_hqc3,       "HQCKEM192X25519",    "X25519", NULL,            0,    \
       "hqc3",      0, 0x0000, 192, "HQC-192+X25519 (PQ/T, draft-preussmattsson)", NULL)\
   X(x448_hqc5,         "HQCKEM256X448",      "X448",   NULL,            0,    \
@@ -502,7 +535,17 @@ typedef struct hybrid_key_st {
   X(mlkem768_hqc3,     "HQCKEM192MLKEM768",  "MLKEM768", NULL,          1,    \
       "hqc3",      0, 0x0000, 192, "HQC-192+ML-KEM-768 (PQ/PQ, draft-preussmattsson)", NULL)\
   X(mlkem1024_hqc5,    "HQCKEM256MLKEM1024", "MLKEM1024", NULL,         1,    \
-      "hqc5",      0, 0x0000, 256, "HQC-256+ML-KEM-1024 (PQ/PQ, draft-preussmattsson)", NULL)
+      "hqc5",      0, 0x0000, 256, "HQC-256+ML-KEM-1024 (PQ/PQ, draft-preussmattsson)", NULL)\
+  /* 3-component PQ/PQ/T (issue #131): logical order classical, ML-KEM, HQC; wire   \
+   * {2,1,0} lays them out in draft NAME order HQC || ML-KEM || ECDHE. */            \
+  X3(mlkem768_hqc3_x25519,  "HQCKEM192MLKEM768X25519",                        \
+      "X25519", NULL, 0,  "MLKEM768",  NULL, 1,  "hqc3", NULL, 1,             \
+      2, 1, 0, 0x0000, 192,                                                   \
+      "HQC-192+ML-KEM-768+X25519 (PQ/PQ/T, draft-preussmattsson)", NULL)      \
+  X3(mlkem1024_hqc5_x448,   "HQCKEM256MLKEM1024X448",                         \
+      "X448",   NULL, 0,  "MLKEM1024", NULL, 1,  "hqc5", NULL, 1,             \
+      2, 1, 0, 0x0000, 256,                                                   \
+      "HQC-256+ML-KEM-1024+X448 (PQ/PQ/T, draft-preussmattsson)", NULL)
 
 /* Generate the info table from the master list. Components are stored in
  * logical order (alg1 then alg2, the PQ half always a native KEM); `slot`
@@ -511,14 +554,22 @@ typedef struct hybrid_key_st {
 #define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)       \
     { nm, 2, { { a1, grp, a1k }, { a2, NULL, 1 } },                          \
       { (slot) ? 0u : 1u, (slot) ? 1u : 0u }, cp, oid },
+/* 3-component twin: logical components c0..c2, explicit wire[] (w0..w2). */
+#define HYBRID_KEM_ROW_3(cf, nm, a1, g1, k1, a2, g2, k2, a3, g3, k3,          \
+                         w0, w1, w2, cp, sb, ds, oid)                         \
+    { nm, 3, { { a1, g1, k1 }, { a2, g2, k2 }, { a3, g3, k3 } },             \
+      { w0, w1, w2 }, cp, oid },
 static const HYBRID_KEM_INFO hybrid_kem_table[] = {
-    HYBRID_KEM_LIST(HYBRID_KEM_ROW)
+    HYBRID_KEM_LIST(HYBRID_KEM_ROW, HYBRID_KEM_ROW_3)
 };
 #undef HYBRID_KEM_ROW
+#undef HYBRID_KEM_ROW_3
 
-/* Per-algorithm table index, in list order (used to bind keymgmt thunks). */
+/* Per-algorithm table index, in list order (used to bind keymgmt thunks). The
+ * generator reads only `cf`, so the same variadic macro serves X and X3 rows. */
 #define HYBRID_KEM_IDX_ROW(cf, ...) HYBRID_KEM_IDX_##cf,
-enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW) HYBRID_KEM_ALG_COUNT_ENUM };
+enum { HYBRID_KEM_LIST(HYBRID_KEM_IDX_ROW, HYBRID_KEM_IDX_ROW)
+       HYBRID_KEM_ALG_COUNT_ENUM };
 #undef HYBRID_KEM_IDX_ROW
 
 #define HYBRID_KEM_ALG_COUNT \
@@ -605,6 +656,10 @@ static const HYBRID_SIZES hybrid_kem_sizes[HYBRID_KEM_ALG_COUNT] = {
     { { {56,56,56,56,0}, {7237,7333,32,14421,0} } },        /* HQCKEM256X448    (X448 + HQC-5) */
     { { {1184,2400,32,1088,0}, {4514,4602,32,8978,0} } },   /* HQCKEM192MLKEM768  (ML-KEM-768 + HQC-3) */
     { { {1568,3168,32,1568,0}, {7237,7333,32,14421,0} } },  /* HQCKEM256MLKEM1024 (ML-KEM-1024 + HQC-5) */
+    /* 3-component PQ/PQ/T: logical order classical, ML-KEM, HQC (wire = {2,1,0}).
+     * Component figures reuse the X25519/X448 + ML-KEM + HQC numbers above. */
+    { { {32,32,32,32,0}, {1184,2400,32,1088,0}, {4514,4602,32,8978,0} } },   /* HQCKEM192MLKEM768X25519 */
+    { { {56,56,56,56,0}, {1568,3168,32,1568,0}, {7237,7333,32,14421,0} } },  /* HQCKEM256MLKEM1024X448 */
 };
 
 /*
@@ -1014,20 +1069,28 @@ enum { HYBRID_COMP_ALG1 = 0, HYBRID_COMP_ALG2 = 1 };
 
 /* Per-component identity (name / EC group), mapping the index onto the existing
  * slot accessors so KEM and SIG info are handled uniformly. */
+/* Component fetch name / EC group by logical index. KEM keys carry an N-element
+ * component[] and are indexed directly (any i < n_comp); SIG keys keep the flat
+ * two-column alg1_/alg2_ layout (signatures stay 2-component). */
 static inline const char *hybrid_key_comp_name(const HYBRID_KEY *k, unsigned i)
 {
+    if (k->is_kem)
+        return ((const HYBRID_KEM_INFO *)k->info)->component[i].name;
     return i == 0 ? HYBRID_KEY_ALG1_NAME(k) : HYBRID_KEY_ALG2_NAME(k);
 }
 
 static inline const char *hybrid_key_comp_group(const HYBRID_KEY *k, unsigned i)
 {
+    if (k->is_kem)
+        return ((const HYBRID_KEM_INFO *)k->info)->component[i].group;
     return i == 0 ? HYBRID_KEY_ALG1_GROUP(k) : HYBRID_KEY_ALG2_GROUP(k);
 }
 
-/* Per-component property query (each falls back to the key's generic propq). */
+/* Per-component property query: the config-driven override for component i
+ * (algN-propquery), falling back to the key's generic propq when unset. */
 static inline const char *hybrid_key_comp_propq(const HYBRID_KEY *k, unsigned i)
 {
-    return i == 0 ? HYBRID_KEY_ALG1_PROPQ(k) : HYBRID_KEY_ALG2_PROPQ(k);
+    return k->comp_propq[i] != NULL ? k->comp_propq[i] : k->propq;
 }
 
 /* Per-component sizes (read from the constant size row copied in at key
@@ -1279,7 +1342,7 @@ static inline int hybrid_codepoint_is_iana_assigned(unsigned int cp)
 
 /* KEM keymgmt — generated from the master list */
 #define HYBRID_KEM_EXTERN_ROW(cf, ...) DECLARE_HYBRID_KMGMT_EXTERN(cf)
-HYBRID_KEM_LIST(HYBRID_KEM_EXTERN_ROW)
+HYBRID_KEM_LIST(HYBRID_KEM_EXTERN_ROW, HYBRID_KEM_EXTERN_ROW)
 #undef HYBRID_KEM_EXTERN_ROW
 
 /* Signature keymgmt — generated from the master list */

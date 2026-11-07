@@ -45,12 +45,12 @@ static void *composite_kem_key_new(void *provctx, const COMPOSITE_KEM_INFO *info
      * seed-based private key needs it) or from whichever loaded provider offers it
      * for the experimental research KEMs (Frodo/BIKE/HQC → oqsprovider). Mirrors
      * the composite-signature keymgmt. */
-    k->alg2_propq = pc != NULL && pc->alg2_propq != NULL
-                      ? pc->alg2_propq
+    k->alg2_propq = pc != NULL && pc->comp_propq[HYBRID_COMP_ALG2] != NULL
+                      ? pc->comp_propq[HYBRID_COMP_ALG2]
                       : (info->tier == COMPOSITE_KEM_TIER_EXPERIMENTAL
                              ? NULL : "provider=default");
-    k->trad_propq = pc != NULL && pc->alg1_propq != NULL
-                        ? pc->alg1_propq : "provider=default";
+    k->trad_propq = pc != NULL && pc->comp_propq[HYBRID_COMP_ALG1] != NULL
+                        ? pc->comp_propq[HYBRID_COMP_ALG1] : "provider=default";
     k->state = COMPOSITE_KEM_HAVE_NOKEYS;
     return k;
 }

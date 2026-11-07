@@ -132,8 +132,7 @@ static void *hybrid_kem_dup(const void *vkey, int selection)
     ret->n_comp = key->n_comp;
     ret->state = HYBRID_HAVE_NOKEYS;
     ret->propq = NULL;
-    ret->alg2_propq = key->alg2_propq;
-    ret->alg1_propq = key->alg1_propq;
+    memcpy(ret->comp_propq, key->comp_propq, sizeof(ret->comp_propq));
 
     if (key->propq != NULL
         && (ret->propq = OPENSSL_strdup(key->propq)) == NULL) {
@@ -239,10 +238,8 @@ void *hybrid_keymgmt_new_by_variant(void *provctx, int is_kem,
     OSSL_LIB_CTX *lc = ctx ? HYBRID_COMPONENT_LIBCTX(ctx) : NULL;
     HYBRID_KEY *k = hybrid_key_new(is_kem, variant, lc, NULL);
 
-    if (k != NULL && ctx != NULL) {
-        k->alg2_propq = ctx->alg2_propq;
-        k->alg1_propq = ctx->alg1_propq;
-    }
+    if (k != NULL && ctx != NULL)
+        memcpy(k->comp_propq, ctx->comp_propq, sizeof(k->comp_propq));
     return k;
 }
 
@@ -402,28 +399,26 @@ hybrid_component_keygen(OSSL_LIB_CTX *libctx, const char *propq,
 
 /*
  * Determine slot offsets for concatenated key material. Walks the wire order
- * (hybrid_wire_to_comp) and reports each logical component's offset+length —
- * KEM reverse-share rows place the PQ half first, SIG keys are identity-ordered.
- * off1/len1 describe logical component ALG1, off2/len2 component ALG2.
+ * (hybrid_wire_to_comp) and reports each logical component's offset+length into
+ * the concatenated blob — KEM reverse-share rows place the PQ half first, SIG
+ * keys are identity-ordered. off[]/len[] are indexed by LOGICAL component index
+ * (0..n_comp-1) and must be sized HYBRID_MAX_COMP.
  */
 static void
 key_slot_offsets(const HYBRID_KEY *key, int is_pub,
-                 size_t *off1, size_t *len1, size_t *off2, size_t *len2)
+                 size_t off[], size_t len[])
 {
-    size_t off = 0;
+    size_t o = 0;
     unsigned w;
 
     for (w = 0; w < HYBRID_KEY_NCOMP(key); w++) {
         unsigned ci = hybrid_wire_to_comp(key, w);
-        size_t len = is_pub ? hybrid_key_comp_pub_bytes(key, ci)
-                            : hybrid_key_comp_prv_bytes(key, ci);
+        size_t l = is_pub ? hybrid_key_comp_pub_bytes(key, ci)
+                          : hybrid_key_comp_prv_bytes(key, ci);
 
-        if (ci == HYBRID_COMP_ALG1) {
-            *off1 = off; *len1 = len;
-        } else {
-            *off2 = off; *len2 = len;
-        }
-        off += len;
+        off[ci] = o;
+        len[ci] = l;
+        o += l;
     }
 }
 
@@ -432,57 +427,59 @@ load_keys(HYBRID_KEY *key,
           const uint8_t *pubenc, size_t publen,
           const uint8_t *prvenc, size_t prvlen)
 {
-    int selection = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
-                  | OSSL_KEYMGMT_SELECT_PRIVATE_KEY;
-    const uint8_t *alg1_data, *alg2_data;
-    size_t off1, len1, off2, len2;
+    int selection, is_pub;
+    const uint8_t *enc;
+    size_t off[HYBRID_MAX_COMP], len[HYBRID_MAX_COMP];
     const char *pname;
+    unsigned i, n = HYBRID_KEY_NCOMP(key);
 
     if (prvlen > 0) {
         pname = OSSL_PKEY_PARAM_PRIV_KEY;
-        key_slot_offsets(key, 0, &off1, &len1, &off2, &len2);
-        alg1_data = prvenc + off1;
-        alg2_data = prvenc + off2;
+        selection = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
+                  | OSSL_KEYMGMT_SELECT_PRIVATE_KEY;
+        enc = prvenc;
+        is_pub = 0;
     } else if (publen > 0) {
+        pname = OSSL_PKEY_PARAM_PUB_KEY;
         selection = OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
                   | OSSL_KEYMGMT_SELECT_PUBLIC_KEY;
-        pname = OSSL_PKEY_PARAM_PUB_KEY;
-        key_slot_offsets(key, 1, &off1, &len1, &off2, &len2);
-        alg1_data = pubenc + off1;
-        alg2_data = pubenc + off2;
+        enc = pubenc;
+        is_pub = 1;
     } else {
         return 0;
     }
 
-    if (publen > 0
-            && strcmp(HYBRID_KEY_ALG1_NAME(key), "RSA") == 0) {
-        /* RSA public key is i2d_PublicKey DER (no PUB_KEY octet); parse the
-         * classical slot the same way the decoder does. Symmetric with
-         * extract_component_pub()'s i2d_PublicKey export. */
-        const unsigned char *p = alg1_data;
+    key_slot_offsets(key, is_pub, off, len);
 
-        HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) = d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)len1);
-        if (HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) == NULL)
+    for (i = 0; i < n; i++) {
+        const uint8_t *data = enc + off[i];
+
+        if (is_pub && strcmp(hybrid_key_comp_name(key, i), "RSA") == 0) {
+            /* RSA public key is i2d_PublicKey DER (no PUB_KEY octet); parse the
+             * classical slot the same way the decoder does. Symmetric with
+             * extract_component_pub()'s i2d_PublicKey export. */
+            const unsigned char *p = data;
+
+            HYBRID_KEY_COMP(key, i) =
+                d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)len[i]);
+            if (HYBRID_KEY_COMP(key, i) == NULL)
+                goto err;
+        } else if (!load_component(key->libctx, hybrid_key_comp_propq(key, i),
+                            hybrid_key_comp_name(key, i),
+                            hybrid_key_comp_group(key, i),
+                            pname, selection,
+                            data, len[i], &HYBRID_KEY_COMP(key, i)))
             goto err;
-    } else if (!load_component(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
-                        HYBRID_KEY_ALG1_NAME(key),
-                        HYBRID_KEY_ALG1_GROUP(key),
-                        pname, selection,
-                        alg1_data, len1, &HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1)))
-        goto err;
-    if (!load_component(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
-                        HYBRID_KEY_ALG2_NAME(key), HYBRID_KEY_ALG2_GROUP(key),
-                        pname, selection,
-                        alg2_data, len2, &HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2)))
-        goto err;
+    }
 
     key->state = (prvlen > 0) ? HYBRID_HAVE_PRVKEY : HYBRID_HAVE_PUBKEY;
     return 1;
 
 err:
-    EVP_PKEY_free(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1));
-    EVP_PKEY_free(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2));
-    HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) = HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2) = NULL;
+    for (i = 0; i < n; i++) {
+        EVP_PKEY_free(HYBRID_KEY_COMP(key, i));
+        HYBRID_KEY_COMP(key, i) = NULL;
+    }
     key->state = HYBRID_HAVE_NOKEYS;
     return 0;
 }
@@ -551,15 +548,19 @@ static int extract_component_pub(EVP_PKEY *pk, uint8_t *buf, size_t len)
 static int
 extract_pubkey(const HYBRID_KEY *key, uint8_t *buf, size_t buflen)
 {
-    size_t off1, len1, off2, len2;
+    size_t off[HYBRID_MAX_COMP], len[HYBRID_MAX_COMP];
+    unsigned i, n = HYBRID_KEY_NCOMP(key);
 
     if (buflen < hybrid_key_pubkey_bytes(key))
         return 0;
 
-    key_slot_offsets(key, 1, &off1, &len1, &off2, &len2);
+    key_slot_offsets(key, 1, off, len);
 
-    return extract_component_pub(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1), buf + off1, len1)
-        && extract_component_pub(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2), buf + off2, len2);
+    for (i = 0; i < n; i++)
+        if (!extract_component_pub(HYBRID_KEY_COMP(key, i),
+                                   buf + off[i], len[i]))
+            return 0;
+    return 1;
 }
 
 /* Callback arg for EVP_PKEY_export — used for private key extraction */
@@ -599,7 +600,7 @@ static int hybrid_export(void *vkey, int selection,
     OSSL_PARAM *params = NULL;
     uint8_t *pubbuf = NULL, *prvbuf = NULL;
     size_t publen, prvlen;
-    size_t off1, len1, off2, len2;
+    size_t off[HYBRID_MAX_COMP], len[HYBRID_MAX_COMP];
     int ret = 0;
 
     if (key == NULL || !hybrid_have_pubkey(key))
@@ -632,27 +633,24 @@ static int hybrid_export(void *vkey, int selection,
         EXPORT_PRV_ARG sub;
         int prv_sel = OSSL_KEYMGMT_SELECT_PRIVATE_KEY
                     | OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS;
+        unsigned i, n = HYBRID_KEY_NCOMP(key);
 
         prvbuf = OPENSSL_secure_zalloc(prvlen);
         if (prvbuf == NULL)
             goto err;
 
-        key_slot_offsets(key, 0, &off1, &len1, &off2, &len2);
+        key_slot_offsets(key, 0, off, len);
 
         sub.buf = prvbuf;
-        sub.found = 0;
-        sub.off = off1;
-        sub.len = len1;
-        if (!EVP_PKEY_export(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1), prv_sel, export_prv_cb, &sub)
-            || !sub.found)
-            goto err;
-
-        sub.found = 0;
-        sub.off = off2;
-        sub.len = len2;
-        if (!EVP_PKEY_export(HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2), prv_sel, export_prv_cb, &sub)
-            || !sub.found)
-            goto err;
+        for (i = 0; i < n; i++) {
+            sub.found = 0;
+            sub.off = off[i];
+            sub.len = len[i];
+            if (!EVP_PKEY_export(HYBRID_KEY_COMP(key, i), prv_sel,
+                                 export_prv_cb, &sub)
+                || !sub.found)
+                goto err;
+        }
 
         if (!OSSL_PARAM_BLD_push_octet_string(bld, OSSL_PKEY_PARAM_PRIV_KEY,
                                                prvbuf, prvlen))
@@ -926,8 +924,7 @@ err:
 typedef struct {
     OSSL_LIB_CTX *libctx;
     char *propq;
-    const char *alg2_propq;       /* borrowed from provctx */
-    const char *alg1_propq;  /* borrowed from provctx */
+    const char *comp_propq[HYBRID_MAX_COMP];  /* per-component, borrowed from provctx */
     int selection;
     int is_kem;
     unsigned int algo_idx;
@@ -948,8 +945,7 @@ static void *hybrid_gen(void *vgctx, OSSL_CALLBACK *cb, void *cbarg)
     key = hybrid_key_new(gctx->is_kem, gctx->algo_idx, gctx->libctx, propq);
     if (key == NULL)
         return NULL;
-    key->alg2_propq = gctx->alg2_propq;
-    key->alg1_propq = gctx->alg1_propq;
+    memcpy(key->comp_propq, gctx->comp_propq, sizeof(key->comp_propq));
 
     if ((gctx->selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
         return key;
@@ -1019,10 +1015,8 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
         OSSL_LIB_CTX *libctx =                                               \
             ctx ? HYBRID_COMPONENT_LIBCTX(ctx) : NULL;                       \
         HYBRID_KEY *k = hybrid_key_new(is_kem_val, variant, libctx, NULL);   \
-        if (k != NULL && ctx != NULL) {                                      \
-            k->alg2_propq = ctx->alg2_propq;                                     \
-            k->alg1_propq = ctx->alg1_propq;                          \
-        }                                                                    \
+        if (k != NULL && ctx != NULL)                                        \
+            memcpy(k->comp_propq, ctx->comp_propq, sizeof(k->comp_propq));    \
         return k;                                                            \
     }                                                                        \
     static void *hybrid_##name##_gen_init(void *provctx, int selection,      \
@@ -1044,8 +1038,7 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
         gctx->is_kem = is_kem_val;                                          \
         gctx->algo_idx = variant;                                            \
         gctx->libctx = HYBRID_COMPONENT_LIBCTX(pctx);                       \
-        gctx->alg2_propq = pctx->alg2_propq;                                     \
-        gctx->alg1_propq = pctx->alg1_propq;                          \
+        memcpy(gctx->comp_propq, pctx->comp_propq, sizeof(gctx->comp_propq));\
         gctx->selection = selection;                                         \
         if (!hybrid_gen_set_params(gctx, params)) {                          \
             hybrid_gen_cleanup(gctx);                                        \
@@ -1090,7 +1083,7 @@ static const OSSL_PARAM *hybrid_gen_settable_params(void *vgctx,
  * Each row binds its keymgmt thunks to the matching info-table index. */
 #define HYBRID_KEM_KMGMT_ROW(cf, ...) \
     DECLARE_HYBRID_KMGMT(cf, 1, HYBRID_KEM_IDX_##cf);
-HYBRID_KEM_LIST(HYBRID_KEM_KMGMT_ROW)
+HYBRID_KEM_LIST(HYBRID_KEM_KMGMT_ROW, HYBRID_KEM_KMGMT_ROW)
 #undef HYBRID_KEM_KMGMT_ROW
 
 /* Signature keymgmt instances — generated from the master list. */

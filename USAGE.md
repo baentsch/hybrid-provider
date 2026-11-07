@@ -96,11 +96,11 @@ Two coexistence constraints sit behind this, with different lifespans:
   halves from *different* providers; the common case (let each component resolve
   normally, or force one provider globally with `-propquery`) needs no cnf.
 
-### Selecting component providers (`alg1-propquery` / `alg2-propquery`)
+### Selecting component providers (`alg1-propquery` / `alg2-propquery` / …)
 
-The hybrid provider reads two optional keys from its config section to steer
-which provider supplies each sub-algorithm, independently of how the hybrid
-algorithm itself is selected:
+The hybrid provider reads one optional key per component from its config section
+to steer which provider supplies each sub-algorithm, independently of how the
+hybrid algorithm itself is selected:
 
 ```ini
 [hybrid_sect]
@@ -113,11 +113,13 @@ alg2-propquery = ?provider=oqsprovider   # component 2 (e.g. ML-KEM / ML-DSA)
 The mapping is **positional** — `alg1-propquery` steers the first component
 (`alg1`), `alg2-propquery` the second — so for a PQ/PQ row, whose `alg1` is
 itself post-quantum, there is no "classical"/"PQ" assumption baked into the key
-names. Each defaults to the key's normal property query when unset, so behaviour is
-unchanged without them. Because they come from configuration, they also take
-effect in TLS (where only one property query is otherwise exposed) — no OpenSSL
-core change required. `hybrid_config_test` verifies that each key independently
-governs its component.
+names. There is one key per component up to the component bound
+(`alg3-propquery` steers the third component of the 3-component HQC KEM groups,
+`alg4-propquery` a fourth). Each defaults to the key's normal property query when
+unset, so behaviour is unchanged without them. Because they come from
+configuration, they also take effect in TLS (where only one property query is
+otherwise exposed) — no OpenSSL core change required. `hybrid_config_test`
+verifies that each key independently governs its component.
 
 Any provider that serves the component through the public EVP API works as the
 source — not just default or

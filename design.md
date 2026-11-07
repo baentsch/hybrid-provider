@@ -525,12 +525,14 @@ exactly. From analysis of `mlx_kem.c`:
 ### N-component concatenation (2→N generalization)
 
 Historically the hybrid key held exactly two components (`key1`/`key2`,
-`a1_*`/`a2_*` sizes, a single `alg2_slot` bit). That is being generalized to an
+`a1_*`/`a2_*` sizes, a single `alg2_slot` bit). That has been generalized to an
 ordered list of *N* components, motivated by the project's experimentation goal
 and concretely by draft-preussmattsson-tls-hqckem (issue #131), whose two
 PQ/PQ/T groups (`HQCKEM192MLKEM768X25519`, `HQCKEM256MLKEM1024X448`) concatenate
-three components. The generalization is deliberately scoped so it stays an
-*honest* mechanism rather than a disguised third slot:
+three components and are now served as operation-only KEMs (keygen/encaps/decaps
+and the raw `ENCODED_PUBLIC_KEY` key share; `cp = 0`, `oid = NULL`). The
+generalization is deliberately scoped so it stays an *honest* mechanism rather
+than a disguised third slot:
 
 - **Only the concatenation combiner is N-ary.** RFC 9954/10024 concat is "fixed-
   length component blobs, in order," which maps 1:1 onto a wire-ordered list of
@@ -583,8 +585,11 @@ three components. The generalization is deliberately scoped so it stays an
 - **Component-accessor params.** The standalone-component params
   (`hybrid-classic-pub-spki` etc.) are a two-component contract shared with the
   composite family and external consumers; the standardized two-component rows
-  keep them. Any N>2 (experimental) row exposes indexed component params instead
-  of the classic/pq pair.
+  keep them. N>2 (experimental) rows will expose *indexed* component params
+  instead of the classic/pq pair — not yet implemented, so today an N>2 row's
+  components are not individually extractable (the extract/compose test skips
+  such rows). The combiner path (keygen/encaps/decaps, whole-key export/import)
+  is fully N-ary regardless.
 
 ## Operation: Signature
 
