@@ -257,8 +257,9 @@ typedef struct hybrid_key_st {
     /*
      * Component key handles, indexed 0..n_comp-1 (component 0 == logical alg1,
      * component 1 == alg2). Accessed only through HYBRID_KEY_COMP /
-     * HYBRID_KEY_NCOMP (issue #135). n_comp is fixed at 2 until per-variant
-     * counts arrive with the wire-ordered descriptors; sized to HYBRID_MAX_COMP.
+     * HYBRID_KEY_NCOMP (issue #135). n_comp is per-variant (2 for most rows, 3 for
+     * the draft-preussmattsson HQC PQ/PQ/T groups), derived from the wire-ordered
+     * descriptor at construction; sized to HYBRID_MAX_COMP.
      */
     EVP_PKEY *comp[HYBRID_MAX_COMP];
     unsigned n_comp;
@@ -1260,6 +1261,26 @@ void hybrid_log(const char *fmt, ...);
 #define HYBRID_PKEY_PARAM_PQ_PUB       "hybrid-pq-pub-spki"
 #define HYBRID_PKEY_PARAM_CLASSIC_PRIV "hybrid-classic-priv-pkcs8"
 #define HYBRID_PKEY_PARAM_PQ_PRIV      "hybrid-pq-priv-pkcs8"
+
+/*
+ * Indexed per-component variants (issue #135 item 11). The classic/pq names above
+ * are the 2-component spelling (classic == component 0, pq == component 1);
+ * N>2-component hybrids (the draft-preussmattsson-tls-hqckem PQ/PQ/T groups) have
+ * no single "classic"/"pq" half, so each logical component 0..n_comp-1 is also
+ * exposed under an index-keyed name. One name per logical slot up to
+ * HYBRID_MAX_COMP; hybrid_comp_{pub,priv}_param[] (hybrid_keymgmt.c) indexes them.
+ */
+#define HYBRID_PKEY_PARAM_COMP0_PUB    "hybrid-comp0-pub-spki"
+#define HYBRID_PKEY_PARAM_COMP1_PUB    "hybrid-comp1-pub-spki"
+#define HYBRID_PKEY_PARAM_COMP2_PUB    "hybrid-comp2-pub-spki"
+#define HYBRID_PKEY_PARAM_COMP3_PUB    "hybrid-comp3-pub-spki"
+#define HYBRID_PKEY_PARAM_COMP0_PRIV   "hybrid-comp0-priv-pkcs8"
+#define HYBRID_PKEY_PARAM_COMP1_PRIV   "hybrid-comp1-priv-pkcs8"
+#define HYBRID_PKEY_PARAM_COMP2_PRIV   "hybrid-comp2-priv-pkcs8"
+#define HYBRID_PKEY_PARAM_COMP3_PRIV   "hybrid-comp3-priv-pkcs8"
+#if HYBRID_MAX_COMP != 4
+# error "indexed component param names (HYBRID_PKEY_PARAM_COMP*) must track HYBRID_MAX_COMP"
+#endif
 
 /*
  * Set OSSL_PARAM *p to the SubjectPublicKeyInfo (spki) or PKCS#8 PrivateKeyInfo

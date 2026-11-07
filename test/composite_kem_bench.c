@@ -230,11 +230,15 @@ int main(int argc, char **argv)
                "(ceiling %.1fx, keygen excluded)\n", COMPOSITE_OVERHEAD_CEIL);
         for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++) {
             const COMPOSITE_KEM_INFO *info = &composite_kem_table[i];
+            /* A composite KEM is exactly one classical + one PQ component. */
+            const char *names[2]  = { info->trad_alg, info->pq_alg };
+            const char *groups[2] = { info->trad_group, NULL };
+            const int is_kem[2]   = { 0, 1 };
+            const int rsa_bits[2] = { info->trad_rsa_bits, 0 };
 
-            bench_guard_kem(ctx, info->name, "provider=hybrid", info->pq_alg,
-                            info->trad_alg, info->trad_group,
-                            info->trad_rsa_bits, COMPOSITE_OVERHEAD_CEIL,
-                            &guard_failures);
+            bench_guard_kem(ctx, info->name, "provider=hybrid", 2,
+                            names, groups, is_kem, rsa_bits,
+                            COMPOSITE_OVERHEAD_CEIL, &guard_failures);
         }
         if (guard_failures == 0)
             printf("  guard: PASS (all measured composites within ceiling)\n");

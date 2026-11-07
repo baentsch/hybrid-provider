@@ -136,6 +136,12 @@ component keygens.
    ```c
    { 0 },   /* snova2454_crossrsdp128balanced */   /* filled in step 4 */
    ```
+   The `{ 0 }` is just a placeholder; step 4 fills it with the real, emitted form:
+   a `HYBRID_SIZES` row is nested per logical component —
+   `{ { {pub, prv, ss, ct, sig}, {pub, prv, ss, ct, sig}, … } }`, one inner
+   `HYBRID_COMP_SIZES` per component (KEMs populate `ss`/`ct` with `sig == 0`;
+   signatures populate `sig` with `ss == ct == 0`). A three-component row simply
+   carries a third inner brace. You never hand-count these — see step 4.
    (A non-concatenation KEM additionally needs a `hybrid_kem_combiner[]` entry —
    see the combiner note above.)
 3. **Build the provider**, with the component providers reachable. If a component
@@ -194,6 +200,25 @@ X-Wing (`draft-connolly-cfrg-xwing-kem`, a SHA3-256 strongly-binding combiner) i
 the standards-backed instance — additionally pinned by a KAT against the draft's
 reference vectors (`xwing_kat_test`) with a weekly vector-coherence guard
 (`scripts/check-xwing-kat-drift.sh`).
+
+### Three or more components (concat only)
+
+The concatenation combiner is N-ary (issue #135), so a KEM may list up to
+`HYBRID_MAX_COMP` (4) components — the draft-preussmattsson-tls-hqckem PQ/PQ/T
+groups (`HQCKEM192MLKEM768X25519`, `HQCKEM256MLKEM1024X448`) are the worked
+three-component examples. Such a row uses the `X3` generator (`HYBRID_KEM_ROW_3`)
+instead of `X(...)`, listing its components in **logical** order followed by an
+explicit `wire[]` permutation (logical indices in concatenation order) — see the
+comment above `HYBRID_KEM_LIST`. The size row is the same nested per-component
+form (below) with one more component entry; `n_comp` is derived from the
+descriptor, so nothing else changes. The strongly-binding combiners (X-Wing) stay
+two-component and assert `n_comp == 2` — N applies to concat only. Beyond keygen /
+encaps / decaps and the raw `ENCODED_PUBLIC_KEY` key share, each component of an
+N>2 row is individually extractable through the indexed `hybrid-comp{i}-pub-spki`
+/ `-priv-pkcs8` params (`hybrid_extract_test`); two-component rows additionally
+keep the role-based `hybrid-classic-*` / `hybrid-pq-*` names. N>2 rows are
+operation-only (no key-file OID), as the combined SPKI/PKCS8 format holds exactly
+one classical + one PQ component (see [design.md](design.md#operation-kem)).
 
 ### Experimenting with a provider-private combination (no interop peer)
 
