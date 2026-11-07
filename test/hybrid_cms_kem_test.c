@@ -425,7 +425,7 @@ int main(void)
         if (hybrid_kem_table[i].oid != NULL
                 && hybrid_kem_table[i].tls_codepoint == 0)
             check(ctx, hybrid_kem_table[i].hybrid_name,
-                  hybrid_kem_table[i].alg2_name, kemri_supported);
+                  hybrid_kem_table[i].component[1].name, kemri_supported);
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);

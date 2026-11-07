@@ -154,18 +154,24 @@ format:
 
 ```c
 typedef struct {
+    const char *name;            /* e.g., "X25519" / "MLKEM768" */
+    const char *group;           /* EC group (e.g. "P-256"); NULL otherwise */
+    int         is_kem;          /* 0 = key-exchange, 1 = native KEM */
+} HYBRID_KEM_COMPONENT;
+
+typedef struct {
     const char *hybrid_name;     /* e.g., "X25519MLKEM768" */
-    const char *alg1_name;       /* e.g., "X25519" or "EC" */
-    const char *alg1_group;      /* e.g., NULL (or "P-256" for EC) */
-    int         alg1_is_kem;     /* 0 = key-exchange, 1 = native KEM */
-    const char *alg2_name;       /* PQ KEM, e.g., "MLKEM768" */
-    const char *alg2_group;      /* NULL */
-    int         alg2_is_kem;     /* always 1 for PQ KEMs */
-    int         alg2_slot;       /* 0 or 1: position of PQ share in concatenation */
+    unsigned    n_comp;          /* component count (2 today; <= HYBRID_MAX_COMP) */
+    HYBRID_KEM_COMPONENT component[HYBRID_MAX_COMP]; /* logical order */
+    unsigned char wire[HYBRID_MAX_COMP]; /* wire position -> logical comp index */
     int         tls_codepoint;   /* TLS group code point, 0 if none */
     const char *oid;             /* X.509 OID, or NULL if not key-file encodable */
 } HYBRID_KEM_INFO;
 ```
+
+The components are listed in logical order; `wire[]` is the concatenation order
+(it replaces the earlier single `alg2_slot` bit — the components taken in
+`wire[]` order *are* the wire layout).
 
 For signatures:
 
@@ -533,13 +539,16 @@ three components. The generalization is deliberately scoped so it stays an
   component and have no N-ary form; they assert `n_comp == 2`. N applies to
   concat, not to every combiner.
 
-- **The component list *is* the wire layout.** Each component row carries its own
-  `{name, group, is_kem}` and the list is stored in concatenation order, so the
-  dispatch is a straight loop over components. This *removes* `alg2_slot`: the
-  per-row 0/1 bit existed only because a two-element representation could not
-  express wire order directly (hence `X25519MLKEM768` is PQ-first while
-  `SecP256r1MLKEM768` is classical-first — same primitives, opposite order). A
-  wire-ordered list expresses both uniformly.
+- **The component list drives the wire layout.** Each component carries its own
+  `{name, group, is_kem}` in a logical-order array, paired with a `wire[]`
+  permutation (wire position → logical component index); the dispatch is a loop
+  over wire positions resolved through `hybrid_wire_to_comp()`. This *removes*
+  `alg2_slot`: the per-row 0/1 bit existed only because a two-element
+  representation could not express wire order directly (hence `X25519MLKEM768` is
+  PQ-first while `SecP256r1MLKEM768` is classical-first — same primitives,
+  opposite order). An N-entry `wire[]` expresses any order uniformly, while the
+  logical-order component/size arrays keep the `HYBRID_COMP_ALG1/ALG2` indexing
+  (and the kind-based classical/PQ split) unchanged from the 2-component code.
 
 - **Two components stay byte-identical.** A two-element list under the concat
   combiner produces exactly today's bytes, so MLX interop (the table above) and

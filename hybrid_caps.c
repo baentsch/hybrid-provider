@@ -68,11 +68,17 @@ static int hybrid_group_operable(HYBRID_PROV_CTX *ctx,
                                  const HYBRID_KEM_INFO *info)
 {
     OSSL_LIB_CTX *libctx = HYBRID_COMPONENT_LIBCTX(ctx);
-    int ok;
+    unsigned i;
+    int ok = 1;
 
     ERR_set_mark();
-    ok = component_operable(libctx, info->alg1_name, ctx->alg1_propq)
-        && component_operable(libctx, info->alg2_name, ctx->alg2_propq);
+    for (i = 0; i < info->n_comp && ok; i++) {
+        /* Per-component propq: slot ALG1 vs ALG2 (only two props today). */
+        const char *propq = (i == HYBRID_COMP_ALG1) ? ctx->alg1_propq
+                                                     : ctx->alg2_propq;
+
+        ok = component_operable(libctx, info->component[i].name, propq);
+    }
     ERR_pop_to_mark();
     return ok;
 }

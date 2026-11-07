@@ -267,8 +267,8 @@ int main(void)
             continue;
         /* Skip rows whose components are not instantiable here (curveSM2MLKEM768
          * below OpenSSL 4.0); the drop-in applies only where the alg is served. */
-        if (!component_instantiable(ctx, hybrid_kem_table[i].alg1_name)
-                || !component_instantiable(ctx, hybrid_kem_table[i].alg2_name)) {
+        if (!component_instantiable(ctx, hybrid_kem_table[i].component[0].name)
+                || !component_instantiable(ctx, hybrid_kem_table[i].component[1].name)) {
             printf("  %-26s kem ... SKIP (component unavailable)\n",
                    hybrid_kem_table[i].hybrid_name);
             skipped++;

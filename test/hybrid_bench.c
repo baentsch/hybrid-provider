@@ -527,7 +527,8 @@ int main(int argc, char **argv)
             const HYBRID_KEM_INFO *r = &hybrid_kem_table[i];
 
             bench_guard_kem(libctx, r->hybrid_name, "provider=hybrid",
-                            r->alg2_name, r->alg1_name, r->alg1_group, 0,
+                            r->component[1].name, r->component[0].name,
+                            r->component[0].group, 0,
                             HYBRID_OVERHEAD_CEIL, &guard_failures);
         }
         for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {

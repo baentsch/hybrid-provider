@@ -5,6 +5,7 @@
 
 #include "hybrid_prov.h"
 #include <openssl/x509.h>
+#include <assert.h>
 
 /* --- Key lifecycle --- */
 
@@ -65,10 +66,13 @@ hybrid_key_new(int is_kem, unsigned int variant,
      * signatures have none. Stored as a value so the KEM op need not re-derive
      * the variant index from the (possibly cross-TU) info pointer. */
     key->combiner = is_kem ? hybrid_kem_combiner[variant] : HYBRID_COMBINER_CONCAT;
-    /* Component handles are already NULL (OPENSSL_zalloc above). Component count
-     * is 2 for every current KEM and signature hybrid; per-variant counts (the
-     * deferred 3-component groups) arrive with the wire-ordered descriptors. */
-    key->n_comp = 2;
+    /* Component handles are already NULL (OPENSSL_zalloc above). The count is
+     * per-variant: KEMs read it from the wire-ordered descriptor; signatures
+     * are always 2-component. PR7 sized the component/scratch arrays to the
+     * fixed HYBRID_MAX_COMP, so n_comp <= HYBRID_MAX_COMP is a real precondition. */
+    key->n_comp = is_kem ? ((const HYBRID_KEM_INFO *)key->info)->n_comp
+                         : HYBRID_SIG_NCOMP;
+    assert(key->n_comp <= HYBRID_MAX_COMP);
     key->state = HYBRID_HAVE_NOKEYS;
     key->propq = propq;
     return key;
@@ -397,33 +401,29 @@ hybrid_component_keygen(OSSL_LIB_CTX *libctx, const char *propq,
                         const char *alg_name, const char *group_name);
 
 /*
- * Determine slot offsets for concatenated key material.
- * KEM keys use alg2_slot to control ordering; SIG keys always use alg1 first.
+ * Determine slot offsets for concatenated key material. Walks the wire order
+ * (hybrid_wire_to_comp) and reports each logical component's offset+length —
+ * KEM reverse-share rows place the PQ half first, SIG keys are identity-ordered.
+ * off1/len1 describe logical component ALG1, off2/len2 component ALG2.
  */
 static void
 key_slot_offsets(const HYBRID_KEY *key, int is_pub,
                  size_t *off1, size_t *len1, size_t *off2, size_t *len2)
 {
-    size_t a1, a2;
-    int alg2_first = 0;
+    size_t off = 0;
+    unsigned w;
 
-    if (is_pub) {
-        a1 = HYBRID_KEY_ALG1_PUBKEY_BYTES(key);
-        a2 = HYBRID_KEY_ALG2_PUBKEY_BYTES(key);
-    } else {
-        a1 = HYBRID_KEY_ALG1_PRVKEY_BYTES(key);
-        a2 = HYBRID_KEY_ALG2_PRVKEY_BYTES(key);
-    }
+    for (w = 0; w < HYBRID_KEY_NCOMP(key); w++) {
+        unsigned ci = hybrid_wire_to_comp(key, w);
+        size_t len = is_pub ? hybrid_key_comp_pub_bytes(key, ci)
+                            : hybrid_key_comp_prv_bytes(key, ci);
 
-    if (key->is_kem)
-        alg2_first = (((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0);
-
-    if (alg2_first) {
-        *off2 = 0;  *len2 = a2;
-        *off1 = a2; *len1 = a1;
-    } else {
-        *off1 = 0;  *len1 = a1;
-        *off2 = a1; *len2 = a2;
+        if (ci == HYBRID_COMP_ALG1) {
+            *off1 = off; *len1 = len;
+        } else {
+            *off2 = off; *len2 = len;
+        }
+        off += len;
     }
 }
 

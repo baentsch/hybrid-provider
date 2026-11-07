@@ -451,8 +451,9 @@ int main(void)
      * whose provider simply is not loaded here. */
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         check(ctx, hybrid_kem_table[i].hybrid_name, HYBRID,
-              hybrid_kem_table[i].alg2_name, hybrid_kem_table[i].alg1_name,
-              hybrid_kem_table[i].alg1_group);
+              hybrid_kem_table[i].component[1].name,
+              hybrid_kem_table[i].component[0].name,
+              hybrid_kem_table[i].component[0].group);
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         check(ctx, hybrid_sig_table[i].hybrid_name, HYBRID,
               hybrid_sig_table[i].alg2_name, hybrid_sig_table[i].alg1_name,

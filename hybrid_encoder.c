@@ -8,7 +8,8 @@
  * SPKI = AlgorithmIdentifier(OID) + BIT STRING(pubblob), where
  *   pubblob = ENCODE_UINT32(slot1_pub_len) || slot1_pub || slot2_pub
  * The UINT32 encodes the slot-1 component's public-key length. For KEMs slot 1 is
- * the classical share unless alg2_slot == 0 (reverse-share, PQ first). Signature
+ * the classical share unless the row is reverse-share (PQ first on the wire).
+ * Signature
  * hybrids are classical-first by oqsprovider convention, except the provider-
  * private §3.4 rows that put a PQ or EC component in slot 1 (the private key is
  * serialized slot-symmetrically by component kind; see hybrid_encode_priv_blob).

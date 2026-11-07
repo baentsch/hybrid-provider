@@ -208,8 +208,8 @@ static void check_group_operability(OSSL_LIB_CTX *ctx, const ADVSET *set,
 
         if (info->tls_codepoint == 0)
             continue;               /* no TLS group -> never advertised */
-        op = comp_fetchable(ctx, info->alg1_name)
-            && comp_fetchable(ctx, info->alg2_name);
+        op = comp_fetchable(ctx, info->component[0].name)
+            && comp_fetchable(ctx, info->component[1].name);
         ad = set_find(set, info->hybrid_name, NULL);
         if (op != ad) {
             mism++;

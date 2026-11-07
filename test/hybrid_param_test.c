@@ -517,9 +517,10 @@ static void check_kem(OSSL_LIB_CTX *ctx, const HYBRID_KEM_INFO *info)
     /* component pub sizes via throwaway single-component keys */
     {
         EVP_PKEY *c1 = EVP_PKEY_Q_keygen(ctx, "provider=hybrid",
-                                         info->alg1_group ? "EC" : info->alg1_name,
-                                         info->alg1_group);
-        EVP_PKEY *c2 = EVP_PKEY_Q_keygen(ctx, NULL, info->alg2_name);
+                                         info->component[0].group ? "EC"
+                                             : info->component[0].name,
+                                         info->component[0].group);
+        EVP_PKEY *c2 = EVP_PKEY_Q_keygen(ctx, NULL, info->component[1].name);
         unsigned char *b1 = NULL, *b2 = NULL;
 
         if (c1 != NULL)

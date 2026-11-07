@@ -124,16 +124,42 @@ int hybrid_is_ceded(void *provctx, const char *name);
 #define HYBRID_HAVE_PUBKEY  1
 #define HYBRID_HAVE_PRVKEY  2
 
-/* KEM component info */
+/*
+ * Upper bound on the number of components in a hybrid (issue #135, 2->N). Sizes
+ * the per-key component array (HYBRID_KEY.comp), the per-component size row
+ * (HYBRID_SIZES) and the KEM info's component/wire arrays below; the actual
+ * count is HYBRID_KEY->n_comp (2 today, from HYBRID_KEM_INFO.n_comp). The two
+ * deferred 3-component HQC groups fit within 4.
+ */
+#define HYBRID_MAX_COMP 4
+
+/*
+ * One component of a hybrid KEM: its EVP fetch name, optional EC group name, and
+ * whether it is a native KEM (1) or a key-exchange primitive like X25519/ECDH
+ * (0). Components are listed in LOGICAL order (component[HYBRID_COMP_ALG1] is the
+ * old alg1, [HYBRID_COMP_ALG2] the old alg2); the wire[] array below maps a
+ * concatenation position to a logical index, so the role of a slot is not tied
+ * to its wire position.
+ */
+typedef struct {
+    const char *name;           /* e.g., "X25519" / "MLKEM768" */
+    const char *group;          /* EC group (e.g. "P-256"); NULL otherwise */
+    int         is_kem;         /* 0 = key-exchange, 1 = native KEM */
+} HYBRID_KEM_COMPONENT;
+
+/* KEM hybrid info */
 typedef struct {
     const char *hybrid_name;    /* e.g., "X25519MLKEM768" */
-    const char *alg1_name;      /* e.g., "X25519" */
-    const char *alg1_group;     /* e.g., NULL or "P-256" */
-    int         alg1_is_kem;    /* 0 = key-exchange, 1 = native KEM */
-    const char *alg2_name;      /* e.g., "ML-KEM-768" */
-    const char *alg2_group;     /* e.g., NULL */
-    int         alg2_is_kem;    /* 1 = native KEM */
-    int         alg2_slot;      /* position of alg2 in concatenation (0 or 1) */
+    unsigned    n_comp;         /* component count (2 today; <= HYBRID_MAX_COMP) */
+    HYBRID_KEM_COMPONENT component[HYBRID_MAX_COMP]; /* LOGICAL order */
+    /*
+     * Wire layout: wire[w] is the logical component index at concatenation
+     * position w (in the ciphertext / shared-secret / public-key blobs). This
+     * replaces the old alg2_slot flag — the components taken in wire[] order
+     * *are* the wire layout. MLX reverse-share groups use wire = {1,0} (PQ
+     * first); every other row uses {0,1}. Read via hybrid_wire_to_comp().
+     */
+    unsigned char wire[HYBRID_MAX_COMP];
     int         tls_codepoint;  /* TLS group code point, 0 if none */
     const char *oid;            /* X.509 OID, or NULL if not key-file encodable
                                  * (mirrors oqsprovider: most hybrid KEMs NULL) */
@@ -172,12 +198,14 @@ typedef struct {
 } HYBRID_SIG_INFO;
 
 /*
- * Upper bound on the number of components in a hybrid (issue #135, 2->N). Sizes
- * both the per-key component array (HYBRID_KEY.comp) and the per-component size
- * row below; the actual count is HYBRID_KEY->n_comp (fixed at 2 today). The two
- * deferred 3-component HQC groups fit within 4.
+ * Component count of a hybrid signature. Always two: the wire format is
+ * ENCODE_UINT32(comp1_len) || comp1_sig || comp2_sig, and no multi-component
+ * signature is specified anywhere (issue #135 keeps the SIG path 2-component;
+ * only the concat-KEM path is generalized to N). Unlike a KEM — whose per-row
+ * count comes from HYBRID_KEM_INFO.n_comp — signatures carry no such field, so
+ * this names the otherwise-bare literal in hybrid_key_new().
  */
-#define HYBRID_MAX_COMP 4
+#define HYBRID_SIG_NCOMP 2u
 
 /*
  * Per-component sizes for a hybrid. These are fixed per algorithm (pinned by the
@@ -255,7 +283,11 @@ typedef struct hybrid_key_st {
  * The alg2 (PQ) component is always a native KEM. `slot` is the position of
  * the PQ share in the ctext/shared-secret/pubkey concatenation (0 = PQ first),
  * which equals oqsprovider's `reverse_share` (reverse_share=1 -> slot 0). It
- * also matches OpenSSL's built-in MLX layout for the standardized names.
+ * also matches OpenSSL's built-in MLX layout for the standardized names. The
+ * row generator turns `slot` into the info's wire[] permutation (wire position
+ * -> logical component index): slot 0 -> {1,0} (PQ first), else {0,1}. There is
+ * no longer a separate alg2_slot field — the components taken in wire[] order
+ * are the wire layout.
  *
  * Component sizes are NOT listed in this identity row — they live as constants
  * in hybrid_kem_sizes[] below (machine-generated, CI-verified), so a new hybrid
@@ -451,8 +483,8 @@ typedef struct hybrid_key_st {
    * The draft defines nine groups; this adds the four 2-component hybrids — two    \
    * PQ/T (HQC + ECDHE) and two PQ/PQ (HQC + ML-KEM). The combiner is RFC 9954      \
    * fixed-length concatenation in NAME order, i.e. HQC first — exactly our default \
-   * HYBRID_COMBINER_CONCAT. HQC-first wire order is expressed by alg2_slot = 0:     \
-   * HQC is the alg2 KEM and lands in slot 0 (see hybrid_kem.c slot ordering). The   \
+   * HYBRID_COMBINER_CONCAT. HQC-first wire order is expressed by slot = 0:           \
+   * HQC is the alg2 KEM and leads the wire[] order (see hybrid_kem.c). The           \
    * HQC half resolves from oqsprovider; the ML-KEM half from default (3.5+) or      \
    * oqsprovider. secbits = min of the component NIST categories (HQC-192 + its      \
    * level-3 partner -> 192; HQC-256 + its level-5 partner -> 256). PQ/T rows:       \
@@ -472,9 +504,13 @@ typedef struct hybrid_key_st {
   X(mlkem1024_hqc5,    "HQCKEM256MLKEM1024", "MLKEM1024", NULL,         1,    \
       "hqc5",      0, 0x0000, 256, "HQC-256+ML-KEM-1024 (PQ/PQ, draft-preussmattsson)", NULL)
 
-/* Generate the info table from the master list. */
+/* Generate the info table from the master list. Components are stored in
+ * logical order (alg1 then alg2, the PQ half always a native KEM); `slot`
+ * becomes the wire[] permutation: slot 0 puts the PQ component (logical 1)
+ * first on the wire -> {1,0}, otherwise {0,1}. */
 #define HYBRID_KEM_ROW(cf, nm, a1, grp, a1k, a2, slot, cp, sb, ds, oid)       \
-    { nm, a1, grp, a1k, a2, NULL, 1, slot, cp, oid },
+    { nm, 2, { { a1, grp, a1k }, { a2, NULL, 1 } },                          \
+      { (slot) ? 0u : 1u, (slot) ? 1u : 0u }, cp, oid },
 static const HYBRID_KEM_INFO hybrid_kem_table[] = {
     HYBRID_KEM_LIST(HYBRID_KEM_ROW)
 };
@@ -876,18 +912,20 @@ static const HYBRID_SIZES hybrid_sig_sizes[HYBRID_SIG_ALG_COUNT] = {
     { { {1952,4032,0,0,3309}, {65,32,0,0,72} } },        /* mldsa65_p256 */
 };
 
-/* Accessor macros — work for both KEM and SIG info via HYBRID_KEY */
+/* Accessor macros — work for both KEM and SIG info via HYBRID_KEY. KEM info
+ * carries its components as a nested array (component[].name/.group); SIG info
+ * keeps the flat alg1_/alg2_ columns (signatures stay 2-component). */
 #define HYBRID_KEY_ALG1_NAME(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_name \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->component[HYBRID_COMP_ALG1].name \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_name)
 #define HYBRID_KEY_ALG1_GROUP(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg1_group \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->component[HYBRID_COMP_ALG1].group \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg1_group)
 #define HYBRID_KEY_ALG2_NAME(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_name \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->component[HYBRID_COMP_ALG2].name \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_name)
 #define HYBRID_KEY_ALG2_GROUP(k) \
-    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->alg2_group \
+    ((k)->is_kem ? ((const HYBRID_KEM_INFO *)(k)->info)->component[HYBRID_COMP_ALG2].group \
                  : ((const HYBRID_SIG_INFO *)(k)->info)->alg2_group)
 
 /*
@@ -950,18 +988,20 @@ static inline size_t hybrid_kem_shsec_bytes(const HYBRID_KEY *key)
  * wire-ordered descriptors.
  */
 
-/* Number of components in the hybrid (n_comp, fixed at 2 until per-variant). */
+/* Number of components in the hybrid (n_comp; per-variant, set at construction
+ * from HYBRID_KEM_INFO.n_comp for KEMs, 2 for signatures). */
 #define HYBRID_KEY_NCOMP(k) ((k)->n_comp)
 
 /*
  * Logical component indices (0-based) for the genuinely positional call sites —
  * where one specific component is singled out, not iterated (an RSA/classical
  * loader, the PQ "bits", the classic/pq component params). NOTE the numbering:
- * component ALG1 is key1/alg1 at index 0 and ALG2 is key2/alg2 at index 1, so
+ * component ALG1 is alg1 at index 0 and ALG2 is alg2 at index 1, so
  * HYBRID_COMP_ALG1 == 0. These name the LOGICAL slot, independent of wire order
- * (alg2_slot may place either component first on the wire). "Touch every
- * component" sites use a plain loop to HYBRID_KEY_NCOMP instead; these few
- * positional indices (alg1/alg2) are what a later step still has to generalize.
+ * (a row's wire[] permutation may place either component first on the wire).
+ * "Touch every component" sites use a plain loop to HYBRID_KEY_NCOMP instead;
+ * these few positional indices (alg1/alg2) are what a later step still has to
+ * generalize.
  */
 enum { HYBRID_COMP_ALG1 = 0, HYBRID_COMP_ALG2 = 1 };
 
@@ -1025,28 +1065,23 @@ static inline size_t hybrid_key_comp_sig_bytes(const HYBRID_KEY *k, unsigned i)
  */
 static inline int hybrid_key_comp_is_kem(const HYBRID_KEY *k, unsigned i)
 {
-    const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)k->info;
-
-    return i == 0 ? info->alg1_is_kem : info->alg2_is_kem;
+    return ((const HYBRID_KEM_INFO *)k->info)->component[i].is_kem;
 }
 
 /*
  * Wire-order iterator: map a wire position (0-based, in concatenation order) to
- * a component index. For KEMs the PQ component (component 1 / alg2) leads when
- * alg2_slot == 0 (reverse-share, e.g. X25519MLKEM768); otherwise component 0
- * leads. SIG keys always concatenate component 0 first. This centralizes the
- * ordering that the encap/decap/encoder/decoder paths currently open-code as an
- * `alg2_slot == 0 ? ... : ...` branch; with the N-slot step it becomes a lookup
- * into the row's wire-ordered component list, same signature.
+ * a logical component index. For KEMs this is a lookup into the row's wire[]
+ * permutation (e.g. the reverse-share MLX groups return component 1 / alg2 /
+ * the PQ half first). SIG keys always concatenate component 0 first, so the
+ * mapping is the identity. This centralizes the ordering the
+ * encap/decap/encoder/decoder paths used to open-code as an
+ * `alg2_slot == 0 ? ... : ...` branch.
  */
 static inline unsigned hybrid_wire_to_comp(const HYBRID_KEY *k,
                                            unsigned wire_pos)
 {
-    int alg2_first = k->is_kem
-        && ((const HYBRID_KEM_INFO *)k->info)->alg2_slot == 0;
-
-    if (alg2_first)
-        return wire_pos == 0 ? 1u : 0u;
+    if (k->is_kem)
+        return ((const HYBRID_KEM_INFO *)k->info)->wire[wire_pos];
     return wire_pos;
 }
 

@@ -619,7 +619,7 @@ int main(void)
                 int codepoint;
                 char t[128];
 
-                if (strncmp(hybrid_kem_table[g].alg2_name, "MLKEM", 5) != 0
+                if (strncmp(hybrid_kem_table[g].component[1].name, "MLKEM", 5) != 0
                         || hybrid_kem_is_default_builtin(hybrid_kem_table[g].hybrid_name)
                         || hybrid_kem_table[g].tls_codepoint == 0)
                     continue;
