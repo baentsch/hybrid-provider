@@ -297,16 +297,26 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out, size_t *outlen
     /*
      * Split the components by kind, not by slot: the classical share serializes
      * as its private DER/raw bytes, the PQ share as raw private (its public key
-     * is pinned to the trailing block below). This format carries exactly one of
-     * each; a second classical or a missing PQ share is rejected.
+     * is pinned to the trailing block below).
+     *
+     * This wire format is a classical+PQ *pair*: the single classical-length
+     * prefix and the single trailing PQ public mean it can carry exactly one of
+     * each kind, so a second classical or a missing/second PQ share is rejected.
+     * N-component and PQ-only (classical-less) hybrid KEMs are implemented in the
+     * kind-agnostic concat combiner but are NOT serializable in this format —
+     * they carry oid = NULL and are never encoded here. Generic per-component
+     * KEM key-file serialization is future work, out of scope for #135/#131 (see
+     * design.md, "N-component concatenation").
      */
     for (i = 0; i < n; i++) {
         if (hybrid_component_is_classical(hybrid_key_comp_name(key, i),
                                           hybrid_key_comp_group(key, i))) {
-            if (clas != NULL
+            if (clas != NULL            /* a second classical: unrepresentable */
                 || !get_component_priv(HYBRID_KEY_COMP(key, i), &clas, &claslen))
                 goto err;
         } else {
+            if (have_pq)                /* a second PQ: unrepresentable */
+                goto err;
             pqc = i;
             have_pq = 1;
             pqv = hybrid_key_comp_prv_bytes(key, i);
