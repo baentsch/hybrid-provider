@@ -985,6 +985,19 @@ static inline size_t hybrid_key_comp_sig_bytes(const HYBRID_KEY *k, unsigned i)
 }
 
 /*
+ * Per-component "is this a native KEM?" (1) vs a key-exchange primitive like
+ * X25519/ECDH (0). KEM keys only — the flag lives in HYBRID_KEM_INFO; a SIG key
+ * has no such notion. Used by the encaps/decaps dispatch in hybrid_kem.c to pick
+ * encap_kem()/decap_kem() vs encap_keyexchange()/decap_keyexchange().
+ */
+static inline int hybrid_key_comp_is_kem(const HYBRID_KEY *k, unsigned i)
+{
+    const HYBRID_KEM_INFO *info = (const HYBRID_KEM_INFO *)k->info;
+
+    return i == 0 ? info->alg1_is_kem : info->alg2_is_kem;
+}
+
+/*
  * Wire-order iterator: map a wire position (0-based, in concatenation order) to
  * a component index. For KEMs the PQ component (component 1 / alg2) leads when
  * alg2_slot == 0 (reverse-share, e.g. X25519MLKEM768); otherwise component 0
