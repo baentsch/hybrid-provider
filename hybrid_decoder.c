@@ -195,6 +195,14 @@ void hybrid_spki_free(void *handle)
     ASN1_item_free((ASN1_VALUE *)handle, ASN1_ITEM_rptr(HYBRID_SPKI));
 }
 
+/* Read a UINT32 big-endian length prefix from p (p must have >= 4 bytes). The
+ * decode-side mirror of the encoder's enc_uint32_be(). */
+static uint32_t dec_uint32_be(const unsigned char *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16)
+         | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
 static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
                          OSSL_CALLBACK *data_cb, void *data_cbarg,
                          OSSL_PASSPHRASE_CALLBACK *pw_cb, void *pw_cbarg)
@@ -205,12 +213,14 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     void *spki = NULL;
     const ASN1_OBJECT *alg_oid = NULL;
     const unsigned char *pk = NULL;
-    const unsigned char *cpub, *pqpub;
     int pklen = 0, variant, is_kem = 0, ret = 1; /* default: not ours, continue */
     char oidbuf[128];
     HYBRID_KEY *key = NULL;
+    const unsigned char *compptr[HYBRID_KEY_NCOMP(key)];
+    size_t complen[HYBRID_KEY_NCOMP(key)];
+    unsigned n = HYBRID_KEY_NCOMP(key), w;
     uint32_t clen;
-    size_t pqlen;
+    size_t pqlen, off;
 
     if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
         goto end;
@@ -227,14 +237,10 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
 
     /* From here the OID is a hybrid one we own, so a failure is a real error for
      * this key rather than a "let another decoder try" decline: raise a message
-     * so the user learns why an otherwise-recognized hybrid key did not load.
-     * Blob: UINT32(classical_pub_len) then the two component public keys.
-     * Signature hybrids and forward KEMs are classical-first; reverse-share
-     * KEMs (alg2_slot == 0) put the PQ public key first. */
+     * so the user learns why an otherwise-recognized hybrid key did not load. */
     clen = 0;
     if (pklen >= 4)
-        clen = ((uint32_t)pk[0] << 24) | ((uint32_t)pk[1] << 16)
-             | ((uint32_t)pk[2] << 8) | (uint32_t)pk[3];
+        clen = dec_uint32_be(pk);
     if (pklen < 4 || 4 + (size_t)clen > (size_t)pklen) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
                        "hybrid decode: malformed %s public key", oidbuf);
@@ -250,14 +256,24 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
         ret = 0;
         goto end;
     }
-    if (is_kem && ((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0) {
-        pqpub = pk + 4;
-        cpub  = pk + 4 + pqlen;
-    } else {
-        cpub  = pk + 4;
-        pqpub = pk + 4 + clen;
+    /* Split the blob into per-component byte ranges. The UINT32 prefix is
+     * component ALG1's public-key length and the remainder is component ALG2 —
+     * keyed to the slot, not the kind: for KEMs ALG1 is the classical share, but
+     * for signatures ALG1 may itself be PQ (or both components PQ), so this is a
+     * genuine ALG1-length prefix, not a classical-length one. The wire iterator
+     * places each component at its on-wire offset (PQ share first for
+     * reverse-share KEMs). */
+    complen[HYBRID_COMP_ALG1] = clen;
+    complen[HYBRID_COMP_ALG2] = pqlen;
+    off = sizeof(uint32_t);
+    for (w = 0; w < n; w++) {
+        unsigned ci = hybrid_wire_to_comp(key, w);
+
+        compptr[ci] = pk + off;
+        off += complen[ci];
     }
-    if (!hybrid_key_load_pub_components(key, cpub, clen, pqpub, pqlen)) {
+    if (!hybrid_key_load_pub_components(key, compptr[HYBRID_COMP_ALG1], clen,
+                                        compptr[HYBRID_COMP_ALG2], pqlen)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
                        "hybrid decode: cannot load %s components", oidbuf);
         ret = 0;
@@ -282,16 +298,18 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
     HYBRID_DEC_CTX *ctx = vctx;
     unsigned char *der = NULL;
     const unsigned char *p, *inner;
-    size_t derlen = 0, a2v;
+    size_t derlen = 0;
     PKCS8_PRIV_KEY_INFO *p8 = NULL;
     ASN1_OCTET_STRING *oct = NULL;
     const ASN1_OBJECT *alg_oid = NULL;
-    const unsigned char *octdata = NULL, *cder, *pqv, *pqpub = NULL;
-    size_t octlen = 0, a2p;
+    const unsigned char *octdata = NULL, *cder = NULL, *pqv = NULL, *pqpub = NULL;
+    size_t octlen = 0, pqvlen = 0, pqpublen = 0, off;
     int innerlen = 0, variant, is_kem = 0, ret = 1;
     char oidbuf[128];
     HYBRID_KEY *key = NULL;
     uint32_t clen;
+    unsigned n, w, i, pqc = 0;
+    int have_classical = 0, have_pq = 0;
 
     if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
         goto end;
@@ -316,8 +334,7 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
     octlen = hybrid_asn1_string_length(oct);
     if (octlen < 4)
         goto end;
-    clen = ((uint32_t)octdata[0] << 24) | ((uint32_t)octdata[1] << 16)
-         | ((uint32_t)octdata[2] << 8) | (uint32_t)octdata[3];
+    clen = dec_uint32_be(octdata);
 
     key = hybrid_keymgmt_new_by_variant(ctx->provctx, is_kem, (unsigned)variant);
     if (key == NULL) {
@@ -341,27 +358,69 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         goto end;
     }
 
-    /* KEMs: oqsprovider's alg2_slot-ordered layout (classical DER + PQ raw). */
-    a2v = key->sizes->a2_prv;
-    a2p = key->sizes->a2_pub;
-    if (sizeof(uint32_t) + (size_t)clen + a2v > octlen)
-        goto end;
-    /* Reverse-share KEMs store PQ private first, then classical. */
-    if (((const HYBRID_KEM_INFO *)key->info)->alg2_slot == 0) {
-        pqv  = octdata + 4;
-        cder = octdata + 4 + a2v;
-    } else {
-        cder = octdata + 4;
-        pqv  = octdata + 4 + clen;
+    /*
+     * KEMs: oqsprovider's layout — UINT32(classical_der_len) || <private parts,
+     * wire order> || pq_pubkey. Split the components by KIND, not slot (the
+     * decode-side mirror of hybrid_encode_priv_blob): the classical share's
+     * private DER has the prefixed length (clen); the PQ share's raw
+     * private/public sizes come from its own size row.
+     *
+     * This wire format is a classical+PQ *pair*: the single classical-length
+     * prefix and the single trailing PQ public mean it can carry exactly one of
+     * each kind, so require that here. N-component and PQ-only (classical-less)
+     * hybrid KEMs are implemented in the kind-agnostic concat combiner but are
+     * NOT serializable in this format — they carry oid = NULL and never reach
+     * this path. Generic per-component KEM key-file serialization is future
+     * work, out of scope for #135/#131 (see design.md, "N-component
+     * concatenation").
+     */
+    n = HYBRID_KEY_NCOMP(key);
+    for (i = 0; i < n; i++) {
+        if (hybrid_component_is_classical(hybrid_key_comp_name(key, i),
+                                          hybrid_key_comp_group(key, i))) {
+            if (have_classical)
+                goto end;              /* a second classical: unrepresentable */
+            have_classical = 1;
+        } else {
+            if (have_pq)
+                goto end;              /* a second PQ: unrepresentable */
+            pqc = i;
+            have_pq = 1;
+            pqvlen = hybrid_key_comp_prv_bytes(key, i);
+            pqpublen = hybrid_key_comp_pub_bytes(key, i);
+        }
     }
-    /* Our blob also carries the PQ public key as a trailing block (offset
-     * 4 + clen + a2v). Pass it through so the decoded key is complete — research
-     * keytypes cannot re-derive it from private material, and a certificate needs
-     * it. Blobs without the trailing block decode private-only (pqpub stays NULL). */
-    if (a2p > 0 && sizeof(uint32_t) + (size_t)clen + a2v + a2p <= octlen)
-        pqpub = octdata + 4 + (size_t)clen + a2v;
-    if (!hybrid_key_load_prv_components(key, cder, clen, pqv, a2v,
-                                        pqpub, pqpub != NULL ? a2p : 0)) {
+    if (!have_classical || !have_pq)
+        goto end;
+    /* The private parts (classical DER of length clen + PQ raw private) must fit
+     * before the trailing PQ public block. */
+    if (sizeof(uint32_t) + (size_t)clen + pqvlen > octlen)
+        goto end;
+    /* Place each private part at its wire offset — hybrid_wire_to_comp() owns
+     * the order; the classical share is the prefixed DER (clen), the PQ share
+     * (its index discovered above by kind) the raw private key. */
+    off = sizeof(uint32_t);
+    for (w = 0; w < n; w++) {
+        unsigned ci = hybrid_wire_to_comp(key, w);
+
+        if (ci == pqc) {
+            pqv = octdata + off;
+            off += pqvlen;
+        } else {
+            cder = octdata + off;
+            off += (size_t)clen;
+        }
+    }
+    /* Our blob also carries the PQ public key as the trailing block (at `off`).
+     * Pass it through so the decoded key is complete — research keytypes cannot
+     * re-derive it from private material, and a certificate needs it. Blobs
+     * without the trailing block decode private-only (pqpub stays NULL). */
+    if (pqpublen > 0 && off + pqpublen <= octlen)
+        pqpub = octdata + off;
+    else
+        pqpublen = 0;
+    if (!hybrid_key_load_prv_components(key, cder, clen, pqv, pqvlen,
+                                        pqpub, pqpublen)) {
         ret = 0;
         goto end;
     }

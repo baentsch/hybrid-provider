@@ -556,6 +556,21 @@ three components. The generalization is deliberately scoped so it stays an
   path asserts two components until a draft earns the generalization. No
   speculative signature-concat work.
 
+- **Key-file serialization stays a classical+PQ pair (future work otherwise).**
+  The generalization above applies to the *combiner* (keygen/encaps/decaps) and
+  the in-memory key. The SPKI/PKCS8 *key-file* blob is separate: it mirrors
+  oqsprovider's hybrid layout — a single `UINT32` classical-length prefix plus a
+  single trailing PQ public key — which structurally holds exactly one classical
+  and exactly one PQ component (the encoder/decoder reject anything else). So
+  PQ-only (classical-less) and N>2 hybrid KEMs cannot be serialized in this
+  format; they are operation-only, carry `oid = NULL`, and are served purely
+  through the combiner, never reaching the encoder/decoder. This is **not** a gap
+  for #131: its draft-preussmattsson HQC groups are ephemeral KEM-API/TLS key
+  exchanges that are never written to a key file (`cp = 0`, `oid = NULL`).
+  Encoding experimental PQ-only / N-component KEMs would need a self-defined,
+  kind-agnostic per-component format plus provider-assigned OIDs (byte-identical
+  to nothing upstream) — deliberate **future work**, out of scope for #135/#131.
+
 - **Component-accessor params.** The standalone-component params
   (`hybrid-classic-pub-spki` etc.) are a two-component contract shared with the
   composite family and external consumers; the standardized two-component rows
