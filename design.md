@@ -1033,6 +1033,27 @@ abort. Like the sanitize leg it runs **post-merge only** (on push to `main`).
 `hybrid_threads_test` also runs under the ASan leg (full-suite), covering its
 allocations for leaks and UB.
 
+A **bench** leg guards against composition-overhead regressions. The three
+benchmarks (`hybrid_bench`, `composite_sig_bench`, `composite_kem_bench`) each
+assert a *minimum-latency ratio* of the composed operation against the sum of its
+components (`HYBRID_BENCH_GUARD_ONLY`), so a regression in the provider's glue
+trips the guard. They carry the ctest label `bench` and are `RUN_SERIAL` (their
+timing skews under concurrent load), which makes them a poor fit for the fast PR
+gate: the regular and sanitize legs therefore run `ctest -LE bench` (functional
+only) while this leg runs `ctest -L bench` on an uninstrumented, non-hardened
+build for representative timing. Like the sanitize and tsan legs it runs
+**post-merge only** (on push to `main`): a composition-overhead regression only
+appears when *we* change code, so running on every merge both guards `main` and
+ties the regression to a specific merge commit — a red build the author sees at
+once, with no scheduled run or tracking issue needed. The step retries once
+before failing, so a single descheduled timing window under runner contention
+clears on the retry and only a repeated trip reddens the build. (A nightly variant
+that files a deduped tracking issue instead is possible — switch the trigger to a
+schedule cron and reuse the create-or-comment/auto-close pattern from
+`.github/workflows/oqs-hybrid-drift.yml` — but post-merge is preferred here for the
+same commit-attribution reason as the sanitize leg.) Every algorithm stays
+*functionally* covered on the PR gate; only the timing guard moves off it.
+
 A **fuzz** leg exercises the decoder attack surface (issue #41): a bounded,
 coverage-guided libFuzzer session (`CC=clang`, `-DHYBRID_FUZZ=ON`) drives raw
 bytes through the untrusted-key-material decode paths — `hybrid_decode()` (SPKI),

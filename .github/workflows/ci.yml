@@ -201,10 +201,16 @@ jobs:
       - name: Build hybrid provider
         run: cmake --build build -j"$(nproc)"
 
+      # -LE bench excludes the three RUN_SERIAL min-latency benchmarks from the PR
+      # gate: together they are ~60s of serial wall time and their timing guards
+      # flake under runner contention, neither of which belongs on the fast
+      # functional path. Composition-overhead regressions are caught in the dedicated
+      # post-merge `bench` job (ctest -L bench); every algorithm stays functionally
+      # covered here.
       - name: Test — full suite (OpenSSL >= 3.5)
         if: matrix.openssl.pre35 != 'true'
         working-directory: build
-        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)"
+        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -LE bench
 
       # Pre-3.5 the default provider has no native ML-KEM/ML-DSA (and no seed
       # API), so MLX-vs-default checks and the STANDARDIZED composite tiers
@@ -214,12 +220,14 @@ jobs:
       # sigs. The EXPERIMENTAL composite signatures (raw private key, no seed API)
       # also run here — composite_sig_test/composite_test exercise them and self-skip
       # the standardized rows, proving composite works below 3.5 for that tier.
+      # Benchmarks are excluded from this gating subset (see -LE bench above); the
+      # pre-3.5 composition guard is covered by the weekly leg.
       - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
         if: matrix.openssl.pre35 == 'true'
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|hybrid_interop_test|hybrid_kem_encode_test'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|hybrid_interop_test|hybrid_kem_encode_test'
 
   # --------------------------------------------------------------- sanitize ---
   # Memory-safety audit automation (issue #42): build the provider + tests with
@@ -329,7 +337,124 @@ jobs:
           export ASAN_OPTIONS="abort_on_error=1:detect_leaks=1:strict_string_checks=1"
           export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/test/lsan.supp"
           export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
-          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -E 'hybrid_scenarios_'
+          # -LE bench: the min-latency ratio guards are meaningless under ASan (both
+          # sides of the ratio are inflated by instrumentation) and slow; the
+          # memory-safety value is in the functional suite. Perf regressions are the
+          # dedicated `bench` job's responsibility.
+          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -E 'hybrid_scenarios_' -LE bench
+
+  # ------------------------------------------------------------------- bench ---
+  # Composition-overhead regression guard. The three benchmarks (hybrid_bench,
+  # composite_sig_bench, composite_kem_bench) each assert a MINIMUM-latency ratio
+  # of the composed op against the sum of its components (HYBRID_BENCH_GUARD_ONLY);
+  # a regression in the provider's glue trips the guard. They are RUN_SERIAL and
+  # flake under contention, so they are kept off the fast PR gate (-LE bench there)
+  # and run here as a group (ctest -L bench) on an uninstrumented, non-hardened
+  # build for representative timing.
+  #
+  # POST-MERGE ONLY (push to main), like the sanitize and tsan legs: a perf
+  # regression in our composition glue only appears when WE change code (a push to
+  # main), so running on every merge both guards main and ties the regression to a
+  # specific merge commit — a red build the author sees immediately. This is the
+  # same rationale the sanitize leg uses to prefer post-merge over a scheduled run
+  # that "would need a separate issue to track a failure" (and avoids a noisy
+  # scheduled issue-filer flaking on runner timing). To instead run nightly and
+  # file a deduped tracking issue, switch the trigger to a schedule cron and copy
+  # the create-or-comment/auto-close pattern from .github/workflows/oqs-hybrid-drift.yml.
+  bench:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Composition-overhead benchmarks (latest OpenSSL)
+    runs-on: ubuntu-latest
+    env:
+      PREFIX: ${{ github.workspace }}/.local
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
+      OQS_INSTALL: ${{ github.workspace }}/oqs-install
+      LIBOQS_REF: "0.16.0"
+      # incl. oqsprovider #802: mlkem512 rename (SecP256r1MLKEM512) + code points
+      OQSPROV_REF: "72e7dae5aab022167aa7ae8f5afdb9667d848104"
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Resolve OpenSSL release ref
+        id: ossl
+        run: |
+          set -euo pipefail
+          REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl "openssl-*" \
+                | awk -F/ '{print $NF}' | grep -E "^openssl-[0-9]+\\.[0-9]+\\.[0-9]+$" \
+                | sort -V | tail -1)
+          SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL: $REF ($SHA)"
+
+      # Split caches shared with the regular/sanitize legs (same keys): OpenSSL
+      # keyed on its commit, pinned liboqs on its ref, oqs-provider on both.
+      - name: Cache OpenSSL
+        id: cache-ossl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
+
+      - name: Build OpenSSL
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Cache liboqs (pinned)
+        id: cache-liboqs
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OQS_INSTALL }}
+          key: liboqs-${{ runner.os }}-${{ env.LIBOQS_REF }}
+
+      - name: Build liboqs (pinned)
+        if: steps.cache-liboqs.outputs.cache-hit != 'true'
+        run: ONLY_LIBOQS=1 LIBOQS_PREFIX="$OQS_INSTALL" ./test/setup_oqs_interop.sh
+
+      - name: Stage OpenSSL + liboqs into .local
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX"
+          cp -a "$OSSL_INSTALL"/. "$PREFIX"/
+          cp -a "$OQS_INSTALL"/. "$PREFIX"/
+
+      # Plain build (no HARDEN / no SANITIZE): representative timing for the guard.
+      - name: Configure hybrid provider
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON
+
+      - name: Cache oqs-provider (pinned)
+        id: cache-oqsp
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.interop/oqs-provider
+          key: oqsp-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+
+      - name: Build oqs-provider (pinned)
+        run: OPENSSL_PREFIX="$PREFIX" BUILD_DIR="$PWD/build" ./test/setup_oqs_interop.sh
+
+      - name: Build hybrid provider
+        run: cmake --build build -j"$(nproc)"
+
+      # Retry once before failing: the min-latency ratio can trip on a single
+      # descheduled window under runner contention. A real regression trips both
+      # runs; a one-off scheduling blip clears on the retry, so only a repeated
+      # failure reddens the build.
+      - name: Benchmarks — composition-overhead guard (ctest -L bench)
+        working-directory: build
+        run: |
+          set -uo pipefail
+          export LD_LIBRARY_PATH="$PREFIX/lib64"
+          run() { ctest --output-on-failure -L bench; }
+          if run; then exit 0; fi
+          echo "::warning::bench guard tripped — retrying once to rule out runner contention"
+          run
 
   # -------------------------------------------------------------------- tsan ---
   # Thread-safety audit automation (issue #43): build the provider + tests with

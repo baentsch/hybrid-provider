@@ -172,6 +172,15 @@ The full per-combo report (every algorithm) prints when run with a larger budget
 e.g. `hybrid_bench 1000` / `composite_sig_bench 2000`. Correctness for every
 combo is covered elsewhere (#1/#21 hybrids, #24–#30 composite).
 
+All three carry the ctest label **`bench`** and are `RUN_SERIAL` (their
+min-latency guard skews under concurrent load). They are therefore kept off the
+fast PR gate — the regular and sanitize CI legs run `ctest -LE bench` (functional
+only) — and run as a group, `ctest -L bench`, in a dedicated **post-merge** CI job
+where a composition-overhead regression surfaces as a red build tied to the merge
+commit. Locally: `ctest -L bench` runs just these three; `ctest -LE bench` runs
+the functional suite without them (the fast inner loop). See design.md
+"Continuous integration tiers" (the *bench* leg) for the rationale.
+
 #### 31. composite_sig_bench
 
 — Composite cert size + cert-gen/verify benchmark; under ctest a guard-only smoke asserting composition overhead stays within ceiling.
