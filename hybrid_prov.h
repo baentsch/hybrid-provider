@@ -258,8 +258,8 @@ typedef struct hybrid_key_st {
      * Component key handles, indexed 0..n_comp-1 (component 0 == logical alg1,
      * component 1 == alg2). Accessed only through HYBRID_KEY_COMP /
      * HYBRID_KEY_NCOMP (issue #135). n_comp is per-variant (2 for most rows, 3 for
-     * the draft-preussmattsson HQC PQ/PQ/T groups), derived from the wire-ordered
-     * descriptor at construction; sized to HYBRID_MAX_COMP.
+     * the draft-preussmattsson-tls-hqckem PQ/PQ/T groups), derived from the
+     * wire-ordered descriptor at construction; sized to HYBRID_MAX_COMP.
      */
     EVP_PKEY *comp[HYBRID_MAX_COMP];
     unsigned n_comp;

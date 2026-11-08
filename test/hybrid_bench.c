@@ -515,8 +515,8 @@ int main(int argc, char **argv)
      * ALL its components, iterating the provider's OWN tables so the peer fetches
      * each component by the exact name the provider composes with (same impl ->
      * tax cancels; see bench_util.h). Unlike Part 1 this needs no native peer --
-     * only the components -- so it covers every hybrid, including those Part 1
-     * skips and the N>2-component HQC groups (issue #135 item 11).
+     * only the components -- so it covers every hybrid of any arity, including
+     * those Part 1 skips and the N>2-component rows (issue #135 item 11).
      */
     if (bench_timing_unreliable()) {
         printf("\ncomposition-overhead guard — SKIPPED "

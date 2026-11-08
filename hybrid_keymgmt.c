@@ -725,7 +725,9 @@ static const OSSL_PARAM hybrid_gettable[] = {
     /* Component extraction (item 13): each component's standalone SPKI (public)
      * and PKCS#8 (private) DER. The classic/pq spelling is the 2-component view;
      * the indexed hybrid-compN-* spelling (issue #135 item 11) covers every
-     * logical component, needed for the N>2-component HQC groups. */
+     * logical component, as a hybrid may concatenate more than two (RFC 9954
+     * allows any count; the draft-preussmattsson-tls-hqckem PQ/PQ/T groups are
+     * the first three-component rows). */
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_CLASSIC_PUB, NULL, 0),
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_PQ_PUB, NULL, 0),
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_CLASSIC_PRIV, NULL, 0),
@@ -827,7 +829,7 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
          * d2i_PUBKEY-able into a usable EVP_PKEY. The classic/pq names are the
          * 2-component view (component 0 == classical, component 1 == PQ); the
          * indexed hybrid-compN-* names (item 11) expose every logical component
-         * 0..n_comp-1, needed by the N>2-component HQC groups. */
+         * 0..n_comp-1, as a concat hybrid may have more than two. */
         unsigned i;
 
         p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_CLASSIC_PUB);

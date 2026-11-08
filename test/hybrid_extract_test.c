@@ -445,9 +445,11 @@ static const char *const comp_priv_param[HYBRID_MAX_COMP] = {
  * pub/priv extraction + priv/pub consistency; then INNER == STANDALONE parity (the
  * concatenated PUB_KEY blob equals the components' raw pubs taken in WIRE order)
  * and composition (re-importing the rebuilt blob yields a key EVP_PKEY_eq the
- * original). A component whose provider cannot serialize it standalone — the oqs
- * research KEM HQC — makes the row self-skip, exactly as the 2-component HQC rows
- * do, but only after the serializable components were actually extracted.
+ * original). This reuses the same per-component serializability rule as check():
+ * a component whose provider emits no standalone encoding (the oqs research KEMs
+ * Frodo/BIKE/HQC — see component_serializable()) makes the row self-skip, exactly
+ * as the matching two-component rows do, but only after the serializable
+ * components were actually extracted.
  */
 static void check_ncomp(OSSL_LIB_CTX *ctx, const HYBRID_KEM_INFO *row)
 {
@@ -483,8 +485,9 @@ static void check_ncomp(OSSL_LIB_CTX *ctx, const HYBRID_KEM_INFO *row)
         cpub[i] = extract_pub(ctx, key, comp_pub_param[i]);
         cpriv[i] = extract_priv(ctx, key, comp_priv_param[i]);
         if (cpub[i] == NULL || cpriv[i] == NULL) {
-            /* Only a genuinely non-serializable component is a skip (HQC); an
-             * otherwise-serializable one failing to extract is a real bug. */
+            /* Only a genuinely non-serializable component is a skip (a research
+             * KEM with no standalone encoding); an otherwise-serializable one
+             * failing to extract is a real bug. */
             if (!component_serializable(ctx, row->component[i].name,
                                         row->component[i].group)) {
                 printf("SKIP (component %u not serializable by its provider)\n", i);

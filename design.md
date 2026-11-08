@@ -604,9 +604,9 @@ than a disguised third slot:
   The extract/compose test (`hybrid_extract_test`) drives the N>2 rows through the
   indexed params, verifying per-component SPKI/PKCS8 round-trips and wire-order
   recomposition; a component whose provider has no standalone encoding (the oqs
-  research KEM HQC) still makes the row self-skip, exactly as the two-component
-  HQC rows do. The combiner path (keygen/encaps/decaps, whole-key export/import)
-  is fully N-ary regardless.
+  research KEMs Frodo/BIKE/HQC) still makes the row self-skip, exactly as the
+  matching two-component rows do. The combiner path (keygen/encaps/decaps,
+  whole-key export/import) is fully N-ary regardless.
 
 ## Operation: Signature
 
