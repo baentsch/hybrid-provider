@@ -109,7 +109,7 @@ Level-1 variant; code points and the `SecP256r1MLKEM512` name follow the draft
 
 LAMPS standards-track (Active I-D, v19). Full **18-combo standardized matrix**,
 OIDs `1.3.6.1.5.5.7.6.37 … .54`, each verified against the draft's reference
-test vectors (`composite_kat_test`). ML-DSA only. Message-representative
+test vectors (`composite_kat_test`). ML-DSA (FIPS 204) only. Message-representative
 construction `M' = prefix || label || len(ctx) || ctx || PH(M)`, raw-concat
 serialization. **Normative** (byte-exact vs. BouncyCastle / future OpenSSL-native).
 
@@ -238,6 +238,13 @@ The draft's TLS code points are still **TBD**, so these carry **no TLS code poin
 and no OID**: they are operation-only (exposed via the KEM API, not negotiable in a
 handshake nor serializable as key files), like the research KEMs. Standalone HQC is
 out of scope — only the hybrid groups are served. **Draft** (individual submission).
+
+Proof of correctness here is **functional, not a KAT**: the draft ships no
+reference vectors and the groups have no interop peer (code points TBD), so instead
+of a known-answer oracle the component split and HQC-first wire layout are exercised
+by per-component extraction (`hybrid_extract_test`) and encaps/decaps round-trips
+over the oqsprovider PQ base (`hybrid_oqs_test`, `hybrid_matrix_test`), with byte
+sizes and composition overhead pinned by `hybrid_sizes_test` / `hybrid_bench`.
 
 Underlying: HQC (oqsprovider), FIPS 203 (ML-KEM), RFC 7748 (X25519/X448),
 RFC 9954 (shared-secret concatenation).
