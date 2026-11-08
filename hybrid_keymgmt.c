@@ -696,6 +696,20 @@ static const OSSL_PARAM *hybrid_kem_imexport_types(int selection)
 
 /* --- get_params / gettable_params --- */
 
+/*
+ * Indexed component-extraction param names (issue #135 item 11), one per logical
+ * component. Single-sourced on the HYBRID_PKEY_PARAM_COMP* macros so a name used
+ * in the get_params loop below matches the literal advertised in hybrid_gettable[].
+ */
+static const char *const hybrid_comp_pub_param[HYBRID_MAX_COMP] = {
+    HYBRID_PKEY_PARAM_COMP0_PUB, HYBRID_PKEY_PARAM_COMP1_PUB,
+    HYBRID_PKEY_PARAM_COMP2_PUB, HYBRID_PKEY_PARAM_COMP3_PUB,
+};
+static const char *const hybrid_comp_priv_param[HYBRID_MAX_COMP] = {
+    HYBRID_PKEY_PARAM_COMP0_PRIV, HYBRID_PKEY_PARAM_COMP1_PRIV,
+    HYBRID_PKEY_PARAM_COMP2_PRIV, HYBRID_PKEY_PARAM_COMP3_PRIV,
+};
+
 static const OSSL_PARAM hybrid_gettable[] = {
     OSSL_PARAM_int(OSSL_PKEY_PARAM_BITS, NULL),
     OSSL_PARAM_int(OSSL_PKEY_PARAM_SECURITY_BITS, NULL),
@@ -709,11 +723,23 @@ static const OSSL_PARAM hybrid_gettable[] = {
      * do not implement. Mirrors ML-DSA/EdDSA. */
     OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_MANDATORY_DIGEST, NULL, 0),
     /* Component extraction (item 13): each component's standalone SPKI (public)
-     * and PKCS#8 (private) DER. */
+     * and PKCS#8 (private) DER. The classic/pq spelling is the 2-component view;
+     * the indexed hybrid-compN-* spelling (issue #135 item 11) covers every
+     * logical component, as a hybrid may concatenate more than two (RFC 9954
+     * allows any count; the draft-preussmattsson-tls-hqckem PQ/PQ/T groups are
+     * the first three-component rows). */
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_CLASSIC_PUB, NULL, 0),
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_PQ_PUB, NULL, 0),
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_CLASSIC_PRIV, NULL, 0),
     OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_PQ_PRIV, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_COMP0_PUB, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_COMP1_PUB, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_COMP2_PUB, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_COMP3_PUB, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_COMP0_PRIV, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_COMP1_PRIV, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_COMP2_PRIV, NULL, 0),
+    OSSL_PARAM_octet_string(HYBRID_PKEY_PARAM_COMP3_PRIV, NULL, 0),
     OSSL_PARAM_END
 };
 
@@ -800,23 +826,40 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
         }
 
         /* Component extraction (item 13): each component's standalone SPKI,
-         * d2i_PUBKEY-able into a usable EVP_PKEY. key1 = classical, key2 = PQ. */
+         * d2i_PUBKEY-able into a usable EVP_PKEY. The classic/pq names are the
+         * 2-component view (component 0 == classical, component 1 == PQ); the
+         * indexed hybrid-compN-* names (item 11) expose every logical component
+         * 0..n_comp-1, as a concat hybrid may have more than two. */
+        unsigned i;
+
         p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_CLASSIC_PUB);
         if (p != NULL && !hybrid_component_spki_param(p, HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1)))
             return 0;
         p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_PQ_PUB);
         if (p != NULL && !hybrid_component_spki_param(p, HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2)))
             return 0;
-    }
+        for (i = 0; i < HYBRID_KEY_NCOMP(key); i++) {
+            p = OSSL_PARAM_locate(params, hybrid_comp_pub_param[i]);
+            if (p != NULL && !hybrid_component_spki_param(p, HYBRID_KEY_COMP(key, i)))
+                return 0;
+        }
+    } /* hybrid_have_pubkey */
 
     /* The private halves, as standalone PKCS#8, when this key holds them. */
     if (hybrid_have_prvkey(key)) {
+        unsigned i;
+
         p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_CLASSIC_PRIV);
         if (p != NULL && !hybrid_component_pkcs8_param(p, HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1)))
             return 0;
         p = OSSL_PARAM_locate(params, HYBRID_PKEY_PARAM_PQ_PRIV);
         if (p != NULL && !hybrid_component_pkcs8_param(p, HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2)))
             return 0;
+        for (i = 0; i < HYBRID_KEY_NCOMP(key); i++) {
+            p = OSSL_PARAM_locate(params, hybrid_comp_priv_param[i]);
+            if (p != NULL && !hybrid_component_pkcs8_param(p, HYBRID_KEY_COMP(key, i)))
+                return 0;
+        }
     }
 
     return 1;

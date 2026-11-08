@@ -122,10 +122,20 @@ void   bench_guard_sig(OSSL_LIB_CTX *ctx, const char *composed_name,
                        int trad_rsa_bits, const char *trad_md,
                        double ceil, int *failures);
 
-/* Full sum-of-components guard for one composed KEM (encaps/decaps). */
+/*
+ * Full sum-of-components guard for one composed KEM (encaps/decaps): assert the
+ * composed op within ceil x the sum over ALL n components, each timed standalone
+ * by kind — a native KEM (is_kem[i]) via encaps/decaps, a key-exchange primitive
+ * via bench_time_trad_kem (rsa_bits[i] is the RSA modulus size for an RSA-OAEP
+ * component, 0 otherwise). names[]/groups[]/is_kem[]/rsa_bits[] are in logical
+ * order; wire order is irrelevant to the summed time. Serves both the hybrid and
+ * composite KEM families (composites are n == 2). A missing composed alg or
+ * component is silently skipped.
+ */
 void   bench_guard_kem(OSSL_LIB_CTX *ctx, const char *composed_name,
-                       const char *composed_propq, const char *pq_alg,
-                       const char *trad_alg, const char *trad_group,
-                       int trad_rsa_bits, double ceil, int *failures);
+                       const char *composed_propq, unsigned n,
+                       const char *const names[], const char *const groups[],
+                       const int is_kem[], const int rsa_bits[],
+                       double ceil, int *failures);
 
 #endif /* HYBRID_TEST_BENCH_UTIL_H */

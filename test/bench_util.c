@@ -580,49 +580,70 @@ done:
 }
 
 void bench_guard_kem(OSSL_LIB_CTX *ctx, const char *composed_name,
-                     const char *composed_propq, const char *pq_alg,
-                     const char *trad_alg, const char *trad_group,
-                     int trad_rsa_bits, double ceil, int *failures)
+                     const char *composed_propq, unsigned n,
+                     const char *const names[], const char *const groups[],
+                     const int is_kem[], const int rsa_bits[],
+                     double ceil, int *failures)
 {
-    EVP_PKEY *comp = NULL, *pq = NULL, *trad = NULL;
-    double ce, cd, pe, pd, te = 0, td = 0;
+    EVP_PKEY *comp = NULL;
+    double ce, cd, sum_e = 0, sum_d = 0;
+    unsigned i;
 
     if ((comp = bench_gen_key(ctx, composed_name, composed_propq)) == NULL)
         return;
-    if ((pq = bench_gen_key(ctx, pq_alg, NULL)) == NULL
-            || (trad = bench_gen_trad_key(ctx, trad_alg, trad_group,
-                                          trad_rsa_bits)) == NULL)
-        goto done;
+
+    /* Sum each component's own encaps/decaps, timed standalone by kind. */
+    for (i = 0; i < n; i++) {
+        double e, d;
+
+        if (is_kem[i]) {
+            EVP_PKEY *k = bench_gen_key(ctx, names[i], NULL);
+
+            if (k == NULL)
+                goto done;
+            e = bench_time_kem_encaps(ctx, k, NULL);
+            d = bench_time_kem_decaps(ctx, k, NULL);
+            EVP_PKEY_free(k);
+            if (e < 0 || d < 0)
+                goto done;
+        } else {
+            EVP_PKEY *t = bench_gen_trad_key(ctx, names[i], groups[i],
+                                             rsa_bits[i]);
+            int ok = t != NULL
+                     && bench_time_trad_kem(ctx, names[i], groups[i],
+                                            rsa_bits[i], t, &e, &d);
+
+            EVP_PKEY_free(t);
+            if (!ok)
+                goto done;
+        }
+        sum_e += e;
+        sum_d += d;
+    }
 
     ce = bench_time_kem_encaps(ctx, comp, composed_propq);
     cd = bench_time_kem_decaps(ctx, comp, composed_propq);
-    pe = bench_time_kem_encaps(ctx, pq, NULL);
-    pd = bench_time_kem_decaps(ctx, pq, NULL);
-    if (ce < 0 || cd < 0 || pe < 0 || pd < 0
-            || !bench_time_trad_kem(ctx, trad_alg, trad_group, trad_rsa_bits,
-                                    trad, &te, &td))
+    if (ce < 0 || cd < 0)
         goto done;
 
     /* Reject transient outliers: re-measure a breaching composed op at a larger
      * budget before asserting (see the note in bench_guard_sig). */
-    if (ce > (pe + te) * ceil) {
+    if (ce > sum_e * ceil) {
         double b = g_budget_ms;
 
         g_budget_ms = b * RECHECK_FACTOR;
         ce = bench_time_kem_encaps(ctx, comp, composed_propq);
         g_budget_ms = b;
     }
-    if (cd > (pd + td) * ceil) {
+    if (cd > sum_d * ceil) {
         double b = g_budget_ms;
 
         g_budget_ms = b * RECHECK_FACTOR;
         cd = bench_time_kem_decaps(ctx, comp, composed_propq);
         g_budget_ms = b;
     }
-    bench_guard_op(composed_name, "encaps", ce, pe + te, ceil, failures);
-    bench_guard_op(composed_name, "decaps", cd, pd + td, ceil, failures);
+    bench_guard_op(composed_name, "encaps", ce, sum_e, ceil, failures);
+    bench_guard_op(composed_name, "decaps", cd, sum_d, ceil, failures);
 done:
     EVP_PKEY_free(comp);
-    EVP_PKEY_free(pq);
-    EVP_PKEY_free(trad);
 }

@@ -338,12 +338,13 @@ typedef struct hybrid_key_st {
     char *propq;
     const void *info;        /* HYBRID_KEM_INFO or HYBRID_SIG_INFO */
     int is_kem;              /* 1 = KEM hybrid, 0 = SIG hybrid */
-    EVP_PKEY *key1;          /* component 1 (classical for classical×PQ rows) */
-    EVP_PKEY *key2;          /* component 2 (PQ for classical×PQ rows) */
+    int combiner;            /* KEM shared-secret combiner (HYBRID_COMBINER_*) */
+    EVP_PKEY *comp[HYBRID_MAX_COMP]; /* components in LOGICAL order; [0] == alg1,
+                                      * [1] == alg2, … (issue #135) */
+    unsigned n_comp;         /* component count (2 for most rows; <= HYBRID_MAX_COMP) */
     unsigned int state;      /* HYBRID_HAVE_NOKEYS / PUBKEY / PRVKEY */
-    HYBRID_SIZES sizes;      /* KEM only: runtime-discovered component sizes */
-    const char *alg2_propq;      /* per-component propq (positional: slot 2) */
-    const char *alg1_propq; /* per-component propq (positional: slot 1) */
+    const HYBRID_SIZES *sizes; /* -> this variant's constant size-table row */
+    const char *comp_propq[HYBRID_MAX_COMP]; /* per-component propq, by logical index */
 } HYBRID_KEY;
 
 #define HYBRID_HAVE_NOKEYS  0
@@ -351,10 +352,13 @@ typedef struct hybrid_key_st {
 #define HYBRID_HAVE_PRVKEY  2
 ```
 
-Component sizes are compile-time constants (`HYBRID_SIZES`, copied in at
-construction); `alg1_propq`/`alg2_propq` are borrowed pointers into the
-provider context that steer per-component (by slot) provider selection (see
-"Component provider selection"), each falling back to `propq` when unset.
+Components are accessed only through `HYBRID_KEY_COMP(k, i)` / `HYBRID_KEY_NCOMP(k)`
+(a logical-order array, sized to the `HYBRID_MAX_COMP` bound; only the first
+`n_comp` entries are populated). Component sizes are compile-time constants
+(`sizes` points at this variant's row in the constant `hybrid_kem_sizes[]` /
+`hybrid_sig_sizes[]` table). `comp_propq[i]` are borrowed pointers into the
+provider context that steer per-component (by logical slot) provider selection
+(see "Component provider selection"), each falling back to `propq` when unset.
 
 Each `EVP_PKEY` is obtained via EVP and may come from any provider.
 
@@ -403,6 +407,14 @@ the public and the private half:
 - `HYBRID_PKEY_PARAM_PQ_PUB`       (`"hybrid-pq-pub-spki"`)       — SPKI DER
 - `HYBRID_PKEY_PARAM_CLASSIC_PRIV` (`"hybrid-classic-priv-pkcs8"`) — PKCS#8 DER
 - `HYBRID_PKEY_PARAM_PQ_PRIV`      (`"hybrid-pq-priv-pkcs8"`)      — PKCS#8 DER
+
+The classic/pq pair is the two-component view (classical == component 0, PQ ==
+component 1). An N>2-component hybrid has no single classical/PQ half, so each
+logical component `i` is *also* reachable under an index-keyed name
+`"hybrid-comp{i}-pub-spki"` / `"hybrid-comp{i}-priv-pkcs8"` (0 ≤ `i` <
+`HYBRID_MAX_COMP`; issue #135 item 11). The indexed names are populated for every
+arity, so a caller that does not care about the classical/PQ distinction can use
+them uniformly.
 
 Each returns the component's own standalone encoding — the public half as a
 `SubjectPublicKeyInfo` (`i2d_PUBKEY`), the private half as a PKCS#8
@@ -585,11 +597,16 @@ than a disguised third slot:
 - **Component-accessor params.** The standalone-component params
   (`hybrid-classic-pub-spki` etc.) are a two-component contract shared with the
   composite family and external consumers; the standardized two-component rows
-  keep them. N>2 (experimental) rows will expose *indexed* component params
-  instead of the classic/pq pair — not yet implemented, so today an N>2 row's
-  components are not individually extractable (the extract/compose test skips
-  such rows). The combiner path (keygen/encaps/decaps, whole-key export/import)
-  is fully N-ary regardless.
+  keep them. N>2 rows additionally expose *indexed* params
+  (`hybrid-comp0-pub-spki` … `hybrid-comp{N-1}-pub-spki` and the `-priv-pkcs8`
+  counterparts, one per logical component up to `HYBRID_MAX_COMP`), so every
+  component is individually extractable regardless of arity (issue #135 item 11).
+  The extract/compose test (`hybrid_extract_test`) drives the N>2 rows through the
+  indexed params, verifying per-component SPKI/PKCS8 round-trips and wire-order
+  recomposition; a component whose provider has no standalone encoding (the oqs
+  research KEMs Frodo/BIKE/HQC) still makes the row self-skip, exactly as the
+  matching two-component rows do. The combiner path (keygen/encaps/decaps,
+  whole-key export/import) is fully N-ary regardless.
 
 ## Operation: Signature
 
