@@ -436,6 +436,14 @@ same algorithm. Three things keep the tight bound sound:
   and RSA hybrids by up to ~18×; with the explicit propq every hybrid, RSA
   included, sits at ~1.0×.
 
+Set `BENCH_COMPONENTS=1` to make the guard print each component's own standalone
+encaps/decaps before the summed row, so a near-free addend is visible as such — on
+a 3-component HQC row, for instance, it shows ML-KEM at ~0.02 ms next to HQC's
+~5.8 ms, explaining why the composed time is indistinguishable from the HQC-only
+and 2-component rows (the dominant primitive's run-to-run jitter exceeds the whole
+ML-KEM contribution). It is a diagnostic for reading the `vs sum` ratios, not a
+gate; off by default.
+
 Validated ~1.0–1.2× across the full provider table on the OpenSSL versions CI
 covers (a pre-3.5 release, a current &ge;3.5 release, and `master`). Under a
 **sanitizer** (ASan/TSan) the assertion is **skipped** — the
@@ -548,3 +556,21 @@ LD_LIBRARY_PATH=/path/to/openssl/lib64 OPENSSL_MODULES=$PWD ./provider_matrix 30
 
 Build and run instructions for the external providers, and a captured result
 set, are in [provider-interop-results.md](provider-interop-results.md).
+
+## Environment variables
+
+Knobs read by the test and benchmark binaries (not by the provider itself — its
+runtime variables `HYBRID_CEDE_TO_DEFAULT` and `HYBRID_LOG` are in
+[USAGE.md](USAGE.md#environment-variables)):
+
+| Variable | Read by | Effect |
+|---|---|---|
+| `BENCH_DEBUG` | all three benches | Print the OpenSSL error stack for configurations that are skipped (component/algorithm unavailable), to tell a genuine failure from an expected skip. |
+| `BENCH_COMPONENTS` | the composition-overhead guard | Print each component's standalone encaps/decaps before the summed row, so a near-free addend (e.g. ML-KEM next to HQC) is visible as such. See [Benchmark](#benchmark). |
+| `HYBRID_BENCH_GUARD_ONLY` | all three benches | Skip the informational Part 1 report (which re-runs the whole inventory, incl. slow keygen loops) and run only the asserted composition-overhead guard. Set automatically by the ctest registrations so the CI wall-clock reflects just the regression check; unset for a full manual report. |
+| `COMPOSITE_TRAD_PROPQ` | `composite_kem_test` | Property query for sourcing the composite's classical (traditional) half; default `provider=default`, e.g. `provider=fips`. Mirrors the provider's config-driven `alg1-propquery` rather than hard-wiring the classical provider. |
+| `OQS_CEDE_HYBRIDS` | `hybrid_replace_test` | oqsprovider's own lever (set by the test before loading it) to withdraw its hybrids so the hybrid provider serves them over oqsprovider's PQ primitives. See [Drop-in replacement over a PQ-only oqsprovider](#drop-in-replacement-over-a-pq-only-oqsprovider-hybrid_replace_test). |
+
+`OPENSSL_MODULES` / `LD_LIBRARY_PATH` are the standard OpenSSL module-search-path
+and loader variables (not specific to this project), used throughout the run
+commands above to locate `hybrid.so`, `oqsprovider.so` and the OpenSSL libraries.

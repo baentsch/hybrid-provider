@@ -617,6 +617,11 @@ void bench_guard_kem(OSSL_LIB_CTX *ctx, const char *composed_name,
             if (!ok)
                 goto done;
         }
+        /* BENCH_COMPONENTS: show each component's own encaps/decaps so a near-
+         * free addend (e.g. ML-KEM on an HQC-dominated row) is visible as such. */
+        if (getenv("BENCH_COMPONENTS") != NULL)
+            printf("      [%s] %-20s encaps %8.3f  decaps %8.3f\n",
+                   composed_name, names[i], e, d);
         sum_e += e;
         sum_d += d;
     }

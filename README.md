@@ -43,7 +43,9 @@ from [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) only.
 
 ### Hybrid KEMs
 
-**MLX — byte-compatible with OpenSSL's built-in MLX KEM**
+#### MLX
+
+**Byte-compatible with OpenSSL's built-in MLX KEM**
 (RFC 10024, formerly draft-ietf-tls-ecdhe-mlkem), interoperable with the default
 provider. RFC 10024 defines the first three; `X448MLKEM1024` is an OpenSSL
 default-provider extension (not in the RFC, no TLS code point); `curveSM2MLKEM768`
@@ -69,7 +71,8 @@ may add later (e.g. native composite signatures). Ceding is switchable off
 (`cede-to-default = no` / `HYBRID_CEDE_TO_DEFAULT=0`) to run both implementations
 under the same identifiers for interoperability — see [USAGE.md](USAGE.md).
 
-**OQS-legacy hybrids** —
+#### OQS-legacy hybrids
+
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) naming/wire
 format. ML-KEM variants compose from the default provider or
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider);
@@ -84,7 +87,9 @@ FrodoKEM/eFrodoKEM/BIKE/HQC need
 | BIKE | `p256_bikel1`, `x25519_bikel1`, `p384_bikel3`, `x448_bikel3`, `p521_bikel5` |
 | HQC | `p256_hqc1`, `x25519_hqc1`, `p384_hqc3`, `x448_hqc3`, `p521_hqc5` |
 
-**X-Wing** (`draft-connolly-cfrg-xwing-kem`) — the one **strongly-binding**
+#### X-Wing
+
+`draft-connolly-cfrg-xwing-kem` — the one **strongly-binding**
 combiner: X25519 + ML-KEM-768 with `ss = SHA3-256(ss_M || ss_X || ct_X || pk_X ||
 label)`, folding the X25519 ciphertext and public key into the KDF rather than
 concatenating the component secrets. Same primitives as `X25519MLKEM768` but a
@@ -121,7 +126,9 @@ Adding another is two central lines — a row in `HYBRID_KEM_LIST` and an entry 
 `hybrid_kem_combiner[]` — with no combiner-code change (see
 [CONTRIBUTING.md](CONTRIBUTING.md)).
 
-**HQC-KEM groups** (`draft-preussmattsson-tls-hqckem`) — six of the draft's
+#### HQC-KEM groups
+
+`draft-preussmattsson-tls-hqckem` — six of the draft's
 hybrids: four **2-component** (two PQ/T = HQC + ECDHE, two PQ/PQ = HQC + ML-KEM)
 and two **3-component** PQ/PQ/T (HQC + ML-KEM + ECDHE). The combiner is RFC 9954
 fixed-length concatenation in name order (HQC first), which is our default concat
@@ -169,11 +176,13 @@ families need [oqsprovider](https://github.com/open-quantum-safe/oqs-provider).
 | SNOVA | `p256_snova2454`, `p256_snova2454esk`, `p256_snova37172`, `p384_snova2455`, `p521_snova2965` |
 | MQOM2 | `p256_mqom2cat1gf16fastr5`, `p384_mqom2cat3gf16fastr5`, `p521_mqom2cat5gf16fastr5` |
 
-Four further rows have no oqsprovider counterpart. Three are **PQ/PQ** (RFC 9794
-terminology: both components post-quantum), the signature analogue of
-`xwing_mlkem768_hqc3` above — md-less in *both* slots rather than classical + PQ;
-the fourth puts a classical **EC** half in slot 2 (PQ-first, the mirror of the
-standardized classical-first order):
+#### PQ/PQ and PQ-first
+
+Four further rows have no oqsprovider counterpart. Three
+are **PQ/PQ** (RFC 9794 terminology: both components post-quantum), the signature
+analogue of `xwing_mlkem768_hqc3` above — md-less in *both* slots rather than
+classical + PQ; the fourth puts a classical **EC** half in slot 2 (PQ-first, the
+mirror of the standardized classical-first order):
 
 | Algorithm | Components |
 |---|---|
