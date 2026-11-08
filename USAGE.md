@@ -236,3 +236,17 @@ drops and why (component not fetchable, or the per-enumeration cap reached):
 ```sh
 HYBRID_LOG=1 ./your-app
 ```
+
+## Environment variables
+
+The provider reads two environment variables at load time; both are detailed in
+the sections above. (Benchmark/test knobs — `BENCH_*`, `HYBRID_BENCH_GUARD_ONLY`,
+`COMPOSITE_TRAD_PROPQ` — are documented in [TESTING.md](TESTING.md) instead.)
+
+| Variable | Effect | Details |
+|---|---|---|
+| `HYBRID_CEDE_TO_DEFAULT` | Boolean; overrides the `cede-to-default` config key. `0`/`no`/`off`/`false` keeps the default provider's algorithms present alongside the hybrid provider's own (coexist mode). Set wins over config. | [Ceding to the default provider](#ceding-to-the-default-provider-cede-to-default) above |
+| `HYBRID_LOG` | `1` makes the provider print, to stderr, each advertisement it drops and why. | [Only operable algorithms are advertised](#only-operable-algorithms-are-advertised) above |
+
+`OPENSSL_MODULES` (OpenSSL's standard module-search-path variable, not specific to
+this provider) locates `hybrid.so` when it is not on the default path.
