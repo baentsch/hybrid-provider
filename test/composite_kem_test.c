@@ -12,9 +12,12 @@
  *      no provider and no ML-KEM (SHA3-256 alone suffices), so it runs anywhere.
  *
  *   2. Encaps/decaps self-consistency: for every table combo whose components are
- *      available, generate an ML-KEM + a classical keypair via EVP, encapsulate
- *      and decapsulate, and assert the 32-byte shared secrets match. Needs ML-KEM
- *      from the default provider (3.5+); each combo self-skips otherwise.
+ *      available, generate the PQ + a classical keypair via EVP, encapsulate and
+ *      decapsulate, and assert the 32-byte shared secrets match. The PQ half comes
+ *      from the default provider for the standardized tier (ML-KEM, 3.5+) and from
+ *      oqsprovider for the experimental tier (Frodo/BIKE/HQC) — mirroring
+ *      composite_sig_test's tier split; each combo self-skips when its PQ provider
+ *      is absent (oqsprovider optional, loaded best-effort in main()).
  */
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
@@ -87,9 +90,20 @@ done:
     OPENSSL_free(trpk); OPENSSL_free(want);
 }
 
-static int have_alg(OSSL_LIB_CTX *ctx, const char *name)
+/* Property query selecting the provider for the PQ component. The standardized
+ * tier is ML-KEM from the default provider (3.5+); the experimental tier's PQ
+ * half (Frodo/BIKE/HQC) is oqsprovider's — mirroring composite_sig_test's tier
+ * split, so the combiner is exercised over the experimental combos too (and only
+ * skips when oqsprovider is genuinely absent, not whenever it is not ML-KEM). */
+static const char *pq_propq(const COMPOSITE_KEM_INFO *info)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, name, "provider=default");
+    return info->tier == COMPOSITE_KEM_TIER_EXPERIMENTAL
+               ? "provider=oqsprovider" : "provider=default";
+}
+
+static int have_alg(OSSL_LIB_CTX *ctx, const char *name, const char *propq)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, name, propq);
     int ok = c != NULL && EVP_PKEY_keygen_init(c) > 0;
 
     EVP_PKEY_CTX_free(c);
@@ -132,23 +146,25 @@ static void roundtrip(OSSL_LIB_CTX *ctx, const COMPOSITE_KEM_INFO *info)
     printf("  %-22s encaps/decaps round-trip ... ", info->name);
     fflush(stdout);
 
-    if (!have_alg(ctx, info->pq_alg)) {
+    const char *pqprop = pq_propq(info);
+
+    if (!have_alg(ctx, info->pq_alg, pqprop)) {
         printf("SKIP (%s unavailable)\n", info->pq_alg);
         skipped++; tests--;
         return;
     }
-    pq = EVP_PKEY_Q_keygen(ctx, "provider=default", info->pq_alg);
+    pq = EVP_PKEY_Q_keygen(ctx, pqprop, info->pq_alg);
     trad = gen_trad(ctx, info);
     if (pq == NULL || trad == NULL) {
         printf("SKIP (component keygen failed)\n");
         skipped++; tests--;
         goto done;
     }
-    if (!composite_kem_encaps(info, pq, trad, ctx, "provider=default",
+    if (!composite_kem_encaps(info, pq, trad, ctx, pqprop,
                               "provider=default", &ct, &ctlen, &ss1, &ss1len)) {
         printf("FAIL (encaps)\n"); failed++; goto done;
     }
-    if (!composite_kem_decaps(info, pq, trad, ctx, "provider=default",
+    if (!composite_kem_decaps(info, pq, trad, ctx, pqprop,
                               "provider=default", ct, ctlen, &ss2, &ss2len,
                               NULL)) {
         printf("FAIL (decaps)\n"); failed++; goto done;
@@ -179,6 +195,7 @@ int main(void)
         fprintf(stderr, "failed to load default provider\n");
         return 1;
     }
+    OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier PQ half */
     ERR_clear_error();
 
     printf("composite (LAMPS) ML-KEM combiner tests\n");
