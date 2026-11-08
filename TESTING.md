@@ -4,6 +4,10 @@ The test suite, the cross-provider interop matrix, the CLI harness and the
 benchmark. Build the provider first as described in the
 [README](README.md#build), then run everything from the `build` directory.
 
+All currently supported algorithms and their per-test coverage (which tests run,
+pass or skip each algorithm, and why) are documented in
+[test/TESTING.md](test/TESTING.md).
+
 ## Test
 
 ```sh

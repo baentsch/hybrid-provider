@@ -337,7 +337,8 @@ enabled, `hybrid_kem_encode_test` round-trips KEM SPKI/PKCS8 key files against
 `OQS_KEM_ENCODERS=ON`); it self-skips otherwise.
 
 Once built, verify with `ctest` from the `build` directory. See
-[TESTING.md](TESTING.md) for the full suite.
+[TESTING.md](TESTING.md) for the full suite. All currently supported algorithms
+and their test coverage are documented in [test/TESTING.md](test/TESTING.md).
 
 ## Documentation
 
@@ -345,6 +346,7 @@ Once built, verify with `ctest` from the `build` directory. See
 |---|---|
 | [USAGE.md](USAGE.md) | Loading the provider, calling the algorithms, mixing components across providers, and `openssl.cnf` configuration |
 | [TESTING.md](TESTING.md) | Test suite, cross-provider interop matrix, CLI harness, benchmark |
+| [test/TESTING.md](test/TESTING.md) | Supported algorithms and their per-test coverage (which tests run, pass or skip each, and why) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Code conventions, project layout, how to add a hybrid, coverage invariants |
 | [design.md](design.md) | Full architecture and design decisions |
 | [STANDARDS.md](STANDARDS.md) | Standards & standards-proposals catalogue by provenance: ceded, standard/draft-backed, convention-only, future work |
