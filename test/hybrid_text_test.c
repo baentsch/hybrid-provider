@@ -2,7 +2,7 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Item 8: "pkey -text" (TEXT) encoder coverage. The text-print encoders for all
+ * "pkey -text" (TEXT) encoder coverage. The text-print encoders for all
  * three families had zero test coverage. Documented prior-art defects for this
  * path are (a) printing `algorithm "<NULL>" unsupported` and (b) dropping the
  * last few key bytes. For every key type we assert the TEXT output is produced

@@ -2,7 +2,7 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Component extraction / composition (work-items item 13).
+ * Component extraction / composition.
  *
  * A hybrid/composite key composes a classical component and a PQ component, each
  * a real EVP_PKEY. This test proves, over the public EVP API only and driven off
@@ -438,7 +438,7 @@ static const char *const comp_priv_param[HYBRID_MAX_COMP] = {
 };
 
 /*
- * N-component variant (issue #135 item 11). The 2-slot check() above splits a key
+ * N-component variant (issue #135, 2->N). The 2-slot check() above splits a key
  * into exactly one classical + one PQ half; the draft-preussmattsson-tls-hqckem
  * PQ/PQ/T groups have three components, reachable through the indexed
  * hybrid-compN-* params. For every logical component this verifies standalone
@@ -583,7 +583,7 @@ int main(void)
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
         /* 2-component rows split into a classical + a PQ half via
          * HYBRID_PKEY_PARAM_{CLASSIC,PQ}_*; N>2-component rows use the indexed
-         * hybrid-compN-* params (issue #135 item 11). */
+         * hybrid-compN-* params (issue #135, 2->N). */
         if (hybrid_kem_table[i].n_comp > 2) {
             check_ncomp(ctx, &hybrid_kem_table[i]);
             continue;

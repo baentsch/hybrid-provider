@@ -37,7 +37,7 @@
  *      MLX for the standardized groups, oqsprovider's own hybrid otherwise. This is
  *      a showcase ("our EVP composition is as fast as the built-in"), NOT asserted.
  *
- *   2. The composition-overhead regression guard (work-items item 20), which is the
+ *   2. The composition-overhead regression guard, which is the
  *      SAME sum-of-components model as the composite benches (see bench_util.h): a
  *      hybrid IS its two constituent components plus a small combiner glue, so the
  *      guard asserts each hybrid's steady-state ops stay within HYBRID_OVERHEAD_CEIL
@@ -516,7 +516,7 @@ int main(int argc, char **argv)
      * each component by the exact name the provider composes with (same impl ->
      * tax cancels; see bench_util.h). Unlike Part 1 this needs no native peer --
      * only the components -- so it covers every hybrid of any arity, including
-     * those Part 1 skips and the N>2-component rows (issue #135 item 11).
+     * those Part 1 skips and the N>2-component rows (issue #135, 2->N).
      */
     if (bench_timing_unreliable()) {
         printf("\ncomposition-overhead guard — SKIPPED "

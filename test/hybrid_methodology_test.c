@@ -2,7 +2,7 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Cross-provider test-methodology coverage (work-items item 15).
+ * Cross-provider test-methodology coverage.
  *
  * The rest of the suite pins `provider=hybrid` on every fetch and loads the
  * provider from an OPENSSL_MODULES path (an implicit .cnf-style activation). Two

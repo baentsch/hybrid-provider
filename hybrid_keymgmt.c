@@ -68,7 +68,7 @@ hybrid_key_new(int is_kem, unsigned int variant,
     key->combiner = is_kem ? hybrid_kem_combiner[variant] : HYBRID_COMBINER_CONCAT;
     /* Component handles are already NULL (OPENSSL_zalloc above). The count is
      * per-variant: KEMs read it from the wire-ordered descriptor; signatures
-     * are always 2-component. PR7 sized the component/scratch arrays to the
+     * are always 2-component. The component/scratch arrays are sized to the
      * fixed HYBRID_MAX_COMP, so n_comp <= HYBRID_MAX_COMP is a real precondition. */
     key->n_comp = is_kem ? ((const HYBRID_KEM_INFO *)key->info)->n_comp
                          : HYBRID_SIG_NCOMP;
@@ -697,7 +697,7 @@ static const OSSL_PARAM *hybrid_kem_imexport_types(int selection)
 /* --- get_params / gettable_params --- */
 
 /*
- * Indexed component-extraction param names (issue #135 item 11), one per logical
+ * Indexed component-extraction param names (issue #135, 2->N), one per logical
  * component. Single-sourced on the HYBRID_PKEY_PARAM_COMP* macros so a name used
  * in the get_params loop below matches the literal advertised in hybrid_gettable[].
  */
@@ -722,9 +722,9 @@ static const OSSL_PARAM hybrid_gettable[] = {
      * EVP_DigestSign one-shot path instead of streaming Update/Final, which we
      * do not implement. Mirrors ML-DSA/EdDSA. */
     OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_MANDATORY_DIGEST, NULL, 0),
-    /* Component extraction (item 13): each component's standalone SPKI (public)
+    /* Component extraction: each component's standalone SPKI (public)
      * and PKCS#8 (private) DER. The classic/pq spelling is the 2-component view;
-     * the indexed hybrid-compN-* spelling (issue #135 item 11) covers every
+     * the indexed hybrid-compN-* spelling (issue #135, 2->N) covers every
      * logical component, as a hybrid may concatenate more than two (RFC 9954
      * allows any count; the draft-preussmattsson-tls-hqckem PQ/PQ/T groups are
      * the first three-component rows). */
@@ -825,10 +825,10 @@ static int hybrid_get_params_fn(void *vkey, OSSL_PARAM params[])
             }
         }
 
-        /* Component extraction (item 13): each component's standalone SPKI,
+        /* Component extraction: each component's standalone SPKI,
          * d2i_PUBKEY-able into a usable EVP_PKEY. The classic/pq names are the
          * 2-component view (component 0 == classical, component 1 == PQ); the
-         * indexed hybrid-compN-* names (item 11) expose every logical component
+         * indexed hybrid-compN-* names expose every logical component
          * 0..n_comp-1, as a concat hybrid may have more than two. */
         unsigned i;
 

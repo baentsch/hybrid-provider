@@ -13,7 +13,7 @@
 #endif
 
 /*
- * Component extraction (work-items item 13). Emit component |comp|'s
+ * Component extraction. Emit component |comp|'s
  * SubjectPublicKeyInfo as DER into the OSSL_PARAM, so a caller can d2i_PUBKEY it
  * into a standalone, usable EVP_PKEY. Shared by the hybrid and composite keymgmt
  * get_params. i2d_PUBKEY drives the component's own provider encoder, so this

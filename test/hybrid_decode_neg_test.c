@@ -2,7 +2,7 @@
  * Copyright 2026 hybrid-provider contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Item 7: decoder robustness against real-world and hostile inputs. The existing
+ * Decoder robustness against real-world and hostile inputs. The existing
  * encode tests only exercise well-formed round-trips. This adds:
  *
  *   1. Multi-object PEM, target key NOT first: a leading unrelated PEM object (an
@@ -166,7 +166,7 @@ static int reject_p8(OSSL_LIB_CTX *ctx, const char *oid, const char *what,
     return ok;
 }
 
-/* Item 7.3: structurally valid PKCS#8 carrying a malformed inner hybrid blob must
+/* Structurally valid PKCS#8 carrying a malformed inner hybrid blob must
  * fail cleanly in the slot-symmetric private loader. Targets the UINT32 slot-1
  * length prefix (clen) bound and the per-slot size checks in load_prv_bykind. */
 static void check_malformed_p8(OSSL_LIB_CTX *ctx, const char *oid)
@@ -211,7 +211,7 @@ static void check_malformed_p8(OSSL_LIB_CTX *ctx, const char *oid)
     }
 }
 
-/* Item 7.1: hybrid key as the SECOND object of a multi-object PEM, decoded via
+/* Hybrid key as the SECOND object of a multi-object PEM, decoded via
  * the generic PEM private-key API. */
 static void check_multiobj(OSSL_LIB_CTX *ctx, const char *alg)
 {
@@ -272,7 +272,7 @@ end:
     EVP_PKEY_free(got);
 }
 
-/* Item 7.2: malformed SPKI DER must fail cleanly, no crash, no key. */
+/* Malformed SPKI DER must fail cleanly, no crash, no key. */
 static void check_malformed(OSSL_LIB_CTX *ctx, const char *alg)
 {
     EVP_PKEY *k = NULL, *got = NULL;
@@ -337,7 +337,7 @@ int main(void)
     OSSL_PROVIDER_load(ctx, "oqsprovider");
     ERR_clear_error();
 
-    printf("decoder robustness: external + malformed inputs (item 7)\n");
+    printf("decoder robustness: external + malformed inputs\n");
     printf("========================================================\n");
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++) {
         /* An operation-only row (no OID) has no SPKI encoding to malform, so the

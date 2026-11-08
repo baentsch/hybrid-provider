@@ -4,7 +4,7 @@
  *
  * Shared streaming message-signature buffer (issue #121).
  *
- * Both signature families — the concat hybrids (hybrid_sig.c, item 14) and the
+ * Both signature families — the concat hybrids (hybrid_sig.c) and the
  * LAMPS composites (composite_sig.c, issue #109) — are inherently one-shot, yet
  * OpenSSL's CMS content-signing path (`openssl cms -sign -noattr`) drives the
  * streaming message-signature API (sign_message_init + update* + final) rather

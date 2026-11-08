@@ -72,7 +72,7 @@ typedef struct {
     unsigned char *ctxstr;
     size_t ctxstrlen;
     /*
-     * Streaming message-signature buffers (item 14), driven by the CMS content-
+     * Streaming message-signature buffers, driven by the CMS content-
      * signing path (`cms -sign -noattr`). Mechanics shared with composite_sig.c
      * via HYBRID_MSG_ACCUM (issue #121); the hybrid combiner runs one-shot over
      * the accumulated message in final(). Freed in freectx, deep-copied in dupctx.
@@ -153,7 +153,7 @@ static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
         ctx->ctxstrlen = len;
     }
 # ifdef HYBRID_HAVE_MSG_SIG
-    /* The signature to check for the streaming verify-message path (item 14):
+    /* The signature to check for the streaming verify-message path:
      * verify_message_final() takes only the ctx, so libcrypto delivers it here as
      * an octet string before calling it (shared mechanics, issue #121). */
     if (!hybrid_msg_accum_set_sig_param(&ctx->stream, params))
@@ -543,7 +543,7 @@ hybrid_sig_digest_verify(void *vctx,
 
 #ifdef HYBRID_HAVE_MSG_SIG
 /*
- * Message-signature API (item 14). Unlike digest-sign, these entry points sign
+ * Message-signature API. Unlike digest-sign, these entry points sign
  * the *message* itself — which is exactly what the hybrid does — and are what
  * OpenSSL's CMS content-signing path (`cms -sign -noattr`) and other message-mode
  * callers drive for no-digest algorithms. sign/verify are one-shot; the streaming
@@ -708,7 +708,7 @@ const OSSL_DISPATCH hybrid_sig_functions[] = {
     { OSSL_FUNC_SIGNATURE_VERIFY,
       (void (*)(void))hybrid_sig_digest_verify },
 #ifdef HYBRID_HAVE_MSG_SIG
-    /* Message-signature API (item 14): one-shot + streaming. sign/verify reuse
+    /* Message-signature API: one-shot + streaming. sign/verify reuse
      * the digest-sign one-shot, which already signs the raw message. */
     { OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT,
       (void (*)(void))hybrid_sig_sign_message_init },
