@@ -21,3 +21,6 @@ liboqs/
 # deliberately-shared team settings.json, should one ever be committed.
 .claude/*
 !.claude/settings.json
+
+# Generated local preview of test/TESTING.md (see the "view rendered" tooling)
+test/TESTING.preview.html
