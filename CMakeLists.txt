@@ -669,6 +669,7 @@ if(HYBRID_COMPOSITE)
     set_tests_properties(composite_sig_bench PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
         RUN_SERIAL TRUE
+        LABELS "bench"
     )
 
     # KEM benchmark: keygen/encaps/decaps time + pk/ct/sk sizes for every composite
@@ -685,6 +686,7 @@ if(HYBRID_COMPOSITE)
     set_tests_properties(composite_kem_bench PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
         RUN_SERIAL TRUE
+        LABELS "bench"
     )
 
     # Guard the README "Algorithms served:" headline against silent drift:
@@ -816,9 +818,16 @@ add_test(NAME hybrid_bench COMMAND hybrid_bench 10)
 # x448_frodo976shake decaps read 1.81x on a 2-core runner when three benches timed
 # concurrently). Serial keeps the timing clean; the functional tests still
 # parallelize around it.
+# LABELS "bench": the three benchmarks (hybrid_bench, composite_sig_bench,
+# composite_kem_bench) carry the ctest label "bench" so they can be selected
+# (`ctest -L bench`) or excluded (`ctest -LE bench`) as a group. They are the
+# RUN_SERIAL min-latency guards; CI runs the fast functional suite with -LE bench
+# (off the PR gate) and runs -L bench in a dedicated post-merge job where a
+# composition-overhead regression shows up as a red build on the merge commit.
 set_tests_properties(hybrid_bench PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};HYBRID_BENCH_GUARD_ONLY=1"
     RUN_SERIAL TRUE
+    LABELS "bench"
 )
 target_include_directories(hybrid_bench PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_bench PRIVATE OpenSSL::Crypto)
