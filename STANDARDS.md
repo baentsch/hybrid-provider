@@ -436,6 +436,17 @@ Grouped by stability — published standards first, then RFCs, then
 work-in-progress Internet-Drafts. Every draft/standard mention in the project
 README links to this section.
 
+This is a **bibliography, not a list of implemented algorithms** — inclusion here
+means the provider *touches* a reference in one of several roles, and being listed
+is **not** a claim that we implement it: some are **implemented** constructions
+(e.g. RFC 10024, the composite drafts, X-Wing, the HQC draft), some are
+**consumed** component primitives supplied by other providers (FIPS 203/204/202,
+RFC 7748/8017/8998/8446), and some are **terminology, conformance or future-work
+anchors** (RFC 9794/9955, NIST SP 800-227/800-56C, `draft-irtf-cfrg-hybrid-kems`).
+Which role each plays — and, for the implemented ones, the KAT or interop test
+that proves it — is given by the catalogue in [§1](#1-ceded-to-the-default-provider-by-design)–[§4](#4-future-work--could-be-served)
+above, not here.
+
 **Published standards (NIST)**
 
 - [FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) — ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
