@@ -1245,7 +1245,7 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
 void hybrid_log(const char *fmt, ...);
 
 /*
- * Component extraction (work-items item 13). A hybrid/composite key composes a
+ * Component extraction. A hybrid/composite key composes a
  * classical component and a PQ component, each a real EVP_PKEY. These gettable,
  * provider-specific params expose each component as a standalone, self-describing
  * DER blob — the public half as a SubjectPublicKeyInfo (d2i_PUBKEY) and, when the
@@ -1263,7 +1263,7 @@ void hybrid_log(const char *fmt, ...);
 #define HYBRID_PKEY_PARAM_PQ_PRIV      "hybrid-pq-priv-pkcs8"
 
 /*
- * Indexed per-component variants (issue #135 item 11). The classic/pq names above
+ * Indexed per-component variants (issue #135, 2->N generalization). The classic/pq names above
  * are the 2-component spelling (classic == component 0, pq == component 1);
  * N>2-component hybrids (the draft-preussmattsson-tls-hqckem PQ/PQ/T groups) have
  * no single "classic"/"pq" half, so each logical component 0..n_comp-1 is also

@@ -255,7 +255,7 @@ set_tests_properties(hybrid_config_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
-# Cross-provider test-methodology (work-items item 15): unpinned (store)
+# Cross-provider test-methodology: unpinned (store)
 # property-query resolution runs alongside the pinned runs, and the provider's
 # config keys are settable programmatically via OSSL_PROVIDER_load_ex() with no
 # .cnf. OSSL_PROVIDER_load_ex() is a 3.5+ API (and the test uses only
@@ -317,7 +317,7 @@ set_tests_properties(hybrid_encode_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
-# Component extraction / composition test (work-items item 13): for every row of
+# Component extraction / composition test: for every row of
 # the master tables, pull each component (public AND private) out of a
 # hybrid/composite key as a standalone EVP_PKEY, assert the inner encoding matches
 # the standalone component, and recompose. Standardized rows use default-provider
@@ -402,7 +402,7 @@ set_tests_properties(hybrid_param_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
-# "pkey -text" (TEXT) encoder coverage (item 8): every key type prints a named,
+# "pkey -text" (TEXT) encoder coverage: every key type prints a named,
 # two-component, non-truncated text form. Always built (covers the hybrid sig
 # family); iterates the composite families too when built with -DHYBRID_COMPOSITE.
 add_executable(hybrid_text_test test/hybrid_text_test.c)
@@ -416,7 +416,7 @@ set_tests_properties(hybrid_text_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
-# Decoder robustness vs external/malformed inputs (item 7): multi-object PEM with
+# Decoder robustness vs external/malformed inputs: multi-object PEM with
 # the target key not first (generic PEM routing), and malformed/truncated/garbage
 # SPKI failing cleanly without a crash (meaningful under the ASan leg). Composite
 # families additionally iterated with -DHYBRID_COMPOSITE.

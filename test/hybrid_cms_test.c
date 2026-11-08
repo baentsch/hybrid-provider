@@ -13,7 +13,7 @@
  * signing drive OpenSSL's CMS layer, not just X.509/TLS (that is
  * hybrid_cert_tls_test). A tampered content is required to FAIL verification.
  *
- * Each algorithm is exercised in BOTH CMS SignerInfo modes (work-items item 14):
+ * Each algorithm is exercised in BOTH CMS SignerInfo modes:
  *  - with signed attributes (the default; SHA-512 messageDigest attribute), and
  *  - without signed attributes (CMS_NOATTR, `openssl cms -sign -noattr`), where
  *    the hybrid signature is computed directly over the content. The no-attribute
@@ -320,7 +320,7 @@ done:
 }
 
 /*
- * Direct round-trip of the hybrid provider's message-signature API (item 14):
+ * Direct round-trip of the hybrid provider's message-signature API:
  * streaming sign_message init/update/final, then verify_message init/update
  * (signature delivered via OSSL_SIGNATURE_PARAM_SIGNATURE)/final, plus a tamper
  * check. This is the machinery OpenSSL's md-less CMS content-signing drives, and
@@ -449,7 +449,7 @@ int main(void)
             check(ctx, info->hybrid_name, 0, noattr_supported);   /* signed attrs */
             check(ctx, info->hybrid_name, 1, noattr_supported);   /* CMS_NOATTR */
 #ifdef OSSL_SIGNATURE_PARAM_SIGNATURE
-            check_message_api(ctx, info->hybrid_name);            /* item 14 API */
+            check_message_api(ctx, info->hybrid_name);            /* message-sig API */
 #endif
         }
     }

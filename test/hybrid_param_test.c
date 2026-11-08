@@ -614,7 +614,7 @@ end:
 }
 
 /*
- * Item 12: OSSL_FUNC_KEYMGMT_MATCH / EVP_PKEY_eq must be commutative and must
+ * OSSL_FUNC_KEYMGMT_MATCH / EVP_PKEY_eq must be commutative and must
  * compare a PUBLIC-only key against the PRIVATE key of the same pair (libssl
  * validates a cert's public key against a loaded private key this way). The
  * existing round-trip (common_params) compares a keypair against its full copy;
@@ -672,7 +672,7 @@ end:
 }
 
 /*
- * Item 11: EVP_PKEY_fromdata must reject an empty or invalid selection rather
+ * EVP_PKEY_fromdata must reject an empty or invalid selection rather
  * than fabricate a usable key (a built-but-empty key with no material). The
  * existing import tests are all positive-path; this is the negative guard.
  */
@@ -741,14 +741,14 @@ int main(void)
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         check_sig(ctx, &hybrid_sig_table[i]);
 
-    printf("\nmatch()/EVP_PKEY_eq commutativity + public-vs-private (item 12)\n");
+    printf("\nmatch()/EVP_PKEY_eq commutativity + public-vs-private\n");
     printf("==============================================================\n");
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         check_match(ctx, hybrid_kem_table[i].hybrid_name);
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
         check_match(ctx, hybrid_sig_table[i].hybrid_name);
 
-    printf("\nnegative import: empty/invalid selection is rejected (item 11)\n");
+    printf("\nnegative import: empty/invalid selection is rejected\n");
     printf("==============================================================\n");
     {
         const char *kem = first_alg(1), *sig = first_alg(0);
