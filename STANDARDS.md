@@ -214,6 +214,34 @@ KEM in *both* slots (`alg1_is_kem`), the first such row (see §3.4).
 
 Underlying: FIPS 203 (ML-KEM), RFC 7748 (X25519), FIPS 202 (SHA-3).
 
+### 2.6 HQC-KEM hybrid TLS groups — [`draft-preussmattsson-tls-hqckem`](https://datatracker.ietf.org/doc/draft-preussmattsson-tls-hqckem/)
+
+Six hybrid KEM groups pairing **HQC** with a classical key exchange and/or ML-KEM,
+from an individual-submission TLS draft (issue #131). Four are **2-component** —
+two PQ/T (HQC + ECDHE) and two PQ/PQ (HQC + ML-KEM) — and two are **3-component**
+PQ/PQ/T (HQC + ML-KEM + ECDHE). The combiner is the RFC 9954 fixed-length
+concatenation of the component shared secrets in **name order (HQC first)** — the
+provider's default concat combiner — and the two 3-component groups are the worked
+example of its 2→N-component generalization (issue #135). HQC resolves from
+oqsprovider; the ML-KEM half from the default provider (3.5+) or oqsprovider.
+
+| Algorithm | Components | Type | Identifier |
+|---|---|---|---|
+| `HQCKEM192X25519` | HQC-192 + X25519 | PQ/T | none (operation-only) |
+| `HQCKEM256X448` | HQC-256 + X448 | PQ/T | none (operation-only) |
+| `HQCKEM192MLKEM768` | HQC-192 + ML-KEM-768 | PQ/PQ | none (operation-only) |
+| `HQCKEM256MLKEM1024` | HQC-256 + ML-KEM-1024 | PQ/PQ | none (operation-only) |
+| `HQCKEM192MLKEM768X25519` | HQC-192 + ML-KEM-768 + X25519 | PQ/PQ/T | none (operation-only) |
+| `HQCKEM256MLKEM1024X448` | HQC-256 + ML-KEM-1024 + X448 | PQ/PQ/T | none (operation-only) |
+
+The draft's TLS code points are still **TBD**, so these carry **no TLS code point
+and no OID**: they are operation-only (exposed via the KEM API, not negotiable in a
+handshake nor serializable as key files), like the research KEMs. Standalone HQC is
+out of scope — only the hybrid groups are served. **Draft** (individual submission).
+
+Underlying: HQC (oqsprovider), FIPS 203 (ML-KEM), RFC 7748 (X25519/X448),
+RFC 9954 (shared-secret concatenation).
+
 ---
 
 ## 3. Convention-only (non-normative)
@@ -397,13 +425,35 @@ Each future-work item above is tracked as an issue:
 
 ## References
 
-- [RFC 10024](https://datatracker.ietf.org/doc/rfc10024/) — PQ/T Hybrid Key Agreement for TLS 1.3 (ex `draft-ietf-tls-ecdhe-mlkem`)
-- [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) (v19)
-- [draft-ietf-lamps-pq-composite-kem](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-kem/) (v18)
-- [draft-rosomakho-tls-ecdhe-mlkem512](https://datatracker.ietf.org/doc/draft-rosomakho-tls-ecdhe-mlkem512/)
-- [draft-connolly-cfrg-xwing-kem](https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/)
+Grouped by stability — published standards first, then RFCs, then
+work-in-progress Internet-Drafts. Every draft/standard mention in the project
+README links to this section.
+
+**Published standards (NIST)**
+
+- [FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) — ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
+- [FIPS 204](https://csrc.nist.gov/pubs/fips/204/final) — ML-DSA (Module-Lattice-Based Digital Signature Algorithm)
+- [FIPS 202](https://csrc.nist.gov/pubs/fips/202/final) — SHA-3 / SHAKE (X-Wing and composite combiners)
+- [NIST SP 800-227](https://csrc.nist.gov/pubs/sp/800/227/final) — Recommendations for Key-Encapsulation Mechanisms
+- [NIST SP 800-56C Rev. 2](https://csrc.nist.gov/pubs/sp/800/56/c/r2/final) — Key-Derivation Methods in Key-Establishment Schemes
+
+**RFCs**
+
+- [RFC 7748](https://datatracker.ietf.org/doc/rfc7748/) — Elliptic Curves for Security (X25519 / X448)
+- [RFC 8017](https://datatracker.ietf.org/doc/rfc8017/) — PKCS #1 v2.2 (RSA, incl. RSA-OAEP)
+- [RFC 8446](https://datatracker.ietf.org/doc/rfc8446/) — TLS 1.3 (private-use code-point ranges)
+- [RFC 8998](https://datatracker.ietf.org/doc/rfc8998/) — ShangMi (SM) cipher suites for TLS 1.3 (SM2 curve)
 - [RFC 9629](https://datatracker.ietf.org/doc/rfc9629/) — Using KEMs with CMS
+- [RFC 9794](https://datatracker.ietf.org/doc/rfc9794/) — Terminology for PQ/T hybrid schemes (defines PQ/PQ, PQ/T)
+- [RFC 9954](https://datatracker.ietf.org/doc/rfc9954/) — Hybrid Key Exchange in TLS 1.3 (shared-secret concatenation; ex `draft-ietf-tls-hybrid-design`)
 - [RFC 9955](https://datatracker.ietf.org/doc/rfc9955/) — Hybrid Signature Spectrums (taxonomy; ex `draft-ietf-pquip-hybrid-signature-spectrums`)
-- FIPS 203 (ML-KEM), FIPS 204 (ML-DSA)
-</content>
-</invoke>
+- [RFC 10024](https://datatracker.ietf.org/doc/rfc10024/) — PQ/T Hybrid Key Agreement for TLS 1.3 (ex `draft-ietf-tls-ecdhe-mlkem`)
+
+**Internet-Drafts (work in progress)**
+
+- [draft-ietf-lamps-pq-composite-sigs](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-sigs/) (v19) — composite ML-DSA signatures
+- [draft-ietf-lamps-pq-composite-kem](https://datatracker.ietf.org/doc/draft-ietf-lamps-pq-composite-kem/) (v18) — composite ML-KEM
+- [draft-connolly-cfrg-xwing-kem](https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/) — X-Wing strongly-binding KEM combiner
+- [draft-preussmattsson-tls-hqckem](https://datatracker.ietf.org/doc/draft-preussmattsson-tls-hqckem/) — HQC-KEM hybrid TLS groups
+- [draft-rosomakho-tls-ecdhe-mlkem512](https://datatracker.ietf.org/doc/draft-rosomakho-tls-ecdhe-mlkem512/) — ML-KEM-512 TLS groups
+- [draft-irtf-cfrg-hybrid-kems](https://datatracker.ietf.org/doc/draft-irtf-cfrg-hybrid-kems/) — generic PQ/T hybrid KEM combiners

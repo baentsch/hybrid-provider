@@ -46,10 +46,10 @@ from [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) only.
 #### MLX
 
 **Byte-compatible with OpenSSL's built-in MLX KEM**
-(RFC 10024, formerly draft-ietf-tls-ecdhe-mlkem), interoperable with the default
-provider. RFC 10024 defines the first three; `X448MLKEM1024` is an OpenSSL
+([RFC 10024](STANDARDS.md#references), formerly [draft-ietf-tls-ecdhe-mlkem](STANDARDS.md#references)), interoperable with the default
+provider. [RFC 10024](STANDARDS.md#references) defines the first three; `X448MLKEM1024` is an OpenSSL
 default-provider extension (not in the RFC, no TLS code point); `curveSM2MLKEM768`
-is a default-provider group added in OpenSSL 4.0 (RFC 8998 SM2 curve), served here
+is a default-provider group added in OpenSSL 4.0 ([RFC 8998](STANDARDS.md#references) SM2 curve), served here
 only where the default provider supplies the `curveSM2` component (OpenSSL 4.0+,
 non-FIPS):
 
@@ -89,7 +89,7 @@ FrodoKEM/eFrodoKEM/BIKE/HQC need
 
 #### X-Wing
 
-`draft-connolly-cfrg-xwing-kem` — the one **strongly-binding**
+[`draft-connolly-cfrg-xwing-kem`](STANDARDS.md#references) — the one **strongly-binding**
 combiner: X25519 + ML-KEM-768 with `ss = SHA3-256(ss_M || ss_X || ct_X || pk_X ||
 label)`, folding the X25519 ciphertext and public key into the KDF rather than
 concatenating the component secrets. Same primitives as `X25519MLKEM768` but a
@@ -115,10 +115,10 @@ private component-pair names, no TLS code point and no OID:
 | `xwing_x25519_efrodo640aes` | X25519 + eFrodoKEM-640-AES (needs oqsprovider) |
 | `xwing_mlkem768_hqc3` | ML-KEM-768 + HQC-3 — **PQ/PQ**, both post-quantum (needs oqsprovider) |
 
-The last row is **PQ/PQ** (RFC 9794 terminology: both components post-quantum),
+The last row is **PQ/PQ** ([RFC 9794](STANDARDS.md#references) terminology: both components post-quantum),
 the first hybrid here with a native KEM in *both* slots rather than a classical
 key exchange + PQ KEM. No PQ/PQ KEM is standardized anywhere — Chempat and
-`draft-irtf-cfrg-hybrid-kems` are both PQ/T — so it is operation-only with no
+[`draft-irtf-cfrg-hybrid-kems`](STANDARDS.md#references) are both PQ/T — so it is operation-only with no
 interop peer and no KAT; it exercises the component-agnostic combiner over two
 post-quantum KEMs. See [STANDARDS.md §3.4](STANDARDS.md).
 
@@ -128,9 +128,9 @@ Adding another is two central lines — a row in `HYBRID_KEM_LIST` and an entry 
 
 #### HQC-KEM groups
 
-`draft-preussmattsson-tls-hqckem` — six of the draft's
+[`draft-preussmattsson-tls-hqckem`](STANDARDS.md#references) — six of the draft's
 hybrids: four **2-component** (two PQ/T = HQC + ECDHE, two PQ/PQ = HQC + ML-KEM)
-and two **3-component** PQ/PQ/T (HQC + ML-KEM + ECDHE). The combiner is RFC 9954
+and two **3-component** PQ/PQ/T (HQC + ML-KEM + ECDHE). The combiner is [RFC 9954](STANDARDS.md#references)
 fixed-length concatenation in name order (HQC first), which is our default concat
 combiner — the 3-component groups exercise the 2→N-component generalization
 (issue #135). HQC resolves from
@@ -179,7 +179,7 @@ families need [oqsprovider](https://github.com/open-quantum-safe/oqs-provider).
 #### PQ/PQ and PQ-first
 
 Four further rows have no oqsprovider counterpart. Three
-are **PQ/PQ** (RFC 9794 terminology: both components post-quantum), the signature
+are **PQ/PQ** ([RFC 9794](STANDARDS.md#references) terminology: both components post-quantum), the signature
 analogue of `xwing_mlkem768_hqc3` above — md-less in *both* slots rather than
 classical + PQ; the fourth puts a classical **EC** half in slot 2 (PQ-first, the
 mirror of the standardized classical-first order):
@@ -191,7 +191,7 @@ mirror of the standardized classical-first order):
 | `falcon512_mayo1` | Falcon-512 + MAYO-1 (needs oqsprovider) |
 | `mldsa65_p256` | ML-DSA-65 + P-256 (EC in slot 2) |
 
-No PQ/PQ concatenation signature is standardized (RFC 9955 gives only the
+No PQ/PQ concatenation signature is standardized ([RFC 9955](STANDARDS.md#references) gives only the
 taxonomy) and none of these four has an interop peer, so they carry **private-use
 identifiers** — an OID in this provider's `1.3.9999.99.*` arc and a TLS
 SignatureScheme in the private-use range (`0xFFE5..`) — which make them
@@ -206,14 +206,14 @@ PQ/PQ pairs arrives with #112; see [STANDARDS.md §3.4](STANDARDS.md).
 ### Composite signatures (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 
 An implementation of composite ML-DSA
-(draft-ietf-lamps-pq-composite-sigs), built as a **capability of this provider**
+([draft-ietf-lamps-pq-composite-sigs](STANDARDS.md#references)), built as a **capability of this provider**
 (not a separate module) when configured with `-DHYBRID_COMPOSITE=ON`. Unlike the
 concatenation hybrids above, composite uses the draft's message-representative
 construction (`M' = prefix || label || len(ctx) || ctx || PH(M)`) and raw-concat
 serialization, and is validated against the draft's reference test vectors
 (`composite_kat_test`).
 
-The **full draft-19 standardized matrix** (18 combos, OIDs `1.3.6.1.5.5.7.6.37`
+The **full [draft-19](STANDARDS.md#references) standardized matrix** (18 combos, OIDs `1.3.6.1.5.5.7.6.37`
 … `.54`) is implemented and each combo is verified against the draft's reference
 test vectors:
 
@@ -242,12 +242,12 @@ the `composite_sig_bench` benchmark (see [TESTING.md](TESTING.md)).
 ### Composite ML-KEM (LAMPS) — optional, `-DHYBRID_COMPOSITE`
 
 An implementation of composite ML-KEM
-(draft-ietf-lamps-pq-composite-kem), built into the same `hybrid.so` under the
+([draft-ietf-lamps-pq-composite-kem](STANDARDS.md#references)), built into the same `hybrid.so` under the
 same `-DHYBRID_COMPOSITE` flag. The KEM combiner is a single fixed KDF —
 `ss = SHA3-256(mlkemSS || tradSS || tradCT || tradPK || Label)` — with raw-concat
 serialization (`mlkemPK || tradPK`, `mlkemSeed || tradSK`, `mlkemCT || tradCT`).
 
-The **full draft-18 standardized matrix** (12 combos, OIDs `1.3.6.1.5.5.7.6.55`
+The **full [draft-18](STANDARDS.md#references) standardized matrix** (12 combos, OIDs `1.3.6.1.5.5.7.6.55`
 … `.66`) is implemented, verified against the draft's reference test vectors
 (`composite_kem_kat_test`) and interop-tested end-to-end against the LAMPS
 composite-KEM reference implementation (see
