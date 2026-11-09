@@ -205,11 +205,17 @@ static void check_group_operability(OSSL_LIB_CTX *ctx, const ADVSET *set,
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
         const HYBRID_KEM_INFO *info = &hybrid_kem_table[i];
         int op, ad;
+        unsigned j;
 
         if (info->tls_codepoint == 0)
             continue;               /* no TLS group -> never advertised */
-        op = comp_fetchable(ctx, info->component[0].name)
-            && comp_fetchable(ctx, info->component[1].name);
+        /* Operable iff EVERY component resolves here -- all n_comp of them, not
+         * just the first two: the 3-component HQC groups (issue #131) add an HQC
+         * component[2] that must be checked, else a row would read operable in a
+         * libctx that cannot source its PQ half (the provider, which checks all
+         * components, would correctly not advertise it). */
+        for (op = 1, j = 0; op && j < info->n_comp; j++)
+            op = comp_fetchable(ctx, info->component[j].name);
         ad = set_find(set, info->hybrid_name, NULL);
         if (op != ad) {
             mism++;
