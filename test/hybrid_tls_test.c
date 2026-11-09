@@ -609,6 +609,13 @@ int main(void)
          */
         OSSL_LIB_CTX *oqs_ctx = OSSL_LIB_CTX_new();
         OSSL_PROVIDER *od = NULL, *oq = NULL;
+        /* Separate libctx for the HQC self-handshake below: it needs the hybrid
+         * provider AND oqsprovider (for the HQC component) in one place. Kept
+         * apart from oqs_ctx so the oqs-interop loop above still fetches via a
+         * pure oqs peer (no hybrid to steer to) and oqs_ctx stays usable here as
+         * a reliable "served by oqsprovider?" probe. */
+        OSSL_LIB_CTX *self_ctx = OSSL_LIB_CTX_new();
+        OSSL_PROVIDER *sd = NULL, *sq = NULL, *sh = NULL;
 
         if (oqs_ctx != NULL
                 && (od = OSSL_PROVIDER_load(oqs_ctx, "default")) != NULL
@@ -647,24 +654,93 @@ int main(void)
                 else
                     TEST_FAIL("handshake / keying-material mismatch");
             }
+
+            /*
+             * hybrid <-> hybrid TLS 1.3 self-handshake for the hybrid-ONLY
+             * groups: those with a code point that is neither a default built-in
+             * (the MLX groups, peered against default above) nor served by
+             * oqsprovider (the OQS-legacy ML-KEM hybrids, peered against
+             * oqsprovider above). What remains are the draft-preussmattsson HQC
+             * groups, whose HQCKEM* names only the hybrid provider serves and
+             * whose HQC component only oqsprovider supplies -- so there is no
+             * external TLS peer and the hybrid side must itself load oqsprovider.
+             * Because no other provider advertises these names there is no
+             * steering collision (contrast the oqsprovider-owned hqc/frodo/bike
+             * hybrids in the note below, which do collide). The "?provider=hybrid"
+             * query prefers the hybrid group while letting the HQC/ML-KEM/ECDHE
+             * components fall back to oqsprovider/default. The selection is
+             * table-generic, so any future hybrid-only TLS group is picked up
+             * automatically. Needs the hybrid provider loadable alongside
+             * oqsprovider; skipped (not failed) otherwise.
+             */
+            if (self_ctx != NULL
+                    && (sd = OSSL_PROVIDER_load(self_ctx, "default")) != NULL
+                    && (sq = OSSL_PROVIDER_load(self_ctx, "oqsprovider")) != NULL
+                    && (sh = OSSL_PROVIDER_load(self_ctx, "hybrid")) != NULL) {
+                printf("\n[hybrid <-> hybrid TLS self-interop "
+                       "(draft-preussmattsson HQC groups)]\n");
+                /* Re-collect the advertised set, now from the hybrid provider in
+                 * self_ctx: a group is advertised iff hybrid_group_operable() --
+                 * every component fetchable in THIS libctx -- so this is the
+                 * provider's own operability signal, and it screens out rows
+                 * whose components are absent here (e.g. curveSM2MLKEM768 below
+                 * OpenSSL 4.0, whose SM2 half nobody supplies). g_adv is unused
+                 * past this point, so resetting it is safe. */
+                g_nadv = 0;
+                OSSL_PROVIDER_get_capabilities(sh, "TLS-GROUP", collect_group, NULL);
+                for (g = 0; g < HYBRID_KEM_ALG_COUNT; g++) {
+                    const char *name = hybrid_kem_table[g].hybrid_name;
+                    int codepoint = hybrid_kem_table[g].tls_codepoint;
+                    char t[128];
+
+                    if (codepoint == 0
+                            || hybrid_kem_is_default_builtin(name)
+                            || kem_served_by_provider(oqs_ctx, name, "oqsprovider")
+                            || advertised_codepoint(name) != codepoint)
+                        continue;   /* MLX / OQS-legacy handled above; or
+                                     * not operable (a component missing here) */
+
+                    snprintf(t, sizeof(t), "%s: hybrid server <-> hybrid client",
+                             name);
+                    TEST_START(t);
+                    if (run_handshake(self_ctx, "?provider=hybrid",
+                                      self_ctx, "?provider=hybrid",
+                                      name, codepoint))
+                        TEST_PASS();
+                    else
+                        TEST_FAIL("handshake / keying-material mismatch");
+                }
+            } else {
+                printf("\n[hybrid <-> hybrid TLS self-interop "
+                       "(draft-preussmattsson HQC groups)] SKIPPED "
+                       "(hybrid+oqsprovider unavailable)\n");
+                ERR_clear_error();
+            }
         } else {
             printf("\n[hybrid <-> oqsprovider TLS interop] SKIPPED "
                    "(oqsprovider unavailable)\n");
             ERR_clear_error();
         }
+        OSSL_PROVIDER_unload(sh);
+        OSSL_PROVIDER_unload(sq);
+        OSSL_PROVIDER_unload(sd);
+        OSSL_LIB_CTX_free(self_ctx);
         OSSL_PROVIDER_unload(oq);
         OSSL_PROVIDER_unload(od);
         OSSL_LIB_CTX_free(oqs_ctx);
     }
 
     /*
-     * Note: Frodo/BIKE/HQC hybrid groups are validated at the KEM level in
-     * hybrid_oqs_test (56/56, all directions). They are not exercised here over
-     * TLS in-process: the hybrid side must load oqsprovider to source their PQ
-     * base, at which point both providers advertise the same group name/code
-     * point in one libctx and the TLS keyshare keygen cannot be steered to the
-     * hybrid implementation. Cross-provider TLS for these needs two separate
-     * processes and is out of scope for this in-process harness.
+     * Note: oqsprovider's OWN Frodo/BIKE/HQC hybrids (p256_hqc1, ...) are
+     * validated at the KEM level in hybrid_oqs_test (all directions). They are
+     * not exercised here over TLS in-process: the hybrid side must load
+     * oqsprovider to source their PQ base, at which point both providers
+     * advertise the same group name/code point in one libctx and the TLS
+     * keyshare keygen cannot be steered to the hybrid implementation. Cross-
+     * provider TLS for these needs two separate processes and is out of scope
+     * for this in-process harness. (The draft-preussmattsson HQCKEM* groups
+     * above do NOT share this problem -- only the hybrid provider serves those
+     * names -- so they ARE exercised over TLS, self-handshake.)
      */
     printf("\nNote: X448MLKEM1024 has no standardized TLS group codepoint and "
            "is exercised only via the KEM API (see hybrid_test).\n");

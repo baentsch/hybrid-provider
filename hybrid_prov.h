@@ -524,28 +524,34 @@ typedef struct hybrid_key_st {
    * HQC-256 + its level-5 partner -> 256). PQ/T rows: alg1 = ECDHE key-exchange,    \
    * alg2 = HQC KEM. PQ/PQ rows: both slots native KEMs (alg1_is_kem = 1, the        \
    * xwing_mlkem768_hqc3 both-KEM path) under plain concat; the 3-component rows mix \
-   * one key-exchange (ECDHE) with two native KEMs (ML-KEM + HQC). Draft code points \
-   * are still TBD (TBD1-9, un-assigned by IANA) and the draft is an individual       \
-   * submission, so these are operation-only: cp = 0 (KEM API only, never advertised \
-   * as a TLS group), oid = NULL (HQC does not serialize to a key file standalone    \
-   * anyway). Standalone HQC is oqsprovider's. */                                    \
+   * one key-exchange (ECDHE) with two native KEMs (ML-KEM + HQC). The draft's own \
+   * code points are still TBD (TBD1-9, un-assigned by IANA) and the draft is an     \
+   * individual submission, so IANA has registered nothing. To exercise these groups \
+   * in real TLS 1.3 handshakes we assign PRIVATE-USE code points in the TLS Supported \
+   * Groups registry's 0xFE00-0xFEFF range (RFC 8446 §11; the same private-use arc    \
+   * oqsprovider draws its 0xfe.. points from), in a free sub-block (0xfe40..) just    \
+   * past oqsprovider's HQC hybrids (which end at 0xfe3a). These are provisional and   \
+   * local-only: they do NOT interop with any other implementation's reading of the    \
+   * draft and MUST be replaced with the IANA-assigned values once the draft advances. \
+   * oid = NULL (HQC does not serialize to a key file standalone anyway; standalone     \
+   * HQC is oqsprovider's). */                                                          \
   X(x25519_hqc3,       "HQCKEM192X25519",    "X25519", NULL,            0,    \
-      "hqc3",      0, 0x0000, 192, "HQC-192+X25519 (PQ/T, draft-preussmattsson)", NULL)\
+      "hqc3",      0, 0xfe40, 192, "HQC-192+X25519 (PQ/T, draft-preussmattsson)", NULL)\
   X(x448_hqc5,         "HQCKEM256X448",      "X448",   NULL,            0,    \
-      "hqc5",      0, 0x0000, 256, "HQC-256+X448 (PQ/T, draft-preussmattsson)", NULL)\
+      "hqc5",      0, 0xfe41, 256, "HQC-256+X448 (PQ/T, draft-preussmattsson)", NULL)\
   X(mlkem768_hqc3,     "HQCKEM192MLKEM768",  "MLKEM768", NULL,          1,    \
-      "hqc3",      0, 0x0000, 192, "HQC-192+ML-KEM-768 (PQ/PQ, draft-preussmattsson)", NULL)\
+      "hqc3",      0, 0xfe42, 192, "HQC-192+ML-KEM-768 (PQ/PQ, draft-preussmattsson)", NULL)\
   X(mlkem1024_hqc5,    "HQCKEM256MLKEM1024", "MLKEM1024", NULL,         1,    \
-      "hqc5",      0, 0x0000, 256, "HQC-256+ML-KEM-1024 (PQ/PQ, draft-preussmattsson)", NULL)\
+      "hqc5",      0, 0xfe43, 256, "HQC-256+ML-KEM-1024 (PQ/PQ, draft-preussmattsson)", NULL)\
   /* 3-component PQ/PQ/T (issue #131): logical order classical, ML-KEM, HQC; wire   \
    * {2,1,0} lays them out in draft NAME order HQC || ML-KEM || ECDHE. */            \
   X3(mlkem768_hqc3_x25519,  "HQCKEM192MLKEM768X25519",                        \
       "X25519", NULL, 0,  "MLKEM768",  NULL, 1,  "hqc3", NULL, 1,             \
-      2, 1, 0, 0x0000, 192,                                                   \
+      2, 1, 0, 0xfe44, 192,                                                   \
       "HQC-192+ML-KEM-768+X25519 (PQ/PQ/T, draft-preussmattsson)", NULL)      \
   X3(mlkem1024_hqc5_x448,   "HQCKEM256MLKEM1024X448",                         \
       "X448",   NULL, 0,  "MLKEM1024", NULL, 1,  "hqc5", NULL, 1,             \
-      2, 1, 0, 0x0000, 256,                                                   \
+      2, 1, 0, 0xfe45, 256,                                                   \
       "HQC-256+ML-KEM-1024+X448 (PQ/PQ/T, draft-preussmattsson)", NULL)
 
 /* Generate the info table from the master list. Components are stored in

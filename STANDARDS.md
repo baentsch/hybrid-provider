@@ -225,26 +225,33 @@ provider's default concat combiner — and the two 3-component groups are the wo
 example of its 2→N-component generalization (issue #135). HQC resolves from
 oqsprovider; the ML-KEM half from the default provider (3.5+) or oqsprovider.
 
-| Algorithm | Components | Type | Identifier |
+| Algorithm | Components | Type | TLS code point (private-use) |
 |---|---|---|---|
-| `HQCKEM192X25519` | HQC-192 + X25519 | PQ/T | none (operation-only) |
-| `HQCKEM256X448` | HQC-256 + X448 | PQ/T | none (operation-only) |
-| `HQCKEM192MLKEM768` | HQC-192 + ML-KEM-768 | PQ/PQ | none (operation-only) |
-| `HQCKEM256MLKEM1024` | HQC-256 + ML-KEM-1024 | PQ/PQ | none (operation-only) |
-| `HQCKEM192MLKEM768X25519` | HQC-192 + ML-KEM-768 + X25519 | PQ/PQ/T | none (operation-only) |
-| `HQCKEM256MLKEM1024X448` | HQC-256 + ML-KEM-1024 + X448 | PQ/PQ/T | none (operation-only) |
+| `HQCKEM192X25519` | HQC-192 + X25519 | PQ/T | `0xfe40` |
+| `HQCKEM256X448` | HQC-256 + X448 | PQ/T | `0xfe41` |
+| `HQCKEM192MLKEM768` | HQC-192 + ML-KEM-768 | PQ/PQ | `0xfe42` |
+| `HQCKEM256MLKEM1024` | HQC-256 + ML-KEM-1024 | PQ/PQ | `0xfe43` |
+| `HQCKEM192MLKEM768X25519` | HQC-192 + ML-KEM-768 + X25519 | PQ/PQ/T | `0xfe44` |
+| `HQCKEM256MLKEM1024X448` | HQC-256 + ML-KEM-1024 + X448 | PQ/PQ/T | `0xfe45` |
 
-The draft's TLS code points are still **TBD**, so these carry **no TLS code point
-and no OID**: they are operation-only (exposed via the KEM API, not negotiable in a
-handshake nor serializable as key files), like the research KEMs. Standalone HQC is
-out of scope — only the hybrid groups are served. **Draft** (individual submission).
+The draft's own TLS code points are still **TBD** (un-assigned by IANA). So that the
+groups can be exercised in real TLS 1.3 handshakes, this provider assigns them
+**private-use** code points (`0xfe40…0xfe45`) from the TLS Supported Groups registry's
+`0xFE00…0xFEFF` private-use range (RFC 8446 §11), in a free sub-block just past
+oqsprovider's HQC hybrids. These are **provisional and local-only**: they do not
+interoperate with any other implementation's reading of the draft and must be
+replaced with the IANA-assigned values once the draft advances. The groups carry
+**no OID** (HQC does not serialize to a key file standalone; standalone HQC is out of
+scope — only the hybrid groups are served). **Draft** (individual submission).
 
-Proof of correctness here is **functional, not a KAT**: the draft ships no
-reference vectors and the groups have no interop peer (code points TBD), so instead
-of a known-answer oracle the component split and HQC-first wire layout are exercised
-by per-component extraction (`hybrid_extract_test`) and encaps/decaps round-trips
-over the oqsprovider PQ base (`hybrid_oqs_test`, `hybrid_matrix_test`), with byte
-sizes and composition overhead pinned by `hybrid_sizes_test` / `hybrid_bench`.
+Proof of correctness here is **functional, not a KAT**: the draft ships no reference
+vectors and there is no external interop peer (no other implementation serves these
+`HQCKEM*` names), so instead of a known-answer oracle the component split and
+HQC-first wire layout are exercised by per-component extraction
+(`hybrid_extract_test`), encaps/decaps round-trips over the oqsprovider PQ base
+(`hybrid_oqs_test`, `hybrid_matrix_test`), and — via the private-use code points
+above — end-to-end TLS 1.3 **self-handshakes** (`hybrid_tls_test`), with byte sizes
+and composition overhead pinned by `hybrid_sizes_test` / `hybrid_bench`.
 
 Underlying: HQC (oqsprovider), FIPS 203 (ML-KEM), RFC 7748 (X25519/X448),
 RFC 9954 (shared-secret concatenation).

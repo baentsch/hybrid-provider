@@ -136,8 +136,12 @@ combiner — the 3-component groups exercise the 2→N-component generalization
 (issue #135). HQC resolves from
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider); the ML-KEM half
 from the default provider (3.5+) or oqsprovider. The draft is an individual
-submission with code points still TBD, so these are **operation-only**: no TLS
-code point (KEM API only) and no OID. Standalone HQC is out of scope here.
+submission with its own code points still TBD, so the provider assigns
+**private-use** TLS code points (`0xfe40…0xfe45`, RFC 8446 §11 range) to let the
+groups be exercised in real TLS 1.3 handshakes (`hybrid_tls_test` self-handshake) —
+provisional and local-only, to be replaced by the IANA-assigned values when the
+draft advances. No OID (not key-file serializable). Standalone HQC is out of scope
+here.
 
 | Algorithm | Components |
 |---|---|

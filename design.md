@@ -541,8 +541,11 @@ Historically the hybrid key held exactly two components (`key1`/`key2`,
 ordered list of *N* components, motivated by the project's experimentation goal
 and concretely by draft-preussmattsson-tls-hqckem (issue #131), whose two
 PQ/PQ/T groups (`HQCKEM192MLKEM768X25519`, `HQCKEM256MLKEM1024X448`) concatenate
-three components and are now served as operation-only KEMs (keygen/encaps/decaps
-and the raw `ENCODED_PUBLIC_KEY` key share; `cp = 0`, `oid = NULL`). The
+three components (keygen/encaps/decaps and the raw `ENCODED_PUBLIC_KEY` key share).
+The draft's IANA code points are still TBD, so these — and the four 2-component HQC
+groups — carry provisional **private-use** TLS code points (`0xfe40…0xfe45`) so they
+can be driven through real TLS 1.3 self-handshakes; `oid = NULL` (not key-file
+serializable). The
 generalization is deliberately scoped so it stays an *honest* mechanism rather
 than a disguised third slot:
 
