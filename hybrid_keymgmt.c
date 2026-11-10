@@ -187,40 +187,8 @@ err:
     return ret;
 }
 
-/*
- * Build a component key from BOTH its private and public raw material. Needed
- * for the PQ component when decoding a private key: some component providers
- * (oqsprovider's research signatures) do not re-derive the public key from
- * private-only fromdata the way ML-DSA does, yet a certificate needs it. Our own
- * PKCS8 blob carries the PQ public key, so we hand both to the provider. Uses
- * only the public EVP fromdata API — no dependency on any provider's key format.
- */
-static int
-load_component_privpub(OSSL_LIB_CTX *libctx, const char *propq,
-                       const char *alg_name,
-                       const uint8_t *priv, size_t privlen,
-                       const uint8_t *pub, size_t publen,
-                       EVP_PKEY **out)
-{
-    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, alg_name, propq);
-    OSSL_PARAM parr[3];
-    int ret = 0;
-
-    if (ctx == NULL || EVP_PKEY_fromdata_init(ctx) <= 0)
-        goto err;
-    parr[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PRIV_KEY,
-                                                (void *)priv, privlen);
-    parr[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
-                                                (void *)pub, publen);
-    parr[2] = OSSL_PARAM_construct_end();
-    if (EVP_PKEY_fromdata(ctx, out,
-                          OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
-                          | OSSL_KEYMGMT_SELECT_KEYPAIR, parr) > 0)
-        ret = 1;
-err:
-    EVP_PKEY_CTX_free(ctx);
-    return ret;
-}
+/* A PQ component on private-key decode is rebuilt from private + public via the
+ * shared hybrid_component_load_privpub (hybrid_prov.c), called directly below. */
 
 /* --- Decoder support: build a public key from oqs blob components --- */
 
@@ -305,7 +273,8 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
      * re-derive it from private material, and without it the decoded key could
      * not produce a certificate. Otherwise fall back to a private-only load. */
     if (pqpub != NULL && pqpublen > 0)
-        ok = load_component_privpub(key->libctx, HYBRID_KEY_ALG2_PROPQ(key),
+        ok = hybrid_component_load_privpub(key->libctx,
+                                    HYBRID_KEY_ALG2_PROPQ(key),
                                     HYBRID_KEY_ALG2_NAME(key),
                                     pqv, pqvlen, pqpub, pqpublen,
                                     &HYBRID_KEY_COMP(key, HYBRID_COMP_ALG2));
@@ -363,8 +332,8 @@ static int load_prv_bykind(HYBRID_KEY *key, int which,
         if (len < prv)
             return 0;
         if (pub > 0 && len >= prv + pub)
-            return load_component_privpub(key->libctx, propq, alg,
-                                          data, prv, data + prv, pub, out);
+            return hybrid_component_load_privpub(key->libctx, propq, alg,
+                                                 data, prv, data + prv, pub, out);
         return load_component(key->libctx, propq, alg, group,
                               OSSL_PKEY_PARAM_PRIV_KEY, sel, data, prv, out);
     }
@@ -527,22 +496,19 @@ static int hybrid_import(void *vkey, int selection,
  * Extract concatenated public key bytes from both sub-keys.
  * Caller provides buffer of hybrid_key_pubkey_bytes(key) size.
  */
-/* Write one component's raw public key into buf[..len]; must fill exactly len.
- * Classical EC/X25519 and PQ components expose a PUB_KEY octet; RSA does not, so
- * fall back to i2d_PublicKey (constant length, matched by discover_sig_component_
- * sizes and the d2i_PublicKey import in hybrid_key_load_pub_components). */
+/* Write one component's raw public into buf[..len] (must fill exactly len) via the
+ * shared hybrid_component_raw_pub; the exact-length check matches
+ * discover_sig_component_sizes and the d2i_PublicKey import on load. */
 static int extract_component_pub(EVP_PKEY *pk, uint8_t *buf, size_t len)
 {
-    size_t out = 0;
-    unsigned char *p = buf;
-    int dlen;
+    unsigned char *tmp = NULL;
+    size_t tlen = 0;
+    int ok = hybrid_component_raw_pub(pk, &tmp, &tlen) && tlen == len;
 
-    if (EVP_PKEY_get_octet_string_param(pk, OSSL_PKEY_PARAM_PUB_KEY,
-                                        buf, len, &out) > 0)
-        return out == len;
-    ERR_clear_error();
-    dlen = i2d_PublicKey(pk, &p);
-    return dlen > 0 && (size_t)dlen == len;
+    if (ok)
+        memcpy(buf, tmp, len);
+    OPENSSL_free(tmp);
+    return ok;
 }
 
 static int

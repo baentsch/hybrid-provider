@@ -17,6 +17,11 @@
 #include <openssl/x509.h>
 #include <string.h>
 
+/* Fixed PQ private / public component byte lengths, discovered from the algorithm
+ * (defined below; forward-declared for composite_key_load_prv's split). */
+static size_t discover_pq_pub_len(COMPOSITE_KEY *key);
+static size_t discover_pq_priv_len(COMPOSITE_KEY *key);
+
 /* --- lifecycle --- */
 
 static void *composite_key_new(void *provctx, const COMPOSITE_SIG_INFO *info)
@@ -26,7 +31,7 @@ static void *composite_key_new(void *provctx, const COMPOSITE_SIG_INFO *info)
 
     if (k == NULL)
         return NULL;
-    k->libctx = pc != NULL ? pc->libctx : NULL;
+    k->libctx = pc != NULL ? HYBRID_COMPONENT_LIBCTX(pc) : NULL;
     k->info = info;
     /*
      * Component sourcing is config-driven: the provider's alg2-propquery /
@@ -330,31 +335,48 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
                            const unsigned char *pqpriv, size_t pqlen,
                            const unsigned char *tradpriv, size_t tradlen)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                                 key->alg2_propq);
-    /* Reconstruct the PQ component from the param named by the row: the ML-DSA
-     * seed for standardized combos, the raw private key for experimental. No
-     * ML-DSA assumption. */
-    OSSL_PARAM p[2];
-    int ok = 0;
+    int pqok;
 
-    p[0] = OSSL_PARAM_construct_octet_string(key->info->pq_priv_param,
-                                             (void *)pqpriv, pqlen);
-    p[1] = OSSL_PARAM_construct_end();
-    /* Partial-assignment invariant (audit #42): if the PQ fromdata succeeds but
-     * the trad half fails, key->pq_key is left populated and we return 0 without
+    /*
+     * Reconstruct the PQ component from the row's serialized private material.
+     * Experimental tier: pqpriv is pqPriv||pqPub (COMPOSITE_PQ_CARRIES_PUB) — split
+     * off the raw private at its discovered length and hand the provider both via
+     * the shared hybrid_component_load_privpub, since the research sig cannot
+     * re-derive the public from the private. Standardized tier: pqpriv is the seed
+     * (pq_priv_param), from which the provider re-derives the public itself.
+     */
+    if (COMPOSITE_PQ_CARRIES_PUB(key->info)) {
+        size_t privlen = discover_pq_priv_len(key);
+
+        pqok = privlen != 0 && privlen < pqlen
+            && hybrid_component_load_privpub(key->libctx, key->alg2_propq,
+                                             key->info->pq_alg, pqpriv, privlen,
+                                             pqpriv + privlen, pqlen - privlen,
+                                             &key->pq_key);
+    } else {
+        EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx,
+                                                     key->info->pq_alg,
+                                                     key->alg2_propq);
+        OSSL_PARAM p[2];
+
+        p[0] = OSSL_PARAM_construct_octet_string(key->info->pq_priv_param,
+                                                 (void *)pqpriv, pqlen);
+        p[1] = OSSL_PARAM_construct_end();
+        pqok = c != NULL && EVP_PKEY_fromdata_init(c) > 0
+            && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_KEYPAIR, p) > 0;
+        EVP_PKEY_CTX_free(c);
+    }
+    /* Partial-assignment invariant (audit #42): if the PQ half succeeds but the
+     * trad half fails, key->pq_key is left populated and we return 0 without
      * freeing it here. Safe because every caller frees the whole COMPOSITE_KEY on
      * failure and never retries the load on the same object. */
-    if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
-            && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_KEYPAIR, p) > 0
-            && (key->trad_key = load_trad_priv(key->libctx, key->trad_propq,
+    if (!pqok
+            || (key->trad_key = load_trad_priv(key->libctx, key->trad_propq,
                                                key->info, tradpriv,
-                                               tradlen)) != NULL) {
-        key->state = COMPOSITE_HAVE_PRVKEY;
-        ok = 1;
-    }
-    EVP_PKEY_CTX_free(c);
-    return ok;
+                                               tradlen)) == NULL)
+        return 0;
+    key->state = COMPOSITE_HAVE_PRVKEY;
+    return 1;
 }
 
 /* --- match + import/export (todata/fromdata, cross-provider param transfer) --- */
@@ -418,6 +440,10 @@ static int import_prv_blob(COMPOSITE_KEY *key, const unsigned char *blob,
 {
     size_t pqn = discover_pq_priv_len(key);
 
+    /* Experimental tier appends the PQ raw public to the private (see
+     * COMPOSITE_PQ_CARRIES_PUB); the pq segment then spans priv + pub. */
+    if (pqn != 0 && COMPOSITE_PQ_CARRIES_PUB(key->info))
+        pqn += discover_pq_pub_len(key);
     return pqn != 0 && pqn < len
         && composite_key_load_prv(key, blob, pqn, blob + pqn, len - pqn);
 }

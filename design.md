@@ -250,11 +250,46 @@ this same provider* implements composite ML-DSA
 (draft-ietf-lamps-pq-composite-sigs). The **standardized** tier needs OpenSSL
 3.5+ (it serializes the PQ private key as its ML-DSA/ML-KEM seed via the 3.5 seed
 API); the **experimental** tier serializes the raw private key and so runs from
-the oqsprovider floor (3.2+). Below 3.5 the standardized tiers self-deactivate at
+the oqsprovider floor (3.2+). Below
+3.5 the standardized tiers self-deactivate at
 registration (`COMPOSITE_SEED_AVAILABLE` in `composite_prov.h`), leaving only the
 experimental composite signatures and KEMs (the composite ML-KEM family has the
 same two-tier split — standardized ML-KEM 3.5+, experimental FrodoKEM/BIKE/HQC
-3.2+). Unlike the concatenation hybrids, composite
+3.2+).
+
+#### Precondition: a PQ component must be reconstructable from its serialized private
+
+A composite key held only in private form (loaded from PKCS#8) must still yield
+its public key: issuing a self-signed certificate, exporting the SPKI, or
+re-publishing the public all need it. The composite public is `pqPub||tradPub`;
+the classical half always re-derives its public from its private (EC/RSA/Ed, by
+construction), so the **PQ component is the sole gate**. Hence the precondition
+for any algorithm to serve as a composite PQ component: *its provider must be able
+to reconstruct the full keypair — public included — from the serialized private
+material.* Without it a loaded private key is write-only (can sign/decapsulate,
+cannot produce its own certificate).
+
+This is **not** a seed requirement. It is satisfied by any serialization the
+provider can rebuild from: a seed it re-expands (ML-DSA/ML-KEM), a private that
+structurally contains the public, or an explicit `priv||pub` concatenation. The
+standardized tier meets it with the draft-mandated seed. The experimental research
+algorithms do **not**: with the current component provider the public is
+unrecoverable from the bare private — `OQS_SIG` exposes no private→public (nor any
+deterministic keygen) and `OQS_KEM` only a seed-based `keypair_derand`, so
+oqsprovider's private-only `fromdata` leaves the public empty for *every* research
+alg tested (Falcon/MAYO/CROSS/OV/SNOVA/MQOM2, Frodo/BIKE/HQC). Closing that at the
+provider is largely infeasible (per-scheme upstream liboqs work, some needing a
+secret-key format change), and would anyway make our composability depend on one
+provider's capability. So the experimental tier satisfies the precondition itself,
+provider-agnostically, by carrying the public explicitly: the private encoding is
+`pqPriv||pqPub||tradPriv` (keyed off `COMPOSITE_PQ_CARRIES_PUB` /
+`COMPOSITE_KEM_PQ_CARRIES_PUB`), reconstructed via the shared
+`hybrid_component_load_privpub` — the same device the concatenation hybrids use
+("the public handed to the provider so a research keytype that cannot re-derive it
+still loads"). This is our own experimental arc, so there is no external interop to
+honour; the standardized `seed||tradPriv` single-wrap stays byte-exact.
+
+Unlike the concatenation hybrids, composite
 uses the draft's message representative and raw-concat serialization, keyed off
 `COMPOSITE_SIG_LIST` in `composite_prov.h`:
 
@@ -1155,8 +1190,8 @@ SNOVA) when their PQ half is fetched from oqsprovider on OpenSSL ≥ 3.5, where 
 method table is reconstructed per `EVP_DigestSignInit` rather than cached. This is
 not composition overhead: our delegated M8 path pays exactly what an oqsprovider
 native hybrid of the same name already pays, so M8 adds nothing here, and sourcing
-the PQ half from a provider that caches its method table avoids it. The measured
-breakdown is in `docs/oqsprovider-no-cache-issue.md`. The lever available here is
+the PQ half from a provider that caches its method table avoids it. The lever
+available here is
 primitive sourcing: `alg1-propquery` / `alg2-propquery` steer each component to
 the fastest provider exposing the standalone EVP algorithm. Run
 `test/hybrid_bench.c` in your own environment for numbers.

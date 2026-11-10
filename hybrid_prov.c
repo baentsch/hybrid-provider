@@ -59,6 +59,69 @@ int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp)
     return ret;
 }
 
+/* Serialize component |comp|'s RAW public key into a freshly allocated *out of
+ * *outlen bytes (caller frees with OPENSSL_free): the PUB_KEY octet for EC /
+ * X25519 / PQ, or i2d_PublicKey DER for RSA (no octet param). Returns 1 on
+ * success. Shared concat primitive (hybrid slots + composite); design.md
+ * "Precondition". */
+int hybrid_component_raw_pub(EVP_PKEY *comp, unsigned char **out, size_t *outlen)
+{
+    size_t n = 0;
+    unsigned char *der = NULL;
+    int dlen;
+
+    if (comp == NULL || out == NULL || outlen == NULL)
+        return 0;
+    if (EVP_PKEY_get_octet_string_param(comp, OSSL_PKEY_PARAM_PUB_KEY,
+                                        NULL, 0, &n) > 0 && n > 0) {
+        if ((*out = OPENSSL_malloc(n)) == NULL
+                || EVP_PKEY_get_octet_string_param(comp, OSSL_PKEY_PARAM_PUB_KEY,
+                                                   *out, n, outlen) <= 0) {
+            OPENSSL_free(*out);
+            *out = NULL;
+            return 0;
+        }
+        return 1;
+    }
+    ERR_clear_error();
+    if ((dlen = i2d_PublicKey(comp, &der)) <= 0)
+        return 0;
+    *out = der;
+    *outlen = (size_t)dlen;
+    return 1;
+}
+
+/* Reconstruct a component keypair into *out (caller frees) from raw private
+ * (|priv|,|privlen|) + raw public (|pub|,|publen|), fetched as |alg_name| in
+ * |libctx| with property query |propq|. The public is supplied because research
+ * keytypes cannot re-derive it from the private (design.md "Precondition").
+ * Returns 1 on success. Shared by the hybrid slots and composite experimental tier. */
+int hybrid_component_load_privpub(OSSL_LIB_CTX *libctx, const char *propq,
+                                  const char *alg_name,
+                                  const unsigned char *priv, size_t privlen,
+                                  const unsigned char *pub, size_t publen,
+                                  EVP_PKEY **out)
+{
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, alg_name, propq);
+    OSSL_PARAM parr[3];
+    int ret = 0;
+
+    if (ctx == NULL || EVP_PKEY_fromdata_init(ctx) <= 0)
+        goto err;
+    parr[0] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PRIV_KEY,
+                                                (void *)priv, privlen);
+    parr[1] = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY,
+                                                (void *)pub, publen);
+    parr[2] = OSSL_PARAM_construct_end();
+    if (EVP_PKEY_fromdata(ctx, out,
+                          OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS
+                          | OSSL_KEYMGMT_SELECT_KEYPAIR, parr) > 0)
+        ret = 1;
+err:
+    EVP_PKEY_CTX_free(ctx);
+    return ret;
+}
+
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;
 static OSSL_FUNC_provider_gettable_params_fn hybrid_gettable_params;
 static OSSL_FUNC_provider_get_params_fn hybrid_get_params;

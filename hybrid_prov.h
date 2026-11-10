@@ -1297,6 +1297,15 @@ void hybrid_log(const char *fmt, ...);
 int hybrid_component_spki_param(OSSL_PARAM *p, EVP_PKEY *comp);
 int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
 
+/* Raw-concat component primitives shared by the hybrid slots and the composite
+ * families (hybrid_prov.c; see design.md "Precondition"). */
+int hybrid_component_raw_pub(EVP_PKEY *comp, unsigned char **out, size_t *outlen);
+int hybrid_component_load_privpub(OSSL_LIB_CTX *libctx, const char *propq,
+                                  const char *alg_name,
+                                  const unsigned char *priv, size_t privlen,
+                                  const unsigned char *pub, size_t publen,
+                                  EVP_PKEY **out);
+
 /*
  * TLS code-point hygiene (issue #45).
  *

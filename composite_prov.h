@@ -72,6 +72,11 @@ enum {
     COMPOSITE_TIER_EXPERIMENTAL   /* other PQ sig; our experimental arc */
 };
 
+/* Experimental private encoding carries pqPriv||pqPub (standardized stores the
+ * seed, public re-derivable); see design.md "Precondition". Tier is the gate. */
+#define COMPOSITE_PQ_CARRIES_PUB(info) \
+    ((info)->tier == COMPOSITE_TIER_EXPERIMENTAL)
+
 /* Key material states (parallels the hybrid family's HYBRID_HAVE_*). */
 enum {
     COMPOSITE_HAVE_NOKEYS = 0,

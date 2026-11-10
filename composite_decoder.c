@@ -261,6 +261,10 @@ static int composite_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         goto end;
     }
     pqn = pq_priv_len(key);
+    /* Experimental tier appends the PQ raw public to the private (see
+     * COMPOSITE_PQ_CARRIES_PUB); the pq segment then spans priv + pub. */
+    if (pqn != 0 && COMPOSITE_PQ_CARRIES_PUB(key->info))
+        pqn += discover_pq_pub_len(key);
     if (pqn == 0 || pqn >= (size_t)privlen) {
         ret = 0;
         goto end;

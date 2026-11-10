@@ -588,7 +588,12 @@ CNFEOF
 # Algorithms are enumerated live from `openssl list -signature-algorithms`
 # (every name served by the hybrid provider), so coverage tracks the provider
 # with no hand-kept list. Each row self-classifies so the suite stays green:
-#   * keygen fails -> SKIP (component base unavailable, e.g. oqsprovider absent)
+#   * keygen fails, oqsprovider absent  -> SKIP (component base unavailable)
+#   * keygen fails, oqsprovider present -> FAIL (the base IS available, so this is
+#     a real regression — e.g. issue #148: the experimental composites keygen only
+#     once the composite family sources components from the private component
+#     context. With oqsprovider on the module path every advertised signature,
+#     including the exp_* composites, MUST build.)
 #   * keygen ok    -> full cert + CMS path; any failure is a real FAIL
 # ========================================================================
 sig_certs_cnf() {   # echo path to a cnf: default + hybrid (+ private oqs if present)
@@ -624,10 +629,17 @@ sig_cert_one() {
     local d="$WORKDIR/sig_$alg"; mkdir -p "$d"
     local key="$d/k.pem" crt="$d/c.pem" msg="$d/m.txt" cms="$d/m.cms" log="$d/err"
 
-    # keygen: an absent component base (e.g. no oqsprovider) is a skip, not a fail.
+    # keygen: with oqsprovider present every advertised signature must build, so a
+    # failure is a real FAIL (issue #148); only an absent oqsprovider makes the
+    # research-sourced rows a legitimate skip.
     if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" genpkey -algorithm "$alg" \
             -out "$key" >"$log" 2>&1; then
-        note "$alg  (keygen unavailable — component base absent?)"
+        if [ -f "$MODULE_DIR/oqsprovider.$SOEXT" ]; then
+            no "$alg  (keygen FAILED — component base present)"
+            sed 's/^/        /' "$log" | head -2
+        else
+            note "$alg  (keygen unavailable — component base absent?)"
+        fi
         return
     fi
     # Public-key SPKI encode (was issue #19, now fixed): a real FAIL if it breaks.
