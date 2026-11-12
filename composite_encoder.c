@@ -247,7 +247,8 @@ int composite_encode_priv_blob(COMPOSITE_KEY *key, unsigned char **out,
     if ((buf = OPENSSL_malloc(total)) == NULL)
         goto end;
     memcpy(buf, pqbuf, pqlen);
-    memcpy(buf + pqlen, pqpub, pqpublen);
+    if (pqpublen != 0)                       /* NULL when the tier omits pqPub */
+        memcpy(buf + pqlen, pqpub, pqpublen);
     memcpy(buf + pqlen + pqpublen, trbuf, trlen);
     *out = buf;
     *outlen = total;
