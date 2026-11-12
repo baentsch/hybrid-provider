@@ -51,6 +51,7 @@
 #include <openssl/x509.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"       /* hybrid_sig_table — drive the list from the master */
+#include "cert_util.h"         /* hybrid_test_cert_set_cn */
 #include "composite_prov.h"    /* composite_sig_table (data only; self-skips if the
                                 * provider was built without composite) */
 
@@ -107,7 +108,6 @@ static int make_cert(OSSL_LIB_CTX *libctx, const char *propq, const char *alg,
     EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, alg, propq);
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
-    X509_NAME *name;
     int ok = 0;
 
     if (g == NULL || EVP_PKEY_keygen_init(g) <= 0
@@ -120,10 +120,7 @@ static int make_cert(OSSL_LIB_CTX *libctx, const char *propq, const char *alg,
             || X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) == NULL
             || !X509_set_pubkey(cert, pkey))
         goto end;
-    name = X509_get_subject_name(cert);
-    if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                    (unsigned char *)"hybrid-cert", -1, -1, 0)
-            || !X509_set_issuer_name(cert, name)
+    if (!hybrid_test_cert_set_cn(cert, "hybrid-cert")
             || X509_sign(cert, pkey, NULL) == 0)   /* NULL md: one-shot sig */
         goto end;
     *pkey_out = pkey; pkey = NULL;

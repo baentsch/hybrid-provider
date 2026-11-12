@@ -79,6 +79,7 @@
 #include <openssl/err.h>
 #include "composite_kem_prov.h"
 #include "hybrid_prov.h"   /* hybrid_kem_table: the (non-composite) hybrid family */
+#include "cert_util.h"     /* hybrid_test_cert_set_cn */
 
 static int tests, passed, failed, skipped;
 
@@ -127,24 +128,19 @@ static int make_kem_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *kem, X509 **cert_out)
 {
     EVP_PKEY *ca = EVP_PKEY_Q_keygen(ctx, "provider=default", "ED25519");
     X509 *cert = NULL, *rt = NULL;
-    X509_NAME *name = X509_NAME_new();
     unsigned char *der = NULL;
     const unsigned char *p;
     int derlen, ok = 0;
 
-    if (ca == NULL || name == NULL)
+    if (ca == NULL)
         goto end;                                   /* no Ed25519: give up */
-    if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                    (unsigned char *)"hybrid-cms-kem", -1, -1, 0))
-        goto end;
     if ((cert = X509_new_ex(ctx, NULL)) == NULL
             || !X509_set_version(cert, X509_VERSION_3)
             || !ASN1_INTEGER_set(X509_get_serialNumber(cert), 1)
             || X509_gmtime_adj(X509_getm_notBefore(cert), 0) == NULL
             || X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) == NULL
             || !X509_set_pubkey(cert, kem)          /* drives the KEM SPKI encoder */
-            || !X509_set_subject_name(cert, name)
-            || !X509_set_issuer_name(cert, name)
+            || !hybrid_test_cert_set_cn(cert, "hybrid-cms-kem")
             || X509_sign(cert, ca, NULL) == 0)      /* Ed25519: one-shot, md NULL */
         goto end;
     /* File-based recipient: re-decode so the pubkey comes from the SPKI OID.
@@ -170,7 +166,6 @@ end:
     OPENSSL_free(der);
     X509_free(rt);
     EVP_PKEY_free(ca);
-    X509_NAME_free(name);
     X509_free(cert);
     return ok;
 }

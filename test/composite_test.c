@@ -25,6 +25,7 @@
 #include <openssl/decoder.h>
 #include <openssl/err.h>
 #include "composite_prov.h"
+#include "cert_util.h"   /* hybrid_test_cert_set_cn */
 
 static int tests, passed, failed, skipped;
 
@@ -88,7 +89,6 @@ end:
 static int x509_selfsign_ok(OSSL_LIB_CTX *ctx, EVP_PKEY *key)
 {
     X509 *cert = X509_new_ex(ctx, NULL);
-    X509_NAME *nm;
     int ok = 0;
 
     if (cert != NULL
@@ -97,10 +97,7 @@ static int x509_selfsign_ok(OSSL_LIB_CTX *ctx, EVP_PKEY *key)
             && X509_gmtime_adj(X509_getm_notBefore(cert), 0) != NULL
             && X509_gmtime_adj(X509_getm_notAfter(cert), CERT_VALIDITY_SECS) != NULL
             && X509_set_pubkey(cert, key)
-            && (nm = X509_get_subject_name(cert)) != NULL
-            && X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
-                                          (unsigned char *)"composite", -1, -1, 0)
-            && X509_set_issuer_name(cert, nm)
+            && hybrid_test_cert_set_cn(cert, "composite")
             && X509_sign(cert, key, NULL) != 0
             && X509_verify(cert, key) == 1)
         ok = 1;

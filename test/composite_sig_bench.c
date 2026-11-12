@@ -30,6 +30,7 @@
 #include <openssl/err.h>
 #include "../composite_prov.h"
 #include "bench_util.h"
+#include "cert_util.h"   /* hybrid_test_cert_set_cn */
 
 #define CERT_VALIDITY_SECS (60L * 60 * 24 * 365)
 
@@ -52,7 +53,6 @@ static double g_budget_ms = 1000.0;
 static X509 *make_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *key)
 {
     X509 *cert = X509_new_ex(ctx, NULL);
-    X509_NAME *nm;
 
     if (cert != NULL
             && X509_set_version(cert, X509_VERSION_3)
@@ -60,10 +60,7 @@ static X509 *make_cert(OSSL_LIB_CTX *ctx, EVP_PKEY *key)
             && X509_gmtime_adj(X509_getm_notBefore(cert), 0) != NULL
             && X509_gmtime_adj(X509_getm_notAfter(cert), CERT_VALIDITY_SECS) != NULL
             && X509_set_pubkey(cert, key)
-            && (nm = X509_get_subject_name(cert)) != NULL
-            && X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
-                                          (unsigned char *)"composite", -1, -1, 0)
-            && X509_set_issuer_name(cert, nm))
+            && hybrid_test_cert_set_cn(cert, "composite"))
         return cert;
     X509_free(cert);
     return NULL;
