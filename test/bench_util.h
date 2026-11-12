@@ -99,7 +99,7 @@ double bench_time_kem_decaps(OSSL_LIB_CTX *ctx, EVP_PKEY *key, const char *propq
 /*
  * Classical KEM component encaps+decaps times (ms) for a composed KEM's trad half:
  * DHKEM (ephemeral keygen + derive) for EC/X25519/X448, or RSA-OAEP
- * (encrypt/decrypt). Returns 1 and sets *enc_ms/*dec_ms; 0 on error.
+ * (encrypt/decrypt). Returns 1 and sets *enc_ms and *dec_ms; 0 on error.
  */
 int    bench_time_trad_kem(OSSL_LIB_CTX *ctx, const char *trad_alg,
                            const char *group, int rsa_bits, EVP_PKEY *trad,

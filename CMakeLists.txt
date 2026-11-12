@@ -90,6 +90,35 @@ if(HYBRID_HARDEN)
     add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
 endif()
 
+# Compile-time warning policy (issue #133). The broad -Wall -Wextra set is ON for
+# *every* build — there is no reason to hide warnings from a local developer. Two
+# categories are suppressed deliberately, matching OpenSSL's own build:
+# -Wunused-parameter is unavoidable in the fixed-signature provider dispatch
+# callbacks, and -Wmissing-field-initializers flags the intentionally
+# zero-terminated OSSL_ALGORITHM tables. GCC/Clang only (MSVC spells warnings
+# differently and Linux is the target); applied globally before any target.
+if(NOT MSVC)
+    add_compile_options(-Wall -Wextra
+                        -Wno-unused-parameter
+                        -Wno-missing-field-initializers)
+endif()
+
+# Promoting those warnings to hard errors (-Werror) is a separate, opt-in step,
+# OFF by default. A blanket -Werror over the full -Wall/-Wextra surface is brittle
+# in a project that deliberately spans OpenSSL 3.0..master and GCC/Clang of varying
+# ages (and floats some legs to liboqs/oqsprovider main): a new warning from a
+# newer toolchain or a drifting upstream header would otherwise red-line an
+# unrelated local build. So only the push/PR gate turns it ON (-DHYBRID_WERROR=ON),
+# proving the provider AND every test target compile warning-clean before merge,
+# while local builds keep the warnings informational. This mirrors OpenSSL's own
+# --strict-warnings. The narrow, stable -Werror= flags above (deprecated-decls,
+# format-security, implicit-function-declaration) stay unconditional by contrast.
+# See CONTRIBUTING.md "Compile-warning policy".
+option(HYBRID_WERROR "Promote -Wall/-Wextra warnings to errors (CI gate; issue #133)" OFF)
+if(HYBRID_WERROR AND NOT MSVC)
+    add_compile_options(-Werror)
+endif()
+
 # Allow pointing to a local OpenSSL build:
 #   cmake .. -DOPENSSL_ROOT_DIR=../.local
 if(DEFINED OPENSSL_ROOT_DIR)

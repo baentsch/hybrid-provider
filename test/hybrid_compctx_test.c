@@ -29,6 +29,7 @@
 #include <openssl/bio.h>
 #include <openssl/core_names.h>
 #include "hybrid_prov.h"      /* HYBRID_ALG_NAME_MAX (advertised-name buffer) */
+#include "cert_util.h"        /* hybrid_test_cert_set_cn */
 
 static int tests, passed, failed;
 #define TEST_START(n) do { tests++; printf("  %s ... ", n); fflush(stdout); } while (0)
@@ -76,7 +77,6 @@ static int make_self_signed(OSSL_LIB_CTX *libctx, EVP_PKEY **pk, X509 **crt)
 {
     EVP_PKEY *pkey = EVP_PKEY_Q_keygen(libctx, NULL, "EC", "P-256");
     X509 *cert = NULL;
-    X509_NAME *nm;
 
     if (pkey == NULL || (cert = X509_new_ex(libctx, NULL)) == NULL)
         goto err;
@@ -86,10 +86,7 @@ static int make_self_signed(OSSL_LIB_CTX *libctx, EVP_PKEY **pk, X509 **crt)
             || X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) == NULL
             || !X509_set_pubkey(cert, pkey))
         goto err;
-    nm = X509_get_subject_name(cert);
-    if (!X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
-            (const unsigned char *)"compctx", -1, -1, 0)
-            || !X509_set_issuer_name(cert, nm)
+    if (!hybrid_test_cert_set_cn(cert, "compctx")
             || !X509_sign(cert, pkey, EVP_sha256()))
         goto err;
     *pk = pkey; *crt = cert;

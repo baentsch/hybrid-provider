@@ -31,6 +31,7 @@
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 #include "hybrid_prov.h"   /* HYBRID_KEM_ALG_COUNT, HYBRID_ALG_NAME_MAX */
+#include "cert_util.h"     /* hybrid_test_cert_set_cn */
 
 static int test_count = 0;
 static int pass_count = 0;
@@ -157,7 +158,6 @@ static int make_self_signed(OSSL_LIB_CTX *libctx, EVP_PKEY **pkey_out,
 {
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
-    X509_NAME *name = NULL;
     int ok = 0;
 
     pkey = EVP_PKEY_Q_keygen(libctx, NULL, "EC", "P-256");
@@ -171,11 +171,7 @@ static int make_self_signed(OSSL_LIB_CTX *libctx, EVP_PKEY **pkey_out,
             || X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) == NULL
             || !X509_set_pubkey(cert, pkey))
         goto err;
-    name = X509_get_subject_name(cert);
-    if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                    (const unsigned char *)"hybrid-test",
-                                    -1, -1, 0)
-            || !X509_set_issuer_name(cert, name))
+    if (!hybrid_test_cert_set_cn(cert, "hybrid-test"))
         goto err;
     if (!X509_sign(cert, pkey, EVP_sha256()))
         goto err;

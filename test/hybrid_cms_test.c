@@ -53,6 +53,7 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"
+#include "cert_util.h"   /* hybrid_test_cert_set_cn */
 
 static int tests, passed, failed, skipped;
 
@@ -74,7 +75,6 @@ static int make_cert(OSSL_LIB_CTX *libctx, const char *alg,
     EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, alg, "provider=hybrid");
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
-    X509_NAME *name;
     int ok = 0;
 
     if (g == NULL || EVP_PKEY_keygen_init(g) <= 0
@@ -87,10 +87,7 @@ static int make_cert(OSSL_LIB_CTX *libctx, const char *alg,
             || X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) == NULL
             || !X509_set_pubkey(cert, pkey))
         goto end;
-    name = X509_get_subject_name(cert);
-    if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                    (unsigned char *)"hybrid-cms", -1, -1, 0)
-            || !X509_set_issuer_name(cert, name)
+    if (!hybrid_test_cert_set_cn(cert, "hybrid-cms")
             || X509_sign(cert, pkey, NULL) == 0)   /* NULL md: one-shot sig */
         goto end;
     *pkey_out = pkey; pkey = NULL;
@@ -124,7 +121,6 @@ static int mdless_cms_noattr_supported(OSSL_LIB_CTX *libctx)
     EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, "ML-DSA-44", NULL);
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
-    X509_NAME *name;
     CMS_ContentInfo *cms = NULL;
     BIO *in = NULL;
     const unsigned char content[] = "probe";
@@ -141,10 +137,7 @@ static int mdless_cms_noattr_supported(OSSL_LIB_CTX *libctx)
             || X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) == NULL
             || !X509_set_pubkey(cert, pkey))
         goto end;
-    name = X509_get_subject_name(cert);
-    if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                                    (unsigned char *)"probe", -1, -1, 0)
-            || !X509_set_issuer_name(cert, name)
+    if (!hybrid_test_cert_set_cn(cert, "probe")
             || X509_sign(cert, pkey, NULL) == 0)
         goto end;
 

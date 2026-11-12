@@ -52,6 +52,36 @@ project's "not for production use" status (see [SECURITY.md](SECURITY.md)).
 - Keep quirks documented with short inline comments and a source reference,
   rather than long prose elsewhere.
 
+### Compile-warning policy
+
+`-Wall -Wextra` is on for **every** build — there is no reason to hide warnings
+from a developer. Two categories are suppressed deliberately, matching OpenSSL's
+own build: `-Wunused-parameter` (unavoidable in the fixed-signature provider
+dispatch callbacks) and `-Wmissing-field-initializers` (the intentionally
+zero-terminated `OSSL_ALGORITHM` tables). A few narrow, stable `-Werror=` flags
+(deprecated declarations, implicit function declarations, format-security) are
+also always fatal.
+
+Promoting the *whole* `-Wall -Wextra` surface to errors is a separate, opt-in
+step, OFF by default:
+
+```sh
+cmake .. -DHYBRID_WERROR=ON    # -Wall/-Wextra become -Werror
+```
+
+Only the push/PR gate runs with this ON, so the provider and **every test target**
+are proven to compile warning-clean before merge, while local builds keep the
+warnings informational. A blanket `-Werror` is deliberately *not* universal: this
+project spans OpenSSL 3.0..master and GCC/Clang of varying ages (some legs float
+to `liboqs`/`oqsprovider` main), and a new warning from a newer toolchain or a
+drifting upstream header should not red-line an unrelated local build. This
+mirrors OpenSSL's own `--strict-warnings`.
+
+When adding code, build once with `-DHYBRID_WERROR=ON` (compose with
+`-DHYBRID_COMPOSITE=ON`, the default, to cover the composite TUs) so the gate does
+not surprise you; do not reach for a new blanket `-Wno-*` to silence a real
+finding — fix it instead.
+
 ## Security conventions
 
 This is cryptographic code that parses untrusted key material, so contributions

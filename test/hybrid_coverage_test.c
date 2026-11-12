@@ -44,7 +44,8 @@
  * hybrids are spelled <classical>_<pq> (e.g. p256_mlkem768, rsa3072_falcon512).
  * This mirror of the classical set is not hand-invented — it is the same prefix
  * list oqsprovider itself uses to classify its hybrids in its generator input
- * (ALGS/*.yml -> oqs-template, surfaced via the OQS_CEDE_HYBRIDS lever); if
+ * (the per-algorithm ALGS yml files fed to oqs-template, surfaced via the
+ * OQS_CEDE_HYBRIDS lever); if
  * oqsprovider adds a classical family, that shows up as a coverage MISS here,
  * which is the signal to extend this list (and our tables) to match. Other PQ
  * providers (wolfprovider, ...) do not use this spelling and are not scanned by
