@@ -28,11 +28,6 @@ static int trad_is_raw(const COMPOSITE_KEM_INFO *info)   /* X25519 / X448 */
         || strcmp(info->trad_alg, "X448") == 0;
 }
 
-static int trad_is_rsa(const COMPOSITE_KEM_INFO *info)
-{
-    return strcmp(info->trad_alg, "RSA-OAEP") == 0;
-}
-
 /* --- lifecycle --- */
 
 static void *composite_kem_key_new(void *provctx, const COMPOSITE_KEM_INFO *info)

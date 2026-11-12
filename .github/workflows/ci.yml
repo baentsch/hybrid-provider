@@ -183,8 +183,11 @@ jobs:
       # stack, CET) so the OpenSSF-guide compiler defenses are proven to compile
       # clean and pass here. Local dev builds leave it OFF. The sanitizer/TSan/fuzz
       # legs stay the primary dynamic defence; this is a cheap static complement.
+      # -DHYBRID_WERROR=ON (issue #133) additionally proves the provider and every
+      # test target compile warning-clean: -Wall -Wextra are on for all builds, and
+      # this gate promotes them to errors (local builds keep them informational).
       - name: Configure hybrid provider
-        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_HARDEN=ON
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_HARDEN=ON -DHYBRID_WERROR=ON
 
       - name: Cache oqs-provider (pinned)
         id: cache-oqsp
