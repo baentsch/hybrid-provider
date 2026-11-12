@@ -19,36 +19,6 @@
 #include <openssl/err.h>
 #include <string.h>
 
-/* A component's raw public key: the PUB_KEY octet (ML-KEM / EC point / X raw), or
- * i2d_PublicKey for RSA (which has no octet param). Caller frees *buf. */
-static int component_pub(EVP_PKEY *pkey, unsigned char **buf, size_t *len)
-{
-    size_t n = 0;
-
-    if (EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
-                                        NULL, 0, &n) > 0 && n > 0) {
-        if ((*buf = OPENSSL_malloc(n)) == NULL
-                || EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_PUB_KEY,
-                                                   *buf, n, len) <= 0) {
-            OPENSSL_free(*buf);
-            *buf = NULL;
-            return 0;
-        }
-        return 1;
-    }
-    ERR_clear_error();
-    {
-        unsigned char *der = NULL;
-        int dlen = i2d_PublicKey(pkey, &der);
-
-        if (dlen <= 0)
-            return 0;
-        *buf = der;
-        *len = (size_t)dlen;
-        return 1;
-    }
-}
-
 int composite_kem_encode_pub_blob(COMPOSITE_KEM_KEY *key, unsigned char **out,
                                   size_t *outlen)
 {
@@ -58,8 +28,8 @@ int composite_kem_encode_pub_blob(COMPOSITE_KEM_KEY *key, unsigned char **out,
 
     if (key->state < COMPOSITE_KEM_HAVE_PUBKEY)
         return 0;
-    if (!component_pub(key->pq_key, &pqbuf, &pqlen)
-            || !component_pub(key->trad_key, &trbuf, &trlen))
+    if (!hybrid_component_raw_pub(key->pq_key, &pqbuf, &pqlen)
+            || !hybrid_component_raw_pub(key->trad_key, &trbuf, &trlen))
         goto end;
     if ((buf = OPENSSL_malloc(pqlen + trlen)) == NULL)
         goto end;
@@ -254,8 +224,8 @@ static int component_pq_priv(EVP_PKEY *pq, const COMPOSITE_KEM_INFO *info,
 int composite_kem_encode_priv_blob(COMPOSITE_KEM_KEY *key, unsigned char **out,
                                    size_t *outlen)
 {
-    unsigned char *pqbuf = NULL, *trbuf = NULL, *buf = NULL;
-    size_t pqlen = 0, trlen = 0;
+    unsigned char *pqbuf = NULL, *pqpub = NULL, *trbuf = NULL, *buf = NULL;
+    size_t pqlen = 0, pqpublen = 0, trlen = 0, total = 0;
     int ret = 0;
 
     if (key->state < COMPOSITE_KEM_HAVE_PRVKEY)
@@ -263,18 +233,26 @@ int composite_kem_encode_priv_blob(COMPOSITE_KEM_KEY *key, unsigned char **out,
     if (!component_pq_priv(key->pq_key, key->info, &pqbuf, &pqlen)
             || !component_priv(key->trad_key, &trbuf, &trlen))
         goto end;
-    if ((buf = OPENSSL_malloc(pqlen + trlen)) == NULL)
+    /* Experimental tier appends the PQ raw public -> pqPriv||pqPub||tradPriv
+     * (COMPOSITE_KEM_PQ_CARRIES_PUB); decoder splits symmetrically. */
+    if (COMPOSITE_KEM_PQ_CARRIES_PUB(key->info)
+            && !hybrid_component_raw_pub(key->pq_key, &pqpub, &pqpublen))
+        goto end;
+    total = pqlen + pqpublen + trlen;
+    if ((buf = OPENSSL_malloc(total)) == NULL)
         goto end;
     memcpy(buf, pqbuf, pqlen);
-    memcpy(buf + pqlen, trbuf, trlen);
+    memcpy(buf + pqlen, pqpub, pqpublen);
+    memcpy(buf + pqlen + pqpublen, trbuf, trlen);
     *out = buf;
-    *outlen = pqlen + trlen;
+    *outlen = total;
     buf = NULL;
     ret = 1;
 end:
     OPENSSL_clear_free(pqbuf, pqlen);
+    OPENSSL_free(pqpub);                    /* public: no secret to cleanse */
     OPENSSL_clear_free(trbuf, trlen);
-    OPENSSL_clear_free(buf, pqlen + trlen);
+    OPENSSL_clear_free(buf, total);
     return ret;
 }
 
@@ -422,8 +400,8 @@ static int composite_kem_encode_text(void *vctx, OSSL_CORE_BIO *cout,
             || !component_priv(ckey->trad_key, &trbuf, &trlen))
             goto end;
     } else if (ckey->state < COMPOSITE_KEM_HAVE_PUBKEY
-            || !component_pub(ckey->pq_key, &pqbuf, &pqlen)
-            || !component_pub(ckey->trad_key, &trbuf, &trlen)) {
+            || !hybrid_component_raw_pub(ckey->pq_key, &pqbuf, &pqlen)
+            || !hybrid_component_raw_pub(ckey->trad_key, &trbuf, &trlen)) {
         goto end;
     }
 

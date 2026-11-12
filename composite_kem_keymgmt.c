@@ -17,6 +17,11 @@
 #include <openssl/x509.h>
 #include <string.h>
 
+/* Fixed PQ private / public component byte lengths, discovered from the algorithm
+ * (defined below; forward-declared for composite_kem_key_load_prv's split). */
+static size_t discover_pq_pub_len(COMPOSITE_KEM_KEY *key);
+static size_t discover_pq_priv_len(COMPOSITE_KEM_KEY *key);
+
 static int trad_is_raw(const COMPOSITE_KEM_INFO *info)   /* X25519 / X448 */
 {
     return strcmp(info->trad_alg, "X25519") == 0
@@ -37,7 +42,7 @@ static void *composite_kem_key_new(void *provctx, const COMPOSITE_KEM_INFO *info
 
     if (k == NULL)
         return NULL;
-    k->libctx = pc != NULL ? pc->libctx : NULL;
+    k->libctx = pc != NULL ? HYBRID_COMPONENT_LIBCTX(pc) : NULL;
     k->info = info;
     /* Config-driven component sourcing (shared with the hybrid family). Absent
      * config, the classical half resolves from the default provider, and the PQ
@@ -301,27 +306,44 @@ int composite_kem_key_load_prv(COMPOSITE_KEM_KEY *key,
                                const unsigned char *pqpriv, size_t pqlen,
                                const unsigned char *tradpriv, size_t tradlen)
 {
-    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx, key->info->pq_alg,
-                                                 key->alg2_propq);
-    /* Reconstruct the PQ component from the param named by the row: the ML-KEM
-     * seed for standardized combos; a different seed param or the raw private key
-     * for a future non-ML-KEM combo. No ML-KEM assumption. */
-    OSSL_PARAM p[2];
-    int ok = 0;
+    int pqok;
 
-    p[0] = OSSL_PARAM_construct_octet_string(key->info->pq_priv_param,
-                                             (void *)pqpriv, pqlen);
-    p[1] = OSSL_PARAM_construct_end();
-    if (c != NULL && EVP_PKEY_fromdata_init(c) > 0
-            && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_KEYPAIR, p) > 0
-            && (key->trad_key = load_trad_priv(key->libctx, key->trad_propq,
-                                               key->info, tradpriv,
-                                               tradlen)) != NULL) {
-        key->state = COMPOSITE_KEM_HAVE_PRVKEY;
-        ok = 1;
+    /*
+     * Reconstruct the PQ component from the row's serialized private material.
+     * Experimental tier: pqpriv is pqPriv||pqPub (COMPOSITE_KEM_PQ_CARRIES_PUB) —
+     * split off the raw private at its discovered length and hand the provider both
+     * via the shared hybrid_component_load_privpub, since the research KEM cannot
+     * re-derive the public from the private. Standardized tier: pqpriv is the ML-KEM
+     * seed (pq_priv_param), from which the provider re-derives the public itself.
+     */
+    if (COMPOSITE_KEM_PQ_CARRIES_PUB(key->info)) {
+        size_t privlen = discover_pq_priv_len(key);
+
+        pqok = privlen != 0 && privlen < pqlen
+            && hybrid_component_load_privpub(key->libctx, key->alg2_propq,
+                                             key->info->pq_alg, pqpriv, privlen,
+                                             pqpriv + privlen, pqlen - privlen,
+                                             &key->pq_key);
+    } else {
+        EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(key->libctx,
+                                                     key->info->pq_alg,
+                                                     key->alg2_propq);
+        OSSL_PARAM p[2];
+
+        p[0] = OSSL_PARAM_construct_octet_string(key->info->pq_priv_param,
+                                                 (void *)pqpriv, pqlen);
+        p[1] = OSSL_PARAM_construct_end();
+        pqok = c != NULL && EVP_PKEY_fromdata_init(c) > 0
+            && EVP_PKEY_fromdata(c, &key->pq_key, EVP_PKEY_KEYPAIR, p) > 0;
+        EVP_PKEY_CTX_free(c);
     }
-    EVP_PKEY_CTX_free(c);
-    return ok;
+    if (!pqok
+            || (key->trad_key = load_trad_priv(key->libctx, key->trad_propq,
+                                               key->info, tradpriv,
+                                               tradlen)) == NULL)
+        return 0;
+    key->state = COMPOSITE_KEM_HAVE_PRVKEY;
+    return 1;
 }
 
 /* --- match + import/export --- */
@@ -385,6 +407,10 @@ static int import_prv_blob(COMPOSITE_KEM_KEY *key, const unsigned char *blob,
 {
     size_t pqn = discover_pq_priv_len(key);
 
+    /* Experimental tier appends the PQ raw public to the private (see
+     * COMPOSITE_KEM_PQ_CARRIES_PUB); the pq segment then spans priv + pub. */
+    if (pqn != 0 && COMPOSITE_KEM_PQ_CARRIES_PUB(key->info))
+        pqn += discover_pq_pub_len(key);
     return pqn != 0 && pqn < len
         && composite_kem_key_load_prv(key, blob, pqn, blob + pqn, len - pqn);
 }

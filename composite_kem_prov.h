@@ -75,6 +75,10 @@ enum {
     COMPOSITE_KEM_TIER_EXPERIMENTAL   /* other PQ KEM; our experimental arc; raw */
 };
 
+/* KEM twin of COMPOSITE_PQ_CARRIES_PUB; see design.md "Precondition". */
+#define COMPOSITE_KEM_PQ_CARRIES_PUB(info) \
+    ((info)->tier == COMPOSITE_KEM_TIER_EXPERIMENTAL)
+
 /*
  * One composite ML-KEM combination. The combiner reads a row and delegates to
  * both components via EVP with no ML-KEM hardcoding; adding a combo is one row.
