@@ -4,7 +4,9 @@
  *
  * Tests the provider's config-driven component property queries
  * (alg1-propquery / alg2-propquery): they must independently steer which
- * provider supplies the PQ and classic sub-algorithms.
+ * provider supplies the PQ and classic sub-algorithms. Also tests that a
+ * component-providers entry that cannot load fails the hybrid provider's init
+ * cleanly (no crash, no use-after-free under ASan) and names the culprit.
  *
  * The probe relies on the fact that the hybrid provider itself implements
  * neither ML-KEM nor X25519: forcing a component to "provider=hybrid" via
@@ -19,6 +21,7 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include <openssl/crypto.h>
+#include <openssl/provider.h>
 
 static int test_count, pass_count, fail_count;
 
@@ -29,9 +32,14 @@ static int test_count, pass_count, fail_count;
 
 static const char *module_dir;
 
+/* No provider module by this name exists anywhere on the search path. */
+#define BOGUS_PROVIDER "no-such-component-provider"
+
 /* Write an openssl.cnf loading default + hybrid, with optional extra hybrid
- * section lines (e.g. the propquery keys). Returns 1 on success. */
-static int write_cnf(const char *path, const char *hybrid_extra)
+ * section lines (e.g. the propquery keys). With activate == 0 the hybrid
+ * section is only registered, for a later explicit OSSL_PROVIDER_load().
+ * Returns 1 on success. */
+static int write_cnf2(const char *path, const char *hybrid_extra, int activate)
 {
     FILE *f = fopen(path, "w");
 
@@ -42,10 +50,71 @@ static int write_cnf(const char *path, const char *hybrid_extra)
             "[c]\nproviders = p\n"
             "[p]\ndefault = d\nhybrid = h\n"
             "[d]\nactivate = 1\n"
-            "[h]\nmodule = %s/hybrid.so\nactivate = 1\n%s",
-            module_dir, hybrid_extra ? hybrid_extra : "");
+            "[h]\nmodule = %s/hybrid.so\n%s%s",
+            module_dir, activate ? "activate = 1\n" : "",
+            hybrid_extra ? hybrid_extra : "");
     fclose(f);
     return 1;
+}
+
+static int write_cnf(const char *path, const char *hybrid_extra)
+{
+    return write_cnf2(path, hybrid_extra, 1);
+}
+
+/*
+ * Register the hybrid provider from a cnf without activating it, then load it
+ * explicitly. (A cnf "activate = 1" failure is dropped by OpenSSL without an
+ * error, even with config_diagnostics; an explicit load reports init errors.)
+ * Returns 1 if the load failed AND an error's data contains `needle`.
+ */
+static int load_fails_naming(const char *hybrid_extra, const char *needle)
+{
+    char cnf[] = "/tmp/hybrid_cfg_test.XXXXXX";
+    int fd = mkstemp(cnf);
+    OSSL_LIB_CTX *libctx = NULL;
+    OSSL_PROVIDER *prov = NULL;
+    const char *data;
+    int flags, named = 0;
+
+    if (fd < 0)
+        return 0;
+    close(fd);
+    if (write_cnf2(cnf, hybrid_extra, 0)
+            && (libctx = OSSL_LIB_CTX_new()) != NULL
+            && OSSL_LIB_CTX_load_config(libctx, cnf)) {
+        prov = OSSL_PROVIDER_load(libctx, "hybrid");
+        while (ERR_get_error_all(NULL, NULL, NULL, &data, &flags) != 0)
+            if ((flags & ERR_TXT_STRING) != 0 && strstr(data, needle) != NULL)
+                named = 1;
+    }
+    OSSL_PROVIDER_unload(prov);
+    OSSL_LIB_CTX_free(libctx);
+    ERR_clear_error();
+    remove(cnf);
+    return prov == NULL && named;
+}
+
+/* Load cnf into a fresh libctx; return 1 if the hybrid provider activated.
+ * (A keygen probe cannot tell: "?provider=hybrid" falls back to default.) */
+static int hybrid_active(const char *hybrid_extra)
+{
+    char cnf[] = "/tmp/hybrid_cfg_test.XXXXXX";
+    int fd = mkstemp(cnf);
+    OSSL_LIB_CTX *libctx = NULL;
+    int ok = 0;
+
+    if (fd < 0)
+        return -1;
+    close(fd);
+    if (write_cnf(cnf, hybrid_extra)
+            && (libctx = OSSL_LIB_CTX_new()) != NULL
+            && OSSL_LIB_CTX_load_config(libctx, cnf))
+        ok = OSSL_PROVIDER_available(libctx, "hybrid");
+    OSSL_LIB_CTX_free(libctx);
+    ERR_clear_error();
+    remove(cnf);
+    return ok;
 }
 
 /* Load cnf into a fresh libctx and try to keygen the hybrid; return 1 if ok. */
@@ -110,6 +179,36 @@ int main(void)
     TEST_START("classic = provider=hybrid (no X25519 there) -> keygen fails");
     if (keygen_ok("alg1-propquery = provider=hybrid\n") == 0) TEST_PASS();
     else TEST_FAIL("alg1-propquery was not applied to the classic component");
+
+    /* Private component context loads and activates. (Not a lone "default":
+     * OpenSSL's provider-config parser treats a value naming a section as a
+     * section reference, and "default" is the cnf's implicit top section.) */
+    TEST_START("component-providers = default, -> hybrid active");
+    if (hybrid_active("component-providers = default,\n") == 1)
+        TEST_PASS();
+    else TEST_FAIL("private component context with default should activate");
+
+    /* An unloadable component provider AFTER one that loaded: init must fail
+     * cleanly. Regression: the error path freed the private context but kept
+     * the loaded handle, which teardown then unloaded again after the context
+     * was gone (segfault at exit in the field; leak report under ASan, where
+     * the explicit-load test below then fails). */
+    TEST_START("component-providers = default <bogus> -> hybrid unavailable");
+    if (hybrid_active("component-providers = default " BOGUS_PROVIDER "\n") == 0)
+        TEST_PASS();
+    else TEST_FAIL("hybrid must not activate with an unloadable component");
+
+    TEST_START("component-providers = <bogus> (first) -> hybrid unavailable");
+    if (hybrid_active("component-providers = " BOGUS_PROVIDER " default\n") == 0)
+        TEST_PASS();
+    else TEST_FAIL("hybrid must not activate with an unloadable component");
+
+    /* The failure must be diagnosable: the error names the provider. */
+    TEST_START("unloadable component provider is named in the error");
+    if (load_fails_naming("component-providers = default " BOGUS_PROVIDER "\n",
+                          BOGUS_PROVIDER))
+        TEST_PASS();
+    else TEST_FAIL("explicit load should fail with an error naming the provider");
 
     printf("\n=======================================================\n");
     printf("Results: %d/%d passed", pass_count, test_count);
