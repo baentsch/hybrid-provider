@@ -123,6 +123,19 @@ provider that can, and the cnf no longer says which implementation runs. Use the
 strict form when the choice of provider matters (FIPS boundaries, a specific
 hardware or library backend, demos that claim provenance).
 
+**Unset keys: which provider wins?** With no `alg<N>-propquery`, a hybrid looks
+up its component with the hybrid key's own property query, normally empty. (The
+composite family differs: its default is `provider=default`.) When several loaded
+providers serve that component (e.g. ML-KEM-768 from both default and
+wolfProvider), OpenSSL documents the choice as unspecified: see the "Note on
+naming clashes" in [provider(7)](https://docs.openssl.org/master/man7/provider/).
+Current OpenSSL keeps providers sorted by name and returns the first match, so in
+practice the provider whose name (as given in the cnf's providers section) sorts
+first alphabetically wins, whatever order the cnf lists them in. A global
+`default_properties` setting in the cnf is merged into every lookup and can
+change the result. Do not rely on either behaviour: if it matters which provider
+serves a component, pin it with a strict `alg<N>-propquery = provider=<name>`.
+
 The mapping is **positional** — `alg1-propquery` steers the first component
 (`alg1`), `alg2-propquery` the second — so for a PQ/PQ row, whose `alg1` is
 itself post-quantum, there is no "classical"/"PQ" assumption baked into the key
