@@ -130,7 +130,28 @@ context). No rebuild is needed.
 |--------|--------------|--------------|
 | `entrypoint.sh` | default `CMD` | builds the active config (honouring `HP_MLKEM_PROVIDER`), starts nginx, runs curl + `openssl s_client`, asserts the negotiated group; optionally invokes the tracer when `HP_TRACE=1` |
 | `tls-trace.sh` | via `HP_TRACE=1`, or manually with a port arg | runs one traced handshake + key-share keygen and reports which provider served each component |
+| `noconf.sh` | manually: `docker run --rm hp-3alg noconf.sh` | removes `openssl.cnf`, then asserts what each tool can still do with command-line provider activation alone (see [Without openssl.cnf](#without-opensslcnf)) |
 | `build-wolfprovider-lean.sh` | **build time only** | compiles wolfSSL + wolfProvider against the shared OpenSSL and asserts the pinned wolfSSL flags against wolfProvider upstream (not used at run time) |
+
+## Without openssl.cnf
+
+```sh
+docker run --rm hp-3alg noconf.sh
+```
+
+removes the config from `OPENSSLDIR`, unsets `OPENSSL_CONF`, and asserts the
+outcome per tool (exit 0 = every row behaved as listed):
+
+| tool | without the cnf | how / why |
+|------|-----------------|-----------|
+| `openssl` (`s_client`, `s_server`, `list`, …) | **yes**, full `HQCKEM192MLKEM768X25519` | `-provider-path /opt/pq/lib64/ossl-modules -provider default -provider oqsprovider -provider wolfprov -provider hybrid`; works on both ends of a handshake |
+| curl | **partial** | `curl --engine hybrid` loads that one provider plus `default` into curl's own library context; hybrid groups built from default components work (the test derives one, e.g. `SecP256r1MLKEM512`), but the HQC group does not: no oqsprovider is in curl's context to supply HQC-192 (`failed setting curves list`) |
+| nginx | **no** | no directive loads a provider (`ssl_engine` handles ENGINEs only, and `env OPENSSL_CONF` takes effect too late); it refuses to start: `[emerg] SSL_CTX_set1_curves_list("HQCKEM192MLKEM768X25519") failed`. A cnf is required, though `OPENSSL_CONF` can point at any path |
+
+Without the cnf there is no `component-providers` / `alg<N>-propquery`, so every
+component is fetched from the application context with no per-component
+steering. With several providers serving ML-KEM-768 (default, oqsprovider,
+wolfProvider), the provider that serves it is not pinned.
 
 ## Caveats
 
