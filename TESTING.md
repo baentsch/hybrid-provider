@@ -339,7 +339,7 @@ round-trip still proves the serialized key is consumable and that its shared
 secret matches the original. In real drop-in deployments the ambiguity does not
 arise, because ceding leaves only one provider serving a given name.
 
-The hybrid provider is configured exclusively through an `openssl.cnf` (see
+The hybrid provider's settings exist only in an `openssl.cnf` (see
 [Configuration](USAGE.md#configuration) in the usage guide), so the CLI harness
 always drives the hybrid side via `OPENSSL_CONF` and passes no `-provider` flags
 for it.

@@ -118,8 +118,8 @@ reads two optional keys from its config section:
 [hybrid_sect]
 module         = /path/to/hybrid.so
 activate       = 1
-alg1-propquery = ?provider=default       # component 1 (e.g. X25519 / EC)
-alg2-propquery = ?provider=oqsprovider   # component 2 (e.g. ML-KEM / ML-DSA)
+alg1-propquery = provider=default        # component 1 (e.g. X25519 / EC)
+alg2-propquery = provider=oqsprovider    # component 2 (e.g. ML-KEM / ML-DSA)
 ```
 
 The mapping is **positional**: `alg1-propquery` is used for every fetch of the
