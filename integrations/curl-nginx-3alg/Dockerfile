@@ -162,7 +162,9 @@ COPY integrations/curl-nginx-3alg/nginx.conf         ${NGINX_PREFIX}/conf/nginx-
 COPY integrations/curl-nginx-3alg/entrypoint.sh      ${INSTALLDIR}/bin/entrypoint.sh
 ### +++ ADDED (opt-in): trace collector/analyser (used when HP_TRACE=1) +++
 COPY integrations/curl-nginx-3alg/tls-trace.sh       ${INSTALLDIR}/bin/tls-trace.sh
-RUN chmod +x ${INSTALLDIR}/bin/entrypoint.sh ${INSTALLDIR}/bin/tls-trace.sh
+### +++ ADDED (opt-in): what works WITHOUT openssl.cnf (`docker run … noconf.sh`) +++
+COPY integrations/curl-nginx-3alg/noconf.sh          ${INSTALLDIR}/bin/noconf.sh
+RUN chmod +x ${INSTALLDIR}/bin/entrypoint.sh ${INSTALLDIR}/bin/tls-trace.sh ${INSTALLDIR}/bin/noconf.sh
 
 # -----------------------------------------------------------------------------
 ### === oqs-demos: slim runtime stage ===

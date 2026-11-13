@@ -106,4 +106,5 @@ instead (still a full 3-alg handshake) — see [USAGE.md](USAGE.md).
 | `nginx.conf` | TLS 1.3 server offering only `HQCKEM192MLKEM768X25519` |
 | `entrypoint.sh` | default container command — runs and asserts the proof |
 | `tls-trace.sh` | opt-in provenance tracer (used with `HP_TRACE=1`) |
+| `noconf.sh` | opt-in test: what still works with the `openssl.cnf` removed (CLI-only activation) |
 | `build-wolfprovider-lean.sh` | lean wolfSSL+wolfProvider build + the drift guard |
