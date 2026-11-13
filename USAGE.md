@@ -64,15 +64,19 @@ implements them.
 
 ## Configuration
 
-The hybrid provider is configured **exclusively through an `openssl.cnf`**, never
-by loading it with `openssl -provider hybrid` on the command line. All of its
-component-steering keys — `alg1-propquery`, `alg2-propquery`,
-`component-providers`, `component-path` — live in the provider's config section
-and have **no command-line equivalent**. Loading the module with `-provider
-hybrid` gives it none of these keys, so it cannot compose anything, and the
-private component context that sources Frodo/BIKE/HQC (below) never gets built.
-Application code selects the provider by property query (`?provider=hybrid`) once
-the cnf has activated it.
+The hybrid provider's settings — `alg<N>-propquery`, `component-providers`,
+`component-path`, `cede-to-default` — live in its section of an `openssl.cnf`
+and have **no command-line equivalent** (only `cede-to-default` also has an
+environment override, see [Environment variables](#environment-variables)).
+
+The provider still works without a cnf. Loaded on the command line (`openssl …
+-provider default -provider oqsprovider -provider hybrid`, or by any application
+that calls `OSSL_PROVIDER_load`), it fetches each component from the providers
+the application loaded, with no per-component steering and no private component
+context. Load order does not matter: components are looked up on first use. What
+needs the cnf is choosing *which* provider serves each component, and isolating
+the components in a private context (both below). Application code selects the
+provider by property query (`?provider=hybrid`) either way.
 
 Two coexistence constraints sit behind this, with different lifespans:
 
@@ -106,9 +110,18 @@ hybrid algorithm itself is selected:
 [hybrid_sect]
 module         = /path/to/hybrid.so
 activate       = 1
-alg1-propquery = ?provider=default       # component 1 (e.g. X25519 / EC)
-alg2-propquery = ?provider=oqsprovider   # component 2 (e.g. ML-KEM / ML-DSA)
+alg1-propquery = provider=default        # component 1 (e.g. X25519 / EC)
+alg2-propquery = provider=oqsprovider    # component 2 (e.g. ML-KEM / ML-DSA)
 ```
+
+**Strict `provider=` vs preference `?provider=`.** These are ordinary OpenSSL
+property queries. With `provider=<name>`, a component that provider cannot serve
+is not found, and the hybrid algorithms built on it are not offered. That is the
+visible, safe outcome. With `?provider=<name>` the name is only a preference: if
+that provider cannot serve the component, OpenSSL silently takes it from any
+provider that can, and the cnf no longer says which implementation runs. Use the
+strict form when the choice of provider matters (FIPS boundaries, a specific
+hardware or library backend, demos that claim provenance).
 
 The mapping is **positional** — `alg1-propquery` steers the first component
 (`alg1`), `alg2-propquery` the second — so for a PQ/PQ row, whose `alg1` is
@@ -132,8 +145,8 @@ half of a hybrid:
 [hybrid_sect]
 module         = /path/to/hybrid.so
 activate       = 1
-alg1-propquery = ?provider=default    # classical half: X25519 from default
-alg2-propquery = ?provider=wolfprov   # PQ half: ML-KEM-768 from wolfProvider
+alg1-propquery = provider=default     # classical half: X25519 from default
+alg2-propquery = provider=wolfprov    # PQ half: ML-KEM-768 from wolfProvider
 ```
 
 `X25519MLKEM768` then composes X25519 (default) with ML-KEM-768 (wolfProvider),
@@ -141,7 +154,7 @@ and the composed key interoperates byte-for-byte with wolfProvider's *native*
 `X25519MLKEM768` group (verified by the cross-provider matrix — see
 [TESTING.md](TESTING.md) and
 [provider-interop-results.md](provider-interop-results.md)). Note the query name
-is `wolfprov`, not the module name `libwolfprov.so`: a `?provider=` query matches
+is `wolfprov`, not the module name `libwolfprov.so`: a `provider=` query matches
 the name a provider registers under, which for wolfProvider differs from its
 module file.
 
@@ -171,14 +184,43 @@ components come from
 `component-path` is required so the provider can locate the component modules in
 its private context.
 
-If any listed provider fails to load, the hybrid provider does not activate at
-all. OpenSSL drops a failed cnf activation without reporting an error; the
-reason (`component-providers: cannot load "<name>"`) shows up only on an
-explicit `OSSL_PROVIDER_load(libctx, "hybrid")`. Also avoid a lone
-`component-providers = default`: OpenSSL reads a provider-section value that
-names a cnf section as a section reference, and `default` is the cnf's implicit
-top section, so the config load fails. Any list with more than one word, or with
-a trailing comma (`default,`), is fine.
+Without `component-providers` the components come from the application's own
+context, and the `alg<N>-propquery` keys steer there just the same. Use the
+private context only when a component provider also offers the *same* hybrid
+algorithms itself (as stock oqsprovider does); otherwise the application
+context is simpler and has none of the failure modes below.
+
+#### Failure modes (read before deploying)
+
+`component-providers` is **all-or-nothing**, and OpenSSL reports none of these
+failures by default:
+
+| cnf mistake | effect |
+|---|---|
+| a listed provider cannot be loaded (misspelled name, module missing, wrong `component-path`) | **the hybrid provider does not activate at all**; every hybrid algorithm is gone, not just the ones using that provider |
+| `component-providers = default` (the single word `default`) | **the cnf's whole `providers` section fails to parse**: the hybrid provider does not activate, and neither does any provider listed after it. If `hybrid` comes first, the process may end up with no providers at all, because a cnf that activates providers also turns off OpenSSL's automatic fallback to the default provider |
+| the key itself misspelled (e.g. `componet-providers`) | ignored: components come from the application context, so algorithms needing a provider that is only in the intended private context are missing |
+| a strict `alg<N>-propquery` naming a provider that cannot serve that component | the algorithms using that component are not offered |
+| a preference `?provider=` naming such a provider | **no error at all**: the component silently comes from another provider |
+
+Why it is this silent: OpenSSL ignores a provider that fails to activate from a
+cnf and carries on, even with `config_diagnostics = 1`. The first symptom is
+usually the application rejecting a group or algorithm name, e.g. nginx's
+`[emerg] SSL_CTX_set1_curves_list("…") failed`. To see the actual cause,
+register the provider without `activate = 1` and load it explicitly with
+`OSSL_PROVIDER_load(libctx, "hybrid")`. The error queue then names it:
+`component-providers: cannot load "<name>" (search path: …)`.
+
+The single-word `default` problem is an OpenSSL cnf rule, not something this
+provider can catch, since the parse fails before the provider runs. When a
+provider-section value matches the name of a cnf section, OpenSSL treats it as a
+reference to that section, and `default` is always the name of the cnf's
+implicit top section. Write the list with more than one entry, or add a trailing
+comma (`component-providers = default,`).
+
+Checks after any change: `openssl list -providers` must list `hybrid`,
+and `openssl list -tls-groups` (or `-kem-algorithms` / `-signature-algorithms`)
+must show the algorithms you expect.
 
 This is verified in-process by `hybrid_compctx_test` and
 over separate-process `openssl` `s_server`/`s_client` handshakes (both
