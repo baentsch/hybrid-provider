@@ -81,7 +81,7 @@ hybrid-provider/
 ├── hybrid_prov.h          ← shared types, HYBRID_KEY, info tables
 ├── composite_*.{c,h}      ← composite (LAMPS) family — only with -DHYBRID_COMPOSITE
 │                            (keymgmt, sig, caps, encoder, decoder, prov.h)
-└── test/
+├── test/
     ├── hybrid_test.c              ← interop tests against default provider
     ├── hybrid_tls_test.c          ← in-process TLS 1.3 handshake interop (dual libctx)
     ├── hybrid_cert_tls_test.c     ← signature certs over TLS 1.3
@@ -104,6 +104,9 @@ hybrid-provider/
 │   ├── composite_kem_bench.c      ← composite KEM keygen/encaps/decaps + pk/ct/sk sizes
     ├── hybrid_bench.c             ← keygen/encaps/decaps benchmark vs default provider
     └── hybrid_scenarios.sh        ← CLI (s_server/s_client) TLS interop harness
+└── integrations/          ← downstream integration demos (Docker; not built by CMake)
+    └── curl-nginx-3alg/   ← curl↔nginx TLS 1.3 over a 3-provider hybrid KEM
+                             (X25519+ML-KEM-768+HQC-192); see its README.md/USAGE.md
 ```
 
 ## Code Conventions

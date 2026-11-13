@@ -362,6 +362,7 @@ and their test coverage are documented in [test/TESTING.md](test/TESTING.md).
 | [test/TESTING.md](test/TESTING.md) | Supported algorithms and their per-test coverage (which tests run, pass or skip each, and why) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Code conventions, project layout, how to add a hybrid, coverage invariants |
 | [design.md](design.md) | Full architecture and design decisions |
+| [integrations/curl-nginx-3alg/](integrations/curl-nginx-3alg/README.md) | Downstream Docker demo: curl↔nginx TLS 1.3 over a 3-provider hybrid KEM (X25519+ML-KEM-768+HQC-192 from default+wolfProvider+oqsprovider), config-only |
 | [STANDARDS.md](STANDARDS.md) | Standards & standards-proposals catalogue by provenance: ceded, standard/draft-backed, convention-only, future work |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Expected conduct (follows the spirit of the OpenSSL Code of Conduct) |
 | [SECURITY.md](SECURITY.md) | Security status and how to report issues (experimental; no embargo or CVE process) |

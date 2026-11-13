@@ -1,0 +1,22 @@
+# =============================================================================
+# Baseline: a stock oqs-demos-style config — default + oqsprovider, NO hybrid
+# provider. Used by entrypoint.sh to show that WITHOUT the hybrid plugin the
+# 3-alg group HQCKEM192MLKEM768X25519 does not exist, and that adding it is a
+# pure config change (`diff openssl-stock.cnf openssl.cnf`).
+# =============================================================================
+
+openssl_conf = osslcfg
+
+[osslcfg]
+providers = prov_sect
+
+[prov_sect]
+default     = default_sect
+oqsprovider = oqsprovider_sect
+
+[default_sect]
+activate = 1
+
+[oqsprovider_sect]
+module   = /opt/pq/lib64/ossl-modules/oqsprovider.so
+activate = 1
