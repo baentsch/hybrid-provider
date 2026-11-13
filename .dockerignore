@@ -1,0 +1,13 @@
+# Keep the Docker build context small: the demo image only needs the
+# hybrid-provider C/CMake sources, not the vendored reference checkouts or any
+# local build trees. Everything excluded here is either huge, machine-local, or
+# rebuilt inside the image from upstream.
+.git
+build/
+build*/
+openssl/
+openssl-*/
+liboqs/
+oqs-provider/
+docs/
+*.log
