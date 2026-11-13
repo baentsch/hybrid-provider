@@ -48,14 +48,14 @@ The run prints these sections in order:
 
 | variable | values | effect |
 |----------|--------|--------|
-| `HP_MLKEM_PROVIDER` | `wolfprov` (default) / `oqsprovider` | which provider supplies the ML-KEM-768 component. If `wolfprov` and the wolfProvider module is missing, the entrypoint auto-falls back to `oqsprovider` so the 3-alg handshake still runs. |
+| `HP_MLKEM_PROVIDER` | `wolfprov` (default) / `default` | which provider supplies the ML-KEM-768 component (any provider in `component-providers` that serves it). If `wolfprov` and the wolfProvider module is missing, the entrypoint auto-falls back to `default`: still all 3 algorithms, from 2 providers. A provider that cannot serve ML-KEM-768 makes the run FAIL; the steering is strict. The oqsprovider build in this image registers no standalone ML-KEM-768, so `oqsprovider` is not a valid value. |
 | `HP_TRACE` | `0` (default) / `1` | when `1`, also run `tls-trace.sh` to show which provider served each component. Meaningful only on an image built with `--build-arg ENABLE_TRACE=1` (otherwise it prints how to rebuild). |
 
 Examples:
 
 ```sh
-# source ML-KEM-768 from oqsprovider instead of wolfProvider (still 3 algs)
-docker run --rm -e HP_MLKEM_PROVIDER=oqsprovider hp-3alg
+# source ML-KEM-768 from the default provider instead of wolfProvider
+docker run --rm -e HP_MLKEM_PROVIDER=default hp-3alg
 
 # provenance trace (requires the ENABLE_TRACE=1 image)
 docker run --rm -e HP_TRACE=1 hp-3alg-trace
@@ -76,7 +76,7 @@ HQC-192    hqc3         oqsprovider  oqsprovider  OK
 
 The evidence comes from OpenSSL `QUERY` trace lines showing each component being
 fetched in the hybrid provider's *private* (non-default) library context under
-its `?provider=…` property query.
+its `provider=…` property query.
 
 ## Exploring interactively
 
@@ -119,10 +119,16 @@ curl -v --curves HQCKEM192MLKEM768X25519 --cacert /opt/pq/demo/CA.crt https://12
 
 The split is pure configuration. Edit the `alg*-propquery` lines in
 `/opt/pq/ssl/openssl.cnf` (or mount your own over it) to re-route any component
-to any loaded provider — e.g. `alg2-propquery = ?provider=oqsprovider` sources
-ML-KEM-768 from oqsprovider. The providers available to the components are those
-listed in `component-providers` (loaded into the hybrid provider's private
-context). No rebuild is needed.
+to any loaded provider — e.g. `alg2-propquery = provider=default` sources
+ML-KEM-768 from the default provider. The providers available to the components
+are those listed in `component-providers` (loaded into the hybrid provider's
+private context). No rebuild is needed.
+
+The demo uses the strict form `provider=<name>`: if that provider cannot serve
+the component, the group disappears and the run fails. The preference form
+`?provider=<name>` would instead fall back silently to any provider that has
+the component, so the provider that actually serves it would no longer be the
+one the cnf names.
 
 ## The scripts
 
@@ -150,7 +156,7 @@ outcome per tool (exit 0 = every row behaved as listed):
 
 Without the cnf there is no `component-providers` / `alg<N>-propquery`, so every
 component is fetched from the application context with no per-component
-steering. With several providers serving ML-KEM-768 (default, oqsprovider,
+steering. With several providers serving ML-KEM-768 (default and
 wolfProvider), the provider that serves it is not pinned.
 
 ## Caveats

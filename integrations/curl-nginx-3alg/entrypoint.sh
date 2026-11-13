@@ -25,17 +25,22 @@ hr() { printf '\n========== %s ==========\n' "$1"; }
 
 # ---------------------------------------------------------------------------
 # Build the active config, picking the ML-KEM source (default: wolfProvider).
-# Auto-fall back to oqsprovider if the wolfProvider module is not present, so
-# the 3-alg proof still runs even if the wolfProvider build was unavailable.
+# Auto-fall back to the default provider if the wolfProvider module is not
+# present, so the proof still runs (3 algs, but from 2 providers). The strict
+# propquery makes an HP_MLKEM_PROVIDER that cannot serve ML-KEM-768 fail
+# visibly below instead of silently resolving to another provider.
 # ---------------------------------------------------------------------------
 ACTIVE_CNF=/tmp/openssl-active.cnf
 cp "$HYBRID_CNF" "$ACTIVE_CNF"
 MLKEM_PROV="${HP_MLKEM_PROVIDER:-wolfprov}"
 if [ "$MLKEM_PROV" = "wolfprov" ] && [ ! -e "${MODULES}/wolfprov.so" ]; then
-    echo "NOTE: ${MODULES}/wolfprov.so absent -> sourcing ML-KEM-768 from oqsprovider instead"
-    MLKEM_PROV=oqsprovider
+    echo "NOTE: ${MODULES}/wolfprov.so absent -> sourcing ML-KEM-768 from the default provider instead"
+    MLKEM_PROV=default
+    # Also drop it from the private component context: a listed provider that
+    # cannot load keeps the hybrid provider from activating at all.
+    sed -i -E 's/^(component-providers *=.*)[[:space:]]wolfprov\b/\1/' "$ACTIVE_CNF"
 fi
-sed -i "s|^alg2-propquery = .*|alg2-propquery = ?provider=${MLKEM_PROV}|" "$ACTIVE_CNF"
+sed -i "s|^alg2-propquery = .*|alg2-propquery = provider=${MLKEM_PROV}|" "$ACTIVE_CNF"
 
 hr "component -> provider map (from openssl.cnf)"
 echo "  X25519      (alg1) <- default"
@@ -58,6 +63,8 @@ if "$OPENSSL" list -tls-groups 2>/dev/null | grep -i "$GROUP"; then
     echo "  $GROUP: AVAILABLE via hybrid-provider"
 else
     echo "FAIL: $GROUP not advertised even with the hybrid plugin" >&2
+    echo "      (each alg<N>-propquery provider must serve that component;" >&2
+    echo "       ML-KEM-768 here: provider=${MLKEM_PROV})" >&2
     exit 1
 fi
 

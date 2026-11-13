@@ -34,10 +34,12 @@ component-providers = default oqsprovider wolfprov
 component-path      = /opt/pq/lib64/ossl-modules
 
 # --- per-component steering for HQCKEM192MLKEM768X25519 (logical order:
-#     alg1=X25519, alg2=ML-KEM-768, alg3=HQC-192) ---
-alg1-propquery = ?provider=default        # X25519      from the default provider
-alg2-propquery = ?provider=wolfprov       # ML-KEM-768  from wolfProvider
-alg3-propquery = ?provider=oqsprovider    # HQC-192     from oqsprovider
+#     alg1=X25519, alg2=ML-KEM-768, alg3=HQC-192). Strict "provider=", not the
+#     "?provider=" preference: a component the named provider cannot serve must
+#     make the group disappear, not silently resolve to another provider. ---
+alg1-propquery = provider=default         # X25519      from the default provider
+alg2-propquery = provider=wolfprov        # ML-KEM-768  from wolfProvider
+alg3-propquery = provider=oqsprovider     # HQC-192     from oqsprovider
 
 # cede-to-default stays ON (the default): the default provider does not serve
 # HQCKEM192MLKEM768X25519, so nothing is withdrawn.

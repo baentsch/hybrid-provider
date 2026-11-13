@@ -94,8 +94,9 @@ reproducibility — upstream floats it to "latest release" — and must be
 
 A stable oqsprovider cannot supply a standalone HQC KEM, so the 3-alg HQC
 handshake requires oqsprovider `main`. If the wolfProvider build is unavailable
-at run time, the entrypoint automatically sources ML-KEM-768 from oqsprovider
-instead (still a full 3-alg handshake) — see [USAGE.md](USAGE.md).
+at run time, the entrypoint automatically sources ML-KEM-768 from the default
+provider instead (still all 3 algorithms, from 2 providers) — see
+[USAGE.md](USAGE.md).
 
 ## Files
 
