@@ -12,7 +12,7 @@
 # is not polluted by the capability/operability probe that libssl triggers for
 # every *other* advertised group. The decisive trace events are OpenSSL QUERY
 # lines of the form:
-#   QUERY: Non-default library context, Algorithm (MLKEM768 : .), Properties (?provider=wolfprov)
+#   QUERY: Non-default library context, Algorithm (MLKEM768 : .), Properties (provider=wolfprov)
 # i.e. the component fetch in the hybrid's OWN (non-default) libctx under the
 # per-component property query. We extract the resolved provider from those and
 # cross-check it against the alg{1,2,3}-propquery keys in the active openssl.cnf.
@@ -69,7 +69,7 @@ ok=1
 for triple in $comps; do
     alg="${triple%%:*}"; rest="${triple#*:}"; key="${rest%%:*}"; human="${rest#*:}"
     actual=$(grep -E "Non-default library context, Algorithm \(${alg} :" "$TRACE_LOG" \
-             | grep -oE "\?provider=[A-Za-z0-9_]+" | head -1 | cut -d= -f2)
+             | grep -oE "\??provider=[A-Za-z0-9_]+" | head -1 | cut -d= -f2)
     expected=$(grep -E "^[[:space:]]*${key}-propquery" "$CNF" 2>/dev/null \
              | grep -oE "provider=[A-Za-z0-9_]+" | head -1 | cut -d= -f2)
     [ -z "$actual" ]   && actual="<none>"
