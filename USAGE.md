@@ -169,7 +169,18 @@ HQC hybrid groups resolve unambiguously to the hybrid provider while their PQ
 components come from
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) privately.
 `component-path` is required so the provider can locate the component modules in
-its private context. This is verified in-process by `hybrid_compctx_test` and
+its private context.
+
+If any listed provider fails to load, the hybrid provider does not activate at
+all. OpenSSL drops a failed cnf activation without reporting an error; the
+reason (`component-providers: cannot load "<name>"`) shows up only on an
+explicit `OSSL_PROVIDER_load(libctx, "hybrid")`. Also avoid a lone
+`component-providers = default`: OpenSSL reads a provider-section value that
+names a cnf section as a section reference, and `default` is the cnf's implicit
+top section, so the config load fails. Any list with more than one word, or with
+a trailing comma (`default,`), is fine.
+
+This is verified in-process by `hybrid_compctx_test` and
 over separate-process `openssl` `s_server`/`s_client` handshakes (both
 directions, against a pure-[oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
 peer) by `test/hybrid_scenarios.sh tls-compctx`.
