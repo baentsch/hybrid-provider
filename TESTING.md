@@ -345,6 +345,40 @@ The hybrid provider's settings exist only in an `openssl.cnf` (see
 always drives the hybrid side via `OPENSSL_CONF` and passes no `-provider` flags
 for it.
 
+## Code coverage
+
+Line, function and branch coverage of the provider sources (the top-level `*.c`;
+tests are not counted) uses gcov instrumentation and a
+[gcovr](https://gcovr.com) report:
+
+```sh
+pip install gcovr            # or: apt install gcovr
+cmake -S . -B build-cov -DOPENSSL_ROOT_DIR=/path/to/openssl -DHYBRID_COVERAGE=ON
+cmake --build build-cov
+ctest --test-dir build-cov -LE bench      # any subset; counters accumulate
+cmake --build build-cov --target coverage # summary on stdout
+#   -> build-cov/coverage/index.html  (per-file, per-line drill-down)
+#   -> build-cov/coverage.xml         (Cobertura, for CI/IDE tooling)
+cmake --build build-cov --target coverage-reset  # zero counters for a fresh run
+```
+
+A fresh build dir has no oqsprovider. Link it in first with
+`BUILD_DIR=build-cov ./test/setup_oqs_interop.sh` (or symlink an existing
+`oqsprovider.so` into it). Without it, the oqsprovider-backed tests skip and the
+report silently understates coverage by several points.
+
+The CLI scenario tests count too: the module links libgcov statically, so the
+uninstrumented `openssl` binary records coverage when it loads it. Counters are
+updated atomically (`-fprofile-update=atomic`) because the concurrency tests hit
+the same code from several threads. `HYBRID_COVERAGE` needs `-O0`, so it cannot
+be combined with `HYBRID_SANITIZE`, `HYBRID_TSAN` or `HYBRID_HARDEN`. For a clang
+build, point gcovr at the matching tool with
+`-DHYBRID_GCOV_EXECUTABLE="llvm-cov gcov"`.
+
+CI's `coverage` leg runs this post-merge and on `workflow_dispatch`. It writes
+the summary to the job summary and uploads the HTML report as the
+`coverage-report` artifact. The leg only reports and enforces no threshold.
+
 ## Benchmark
 
 `hybrid_bench` times `X25519MLKEM768` (keygen, encapsulate, decapsulate) across

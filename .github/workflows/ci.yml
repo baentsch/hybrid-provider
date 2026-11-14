@@ -344,6 +344,118 @@ jobs:
           # dedicated `bench` job's responsibility.
           ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -E 'hybrid_scenarios_' -LE bench
 
+  # ---------------------------------------------------------------- coverage ---
+  # Line/branch/function coverage of the provider sources (HYBRID_COVERAGE=ON,
+  # gcov + gcovr). Same pinned toolchain as the sanitize leg; runs the whole suite
+  # incl. the CLI scenario tests (the uninstrumented openssl binary records
+  # coverage too: libgcov is linked into the module). -LE bench: timing guards are
+  # meaningless at -O0 and add no paths the functional suite misses. Reports are
+  # informational, not a gate: the text summary goes to the job summary and the
+  # HTML drill-down + Cobertura XML are uploaded as the `coverage-report` artifact.
+  #
+  # POST-MERGE (push to main), like sanitize/tsan/bench, plus on demand via
+  # workflow_dispatch (e.g. to measure a feature branch before merging).
+  coverage:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    name: Code coverage (latest OpenSSL)
+    runs-on: ubuntu-latest
+    env:
+      PREFIX: ${{ github.workspace }}/.local
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
+      OQS_INSTALL: ${{ github.workspace }}/oqs-install
+      LIBOQS_REF: "0.16.0"
+      # incl. oqsprovider #802: mlkem512 rename (SecP256r1MLKEM512) + code points
+      OQSPROV_REF: "72e7dae5aab022167aa7ae8f5afdb9667d848104"
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build gcovr
+
+      - name: Resolve OpenSSL release ref
+        id: ossl
+        run: |
+          set -euo pipefail
+          REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl "openssl-*" \
+                | awk -F/ '{print $NF}' | grep -E "^openssl-[0-9]+\\.[0-9]+\\.[0-9]+$" \
+                | sort -V | tail -1)
+          SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL: $REF ($SHA)"
+
+      # Same split caches (and keys) as the sanitize leg, so they are shared.
+      - name: Cache OpenSSL
+        id: cache-ossl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
+
+      - name: Build OpenSSL
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Cache liboqs (pinned)
+        id: cache-liboqs
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OQS_INSTALL }}
+          key: liboqs-${{ runner.os }}-${{ env.LIBOQS_REF }}
+
+      - name: Build liboqs (pinned)
+        if: steps.cache-liboqs.outputs.cache-hit != 'true'
+        run: ONLY_LIBOQS=1 LIBOQS_PREFIX="$OQS_INSTALL" ./test/setup_oqs_interop.sh
+
+      - name: Stage OpenSSL + liboqs into .local
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFIX"
+          cp -a "$OSSL_INSTALL"/. "$PREFIX"/
+          cp -a "$OQS_INSTALL"/. "$PREFIX"/
+
+      - name: Configure hybrid provider (coverage)
+        run: cmake -S . -B build -DOPENSSL_ROOT_DIR="$PREFIX" -DHYBRID_KEM_ENCODERS=ON -DHYBRID_COVERAGE=ON
+
+      - name: Cache oqs-provider (pinned)
+        id: cache-oqsp
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.interop/oqs-provider
+          key: oqsp-${{ runner.os }}-ossl-${{ steps.ossl.outputs.sha }}-liboqs-${{ env.LIBOQS_REF }}-oqsp-${{ env.OQSPROV_REF }}
+
+      - name: Build oqs-provider (pinned)
+        run: OPENSSL_PREFIX="$PREFIX" BUILD_DIR="$PWD/build" ./test/setup_oqs_interop.sh
+
+      - name: Build hybrid provider
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test — full suite (instrumented)
+        working-directory: build
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$PREFIX/lib64"
+          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -LE bench
+
+      - name: Coverage report
+        run: |
+          set -euo pipefail
+          cmake --build build --target coverage
+          { echo '## Provider code coverage'; echo '```'; cat build/coverage/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            build/coverage/
+            build/coverage.xml
+          retention-days: 30
+
   # ------------------------------------------------------------------- bench ---
   # Composition-overhead regression guard. The three benchmarks (hybrid_bench,
   # composite_sig_bench, composite_kem_bench) each assert a MINIMUM-latency ratio
