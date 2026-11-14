@@ -1084,6 +1084,13 @@ schedule cron and reuse the create-or-comment/auto-close pattern from
 same commit-attribution reason as the sanitize leg.) Every algorithm stays
 *functionally* covered on the PR gate; only the timing guard moves off it.
 
+A **coverage** leg builds with `-DHYBRID_COVERAGE=ON` (gcov + gcovr) and runs
+the functional suite, CLI scenarios included. It publishes line, function and
+branch coverage of the provider sources as a job summary and an HTML/Cobertura
+artifact (see [TESTING.md](TESTING.md#code-coverage)). It is informational and
+has no threshold. It runs post-merge, like the other instrumented legs, and on
+`workflow_dispatch` to measure a branch before merging.
+
 A **fuzz** leg exercises the decoder attack surface (issue #41): a bounded,
 coverage-guided libFuzzer session (`CC=clang`, `-DHYBRID_FUZZ=ON`) drives raw
 bytes through the untrusted-key-material decode paths — `hybrid_decode()` (SPKI),

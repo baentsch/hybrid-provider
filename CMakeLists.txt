@@ -52,6 +52,30 @@ if(HYBRID_TSAN)
     add_link_options(-fsanitize=thread)
 endif()
 
+# Line/branch coverage of the provider sources. GCC gcov instrumentation
+# (--coverage) of the provider module AND the tests; the report (target
+# `coverage`, end of this file) is filtered to the provider sources only. The
+# .so links libgcov statically, so the uninstrumented openssl binary used by the
+# CLI scenario tests still records coverage when it loads the module; .gcda files
+# are flushed at dlclose/process exit. -O0 keeps line attribution exact. GCC only:
+# clang's --coverage emits gcov data from a different gcov version, which gcovr
+# then needs pointed at `llvm-cov gcov` (HYBRID_GCOV_EXECUTABLE). See TESTING.md
+# "Code coverage". -fprofile-update=atomic: the threads/parallel tests update
+# the same counters concurrently, and non-atomic increments then corrupt them
+# (gcov reports negative branch counts and gcovr refuses the data).
+option(HYBRID_COVERAGE "Build provider + tests with gcov coverage instrumentation" OFF)
+if(HYBRID_COVERAGE)
+    if(MSVC)
+        message(FATAL_ERROR "HYBRID_COVERAGE is GCC/Clang only")
+    endif()
+    if(HYBRID_SANITIZE OR HYBRID_TSAN OR HYBRID_HARDEN)
+        message(FATAL_ERROR "HYBRID_COVERAGE is mutually exclusive with "
+                "HYBRID_SANITIZE/HYBRID_TSAN/HYBRID_HARDEN (it needs -O0)")
+    endif()
+    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
+    add_link_options(--coverage)
+endif()
+
 # Compiler/linker hardening. Enables the "compiler defenses" the OpenSSF
 # Security-Focused Guide for AI Code Assistant Instructions calls for in its
 # C/C++ guidance (stack canaries, FORTIFY_SOURCE, DEP/NX) — see CONTRIBUTING.md
@@ -942,4 +966,47 @@ if(HYBRID_SANITIZE)
         set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
                      "LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/test/lsan.supp")
     endforeach()
+endif()
+
+# Coverage report (HYBRID_COVERAGE=ON). Run the suite first, then build target
+# `coverage`; .gcda counters accumulate across ctest runs until `coverage-reset`.
+# Only the provider sources (top-level *.c) are reported: the tests, the
+# reference openssl/ checkout and the build tree are excluded. Output:
+# coverage/index.html (per-file drill-down), coverage.xml (Cobertura, for CI
+# tooling) and a text summary on stdout.
+if(HYBRID_COVERAGE)
+    find_program(HYBRID_GCOVR gcovr)
+    set(HYBRID_GCOV_EXECUTABLE "gcov" CACHE STRING
+        "gcov tool gcovr invokes (e.g. \"llvm-cov gcov\" for a clang build)")
+    if(HYBRID_GCOVR)
+        set(_hp_cov_dir "${CMAKE_BINARY_DIR}/coverage")
+        add_custom_target(coverage
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_hp_cov_dir}"
+            COMMAND ${HYBRID_GCOVR}
+                    --root "${CMAKE_SOURCE_DIR}"
+                    --object-directory "${CMAKE_BINARY_DIR}"
+                    --gcov-executable "${HYBRID_GCOV_EXECUTABLE}"
+                    --filter "${CMAKE_SOURCE_DIR}/[^/]+\\.c$"
+                    --exclude-unreachable-branches
+                    --print-summary
+                    --txt "${_hp_cov_dir}/summary.txt"
+                    --html-details "${_hp_cov_dir}/index.html"
+                    --cobertura "${CMAKE_BINARY_DIR}/coverage.xml"
+            COMMAND ${CMAKE_COMMAND} -E cat "${_hp_cov_dir}/summary.txt"
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+            COMMENT "Coverage report -> ${_hp_cov_dir}/index.html"
+            VERBATIM)
+    else()
+        add_custom_target(coverage
+            COMMAND ${CMAKE_COMMAND} -E echo
+                    "coverage: gcovr not found (pip install gcovr), re-run cmake"
+            COMMAND ${CMAKE_COMMAND} -E false
+            VERBATIM)
+    endif()
+    # Zero the counters (delete every .gcda) before a fresh measurement.
+    add_custom_target(coverage-reset
+        COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_BINARY_DIR}
+                -P "${CMAKE_SOURCE_DIR}/cmake/coverage_reset.cmake"
+        COMMENT "Deleting .gcda coverage counters"
+        VERBATIM)
 endif()
