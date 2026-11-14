@@ -456,6 +456,19 @@ jobs:
             build/coverage.xml
           retention-days: 30
 
+      # Publish to coveralls.io for the trend/badge. Main-branch pushes only (a
+      # workflow_dispatch run on a feature branch keeps its numbers in the artifact
+      # above). Third-party action, so pinned by commit SHA. Never fails the job:
+      # a Coveralls outage must not redden main.
+      - name: Upload to Coveralls
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329  # v2.3.8
+        with:
+          file: build/coverage.xml
+          format: cobertura
+          fail-on-error: false
+
   # ------------------------------------------------------------------- bench ---
   # Composition-overhead regression guard. The three benchmarks (hybrid_bench,
   # composite_sig_bench, composite_kem_bench) each assert a MINIMUM-latency ratio

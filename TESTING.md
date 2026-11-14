@@ -378,6 +378,9 @@ build, point gcovr at the matching tool with
 CI's `coverage` leg runs this post-merge and on `workflow_dispatch`. It writes
 the summary to the job summary and uploads the HTML report as the
 `coverage-report` artifact. The leg only reports and enforces no threshold.
+Post-merge runs also upload `coverage.xml` to
+[Coveralls](https://coveralls.io/github/baentsch/hybrid-provider) for the trend
+and badge. That upload never fails the job.
 
 ## Benchmark
 
