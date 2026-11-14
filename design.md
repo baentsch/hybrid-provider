@@ -1029,7 +1029,7 @@ EVP glue for memory safety (issue #42): it builds the provider and every
 in-process test with AddressSanitizer + UndefinedBehaviorSanitizer (LeakSanitizer
 via ASan) against the latest OpenSSL and runs the suite under them
 (`-DHYBRID_SANITIZE=ON`). OpenSSL/liboqs/oqsprovider are not instrumented, so
-library-init leaks are filtered via `test/lsan.supp`; the CLI scenario tests are
+liboqs/oqsprovider init leaks are filtered via `test/lsan.supp`; the CLI scenario tests are
 excluded because the uninstrumented `openssl` binary cannot dlopen an instrumented
 provider. It runs **post-merge only** (on push to `main`), not on PRs: the
 instrumented full-suite run is expensive, so it is kept off the PR critical path
@@ -1037,27 +1037,19 @@ for fast turnaround while still guarding every merge — and, unlike a scheduled
 run, a failure is tied to a specific merge commit and needs no separate tracking
 issue.
 
-Two facts about that leg's leak detection are worth stating precisely, because
-they shape how it catches a *future* provider leak. First, CI runs LSan with the
-fast (frame-pointer) unwinder, so a leak's allocation stack is captured only as
-`[malloc, CRYPTO_malloc]`; since all provider heap goes through `OPENSSL_malloc`,
-the `leak:libcrypto` rule in `test/lsan.supp` is a broad catch-all that would also
-mask a leak in the provider's *own* code. Second, a deep-unwind audit
-(`fast_unwind_on_malloc=0`, attributing each leaked block to its direct allocator)
-across the whole suite shows the only provider-owned leaks are three per-instance
-provctx allocations (the cede runtime tables, the ceded-name array and the provctx
-struct) — all freed by `hybrid_teardown()` and surfacing only because most tests
-free their libctx without first unloading the provider, which defers teardown past
-LSan's end-of-run check. No key/operation/encode/sign path leaks exist. The
-general leg therefore proves *absence of use-after-free / overflow / double-free*
-(which suppressions do not touch) but does **not**, by itself, prove leak-freedom.
-That guarantee comes from `hybrid_teardown()` plus a dedicated leak test with
-teeth, `hybrid_leakcheck_test`: it exercises and frees every provider allocation
-path across the whole inventory, unloads every provider before freeing the libctx
-(so teardown runs), and is pinned to `test/lsan_leakcheck.supp`, which omits
-`leak:libcrypto`. A leak newly introduced in any exercised provider path is
-therefore unmasked and fails that test — demonstrated by injecting a deliberate
-leak, which `hybrid_leakcheck_test` catches while the general leg masks it.
+Its leak detection is as strict as the dependencies allow. Every test runs with
+`test/lsan.supp`, which suppresses only the un-instrumented PQ dependencies'
+init state (`liboqs`, `oqsprovider`) and has no `leak:libcrypto` rule. CI runs
+LSan with the fast (frame-pointer) unwinder, so a leak's stack is captured only
+as `[malloc, CRYPTO_malloc]`; since all provider heap goes through
+`OPENSSL_malloc`, such a rule would also mask a leak in the provider's own code.
+Leaving it out works because every test is unload-clean: it unloads the
+providers it loaded before freeing their libctx (`test/prov_util.h`), so
+`hybrid_teardown()` and the libctx's method-store cleanup run before LSan's
+end-of-run check rather than at `OPENSSL_cleanup`. A leak in provider code
+therefore fails whichever test reaches it. `hybrid_leakcheck_test` makes sure
+every allocation path is reached: it exercises and frees keygen, import/export,
+match, sign/verify, encaps/decaps and encode/decode across the whole inventory.
 
 A **tsan** leg guards thread-safety (issue #43): it builds the provider and tests
 with ThreadSanitizer (`-DHYBRID_TSAN=ON`, mutually exclusive with the ASan leg)
@@ -1154,8 +1146,8 @@ out from under another instance. Operation contexts (`freectx`) hold only borrow
 key pointers, so cancelling an operation mid-flight and freeing the context is
 safe. `hybrid_leakcheck_test` is the automated guard for these free paths: it
 runs keygen/free, import/export, sign/verify, encaps/decaps and encode/decode for
-the whole inventory and asserts leak-freedom with the `leak:libcrypto` catch-all
-removed (see the sanitize-leg discussion above). After `fork()` the inherited
+the whole inventory under the suite's narrow LeakSanitizer suppressions (see the
+sanitize-leg discussion above). After `fork()` the inherited
 state is immutable per-instance memory, usable
 in the child without re-initialization; `hybrid_threads_test` includes a
 fork-then-operate leg proving this.

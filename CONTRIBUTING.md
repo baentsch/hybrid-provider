@@ -51,6 +51,12 @@ project's "not for production use" status (see [SECURITY.md](SECURITY.md)).
   here.
 - Keep quirks documented with short inline comments and a source reference,
   rather than long prose elsewhere.
+- Tests load providers with `hybrid_test_load()` and free each libctx with
+  `hybrid_test_libctx_free()` ([test/prov_util.h](test/prov_util.h)) on every
+  exit, SKIP included. That keeps them unload-clean, which the sanitizer build's
+  narrow LeakSanitizer suppressions rely on (see [TESTING.md](TESTING.md)).
+  Temporary files come from [test/tmp_util.h](test/tmp_util.h), never a
+  hardcoded directory.
 
 ### Compile-warning policy
 

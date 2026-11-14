@@ -42,6 +42,7 @@
 #include <openssl/err.h>
 #include "hybrid_prov.h"      /* HYBRID_KEM/SIG tables + origin side-tables (#78) */
 #include "composite_prov.h"   /* COMPOSITE_SIG_LIST master table (always compiled) */
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 static int tests = 0, passed = 0, failed = 0, skipped = 0;
 
@@ -217,15 +218,16 @@ int main(void)
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
 
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-        || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+        || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid providers\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
-    if (OSSL_PROVIDER_load(ctx, "oqsprovider") == NULL) {
+    if (hybrid_test_load(ctx, "oqsprovider") == NULL) {
         printf("oqsprovider unavailable -- SKIPPING drop-in replacement test\n");
         printf("(run test/setup_oqs_interop.sh to build the interop peer)\n");
-        OSSL_LIB_CTX_free(ctx);
+        hybrid_test_libctx_free(ctx);
         return 0;
     }
 
@@ -244,7 +246,7 @@ int main(void)
                "honored\n");
         printf("(oqsprovider not built with the cede patch, or the patch drifted "
                "off upstream)\n");
-        OSSL_LIB_CTX_free(ctx);
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
     printf("  precondition: oqsprovider cedes all hybrids ................ OK\n");
@@ -253,7 +255,7 @@ int main(void)
      * (FrodoKEM/Falcon exist only in oqsprovider, at every OpenSSL version). */
     if (!provider_serves(ctx, "frodo640aes", "provider=oqsprovider", 1)) {
         printf("oqsprovider no longer serves standalone PQ (frodo640aes) -- FAIL\n");
-        OSSL_LIB_CTX_free(ctx);
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
     printf("  precondition: oqsprovider still serves standalone PQ ...... OK\n\n");
@@ -307,6 +309,6 @@ int main(void)
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }

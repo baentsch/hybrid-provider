@@ -14,9 +14,8 @@
  * freeing its libctx (via drop() below). OSSL_LIB_CTX_free alone does NOT run a
  * provider's teardown while the caller still holds the OSSL_PROVIDER_load
  * reference, so unloading is what lets hybrid_teardown free the provctx and its
- * per-instance cede tables. Doing this keeps the test leak-clean under LSan on
- * its own merit — it does not lean on the broad libcrypto module suppression in
- * test/lsan.supp to hide the provider's own allocations.
+ * per-instance cede tables, and keeps the test leak-clean under LSan with the
+ * suite's narrow test/lsan.supp.
  *
  * Phases (mapping the issue's acceptance bullets):
  *   A. Merely activating the provider must not break SSL_CTX_new / TLS init,

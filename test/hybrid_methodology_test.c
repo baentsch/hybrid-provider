@@ -35,6 +35,7 @@
 #include <openssl/params.h>
 #include <openssl/provider.h>
 #include <openssl/err.h>
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 static int tests, passed, failed, skipped;
 
@@ -126,7 +127,6 @@ static void check_conf_params_load(const char *mods)
 {
     OSSL_LIB_CTX *ctx_no = OSSL_LIB_CTX_new();
     OSSL_LIB_CTX *ctx_def = OSSL_LIB_CTX_new();
-    OSSL_PROVIDER *hyb_no = NULL, *hyb_def = NULL;
     OSSL_PARAM params[2];
     int served_no, served_def;
 
@@ -140,9 +140,9 @@ static void check_conf_params_load(const char *mods)
     params[0] = OSSL_PARAM_construct_utf8_string(
                     "cede-to-default", (char *)"no", 0);
     params[1] = OSSL_PARAM_construct_end();
-    if (OSSL_PROVIDER_load(ctx_no, "default") == NULL
-            || (hyb_no = OSSL_PROVIDER_load_ex(ctx_no, "hybrid", params))
-                   == NULL) {
+    if (hybrid_test_load(ctx_no, "default") == NULL
+            || hybrid_test_track(ctx_no, OSSL_PROVIDER_load_ex(ctx_no, "hybrid",
+                                                               params)) == NULL) {
         printf("FAIL (load_ex)\n");
         ERR_print_errors_fp(stdout);
         failed++;
@@ -154,8 +154,8 @@ static void check_conf_params_load(const char *mods)
      * withdraws the MLX group the default provider already serves. */
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx_def, mods);
-    if (OSSL_PROVIDER_load(ctx_def, "default") == NULL
-            || (hyb_def = OSSL_PROVIDER_load(ctx_def, "hybrid")) == NULL) {
+    if (hybrid_test_load(ctx_def, "default") == NULL
+            || hybrid_test_load(ctx_def, "hybrid") == NULL) {
         printf("FAIL (control load)\n");
         ERR_print_errors_fp(stdout);
         failed++;
@@ -175,10 +175,8 @@ static void check_conf_params_load(const char *mods)
         failed++;
     }
 end:
-    OSSL_PROVIDER_unload(hyb_no);
-    OSSL_PROVIDER_unload(hyb_def);
-    OSSL_LIB_CTX_free(ctx_no);
-    OSSL_LIB_CTX_free(ctx_def);
+    hybrid_test_libctx_free(ctx_no);
+    hybrid_test_libctx_free(ctx_def);
 }
 
 int main(void)
@@ -192,9 +190,10 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+            || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid providers\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
     ERR_clear_error();
@@ -212,6 +211,6 @@ int main(void)
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }

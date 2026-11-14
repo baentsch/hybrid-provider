@@ -18,12 +18,10 @@ endif()
 # (LeakSanitizer rides along with ASan on Linux), so a plain `ctest` run exercises
 # the whole in-process suite under the sanitizers. Set before any target is
 # defined so the flags apply globally. OpenSSL/liboqs/oqsprovider are NOT
-# instrumented; their library-init leaks are filtered in CI via test/lsan.supp.
-# Note test/lsan.supp's leak:libcrypto rule is a broad catch-all (all provider
-# heap routes through CRYPTO_malloc), so the general leg proves absence of UB /
-# use-after-free / overflow but does NOT by itself catch a provider LEAK — that is
-# the job of hybrid_leakcheck_test (below), which runs without leak:libcrypto. See
-# the header of test/lsan.supp for the full rationale. The CLI scenario tests
+# instrumented; every test gets LSAN_OPTIONS pointing at test/lsan.supp (end of
+# this file), which suppresses only the PQ dependencies' init state, so a leak in
+# provider code fails whichever test reaches it. See the header of test/lsan.supp
+# for why that needs every test to be unload-clean. The CLI scenario tests
 # shell out to the (uninstrumented) openssl binary, which cannot dlopen an
 # instrumented provider, so CI excludes them from this leg.
 option(HYBRID_SANITIZE "Build provider + tests with ASan/UBSan/LSan (issue #42)" OFF)
@@ -817,11 +815,9 @@ set_tests_properties(hybrid_adverse_test PROPERTIES
 # Exercises and frees every provider allocation path (keygen/free, import/export,
 # match, sign/verify, encaps/decaps, encode/decode) across the whole inventory,
 # then unloads every provider before freeing the libctx (unload-clean) so teardown
-# runs before LSan's check. Because it is unload-clean it is run WITHOUT the broad
-# leak:libcrypto catch-all: its LSAN_OPTIONS is pinned to lsan_leakcheck.supp,
-# which suppresses only the un-instrumented PQ dependencies' one-time init state.
-# This overrides the suite-wide LSAN_OPTIONS the CI sanitize leg exports, so a
-# leak newly introduced in provider code surfaces here unmasked and fails.
+# runs before LSan's check. Every test is unload-clean and runs under the same
+# narrow test/lsan.supp; this one is the guard that systematically reaches every
+# allocation path, so a leak newly introduced in provider code fails it.
 add_executable(hybrid_leakcheck_test test/hybrid_leakcheck_test.c)
 target_include_directories(hybrid_leakcheck_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
 target_link_libraries(hybrid_leakcheck_test PRIVATE OpenSSL::Crypto)
@@ -830,7 +826,7 @@ if(HYBRID_COMPOSITE)
 endif()
 add_test(NAME hybrid_leakcheck_test COMMAND hybrid_leakcheck_test)
 set_tests_properties(hybrid_leakcheck_test PROPERTIES
-    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR};LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/test/lsan_leakcheck.supp"
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     TIMEOUT 300
 )
 
@@ -937,3 +933,13 @@ foreach(_t ${_hp_tests})
         set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "HYBRID_CEDE_TO_DEFAULT=0")
     endif()
 endforeach()
+
+# Sanitizer build: every test runs LeakSanitizer with test/lsan.supp (only the
+# un-instrumented PQ dependencies' init state is suppressed). Set here rather than
+# by the caller so a local `ctest` reports exactly what CI does.
+if(HYBRID_SANITIZE)
+    foreach(_t ${_hp_tests})
+        set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                     "LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/test/lsan.supp")
+    endforeach()
+endif()

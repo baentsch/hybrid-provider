@@ -34,6 +34,7 @@
 #include <openssl/params.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 /* --- discovery (mirrors the pre-constants hybrid_keymgmt.c logic) --------- */
 
@@ -265,13 +266,13 @@ int main(int argc, char **argv)
         return 1;
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(lc, mods);
-    OSSL_PROVIDER_load(lc, "default");
-    OSSL_PROVIDER_load(lc, "oqsprovider");   /* best-effort: enables the oqs-only rows */
+    hybrid_test_load(lc, "default");
+    hybrid_test_load(lc, "oqsprovider");   /* best-effort: enables the oqs-only rows */
     ERR_clear_error();
 
     if (argc > 1 && strcmp(argv[1], "emit") == 0) {
         emit(lc);
-        OSSL_LIB_CTX_free(lc);
+        hybrid_test_libctx_free(lc);
         return 0;
     }
 
@@ -280,6 +281,6 @@ int main(int argc, char **argv)
     verify(lc);
     printf("checked %d hybrids, skipped %d (components unavailable), %d mismatches\n",
            checked, skipped, fails);
-    OSSL_LIB_CTX_free(lc);
+    hybrid_test_libctx_free(lc);
     return fails == 0 ? 0 : 1;
 }

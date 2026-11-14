@@ -138,27 +138,28 @@ cmake --build build-tsan --target hybrid-provider hybrid_threads_test
 # It also runs in the full ASan/UBSan/LSan suite (-DHYBRID_SANITIZE=ON).
 ```
 
-### Leak detection with teeth (`hybrid_leakcheck_test`)
+### Leak detection
 
-The general `-DHYBRID_SANITIZE` leg runs LeakSanitizer with the fast unwinder, so
-every leak stack is captured only as `[malloc, CRYPTO_malloc]`; the suite-wide
-`test/lsan.supp` then matches that `libcrypto` frame and masks essentially any
-leak — including a **future** unfreed allocation in the provider's own code
-(all provider heap goes through `OPENSSL_malloc`). That leg therefore cannot, by
-itself, catch a newly introduced provider leak (it still catches use-after-free /
-overflow / double-free, which suppressions do not affect).
+In a `-DHYBRID_SANITIZE=ON` build, CMake gives every test `LSAN_OPTIONS` pointing
+at `test/lsan.supp`, so a plain `ctest` reports leaks exactly as CI does. That
+file suppresses only the un-instrumented PQ dependencies' one-time init state
+(`liboqs`, `oqsprovider`). It has no `leak:libcrypto` rule: all provider heap
+goes through `OPENSSL_malloc`, so such a rule would mask a leak in the
+provider's own code too.
 
-`hybrid_leakcheck_test` closes that gap. It exercises **and frees** every
-provider allocation path — keygen/free, raw import/export, `match`, sign/verify,
-encaps/decaps, encode/decode — across the whole inventory (hybrid + composite,
-each algorithm self-skipping when inoperable), then **unloads every provider
-before freeing the libctx** so teardown runs before LSan's check. Because it is
-unload-clean it is pinned (via CMake `ENVIRONMENT`) to run against
-`test/lsan_leakcheck.supp`, which suppresses only the un-instrumented PQ
-dependencies and deliberately **omits** `leak:libcrypto`. A leak newly introduced
-in any exercised provider path therefore surfaces unmasked and fails this test —
-verified by injecting a deliberate leak, which this test catches while the
-suite-wide leg masks it.
+This needs every test to be **unload-clean**. `OSSL_LIB_CTX_free` does not drop
+the reference `OSSL_PROVIDER_load` returned, so a provider still held that way is
+torn down only at `OPENSSL_cleanup`, after LeakSanitizer's check, and all it holds
+is reported as leaked. Tests therefore load through `hybrid_test_load()` and free
+each libctx with `hybrid_test_libctx_free()` (`test/prov_util.h`), which unloads
+that libctx's providers first.
+
+`hybrid_leakcheck_test` is the systematic guard. It exercises **and frees**
+every provider allocation path (keygen/free, raw import/export, `match`,
+sign/verify, encaps/decaps, encode/decode) across the whole inventory (hybrid +
+composite, each algorithm self-skipping when inoperable). A leak newly
+introduced in any of those paths fails it, and fails any other test that reaches
+the same path.
 
 ### Drop-in replacement over a PQ-only oqsprovider (`hybrid_replace_test`)
 

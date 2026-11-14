@@ -36,6 +36,7 @@
 #include <openssl/evp.h>
 #include <openssl/provider.h>
 #include "hybrid_prov.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -197,9 +198,10 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+            || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid providers\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
 
@@ -211,7 +213,7 @@ int main(void)
 
     missing = dflt_kem.missing;
 
-    if (OSSL_PROVIDER_load(ctx, "oqsprovider") == NULL) {
+    if (hybrid_test_load(ctx, "oqsprovider") == NULL) {
         printf("oqsprovider unavailable -- SKIPPING oqsprovider coverage guard\n");
     } else {
         printf("oqsprovider hybrid coverage guard\n");
@@ -225,6 +227,6 @@ int main(void)
         missing += oqs_kem.missing + oqs_sig.missing;
     }
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return missing == 0 ? 0 : 1;
 }

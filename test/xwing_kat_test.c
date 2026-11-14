@@ -52,6 +52,7 @@
 #include <openssl/provider.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"   /* HYBRID_XWING_SS_LEN + hybrid_kem_sizes[] cross-check */
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 /*
  * The constants below hardcode X-Wing's exact components (ML-KEM-768 + X25519).
@@ -370,14 +371,15 @@ int main(int argc, char **argv)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+            || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid providers\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
     /* oqsprovider is optional: it supplies ML-KEM-768 below 3.5. Ignore load
      * failure (default-native ML-KEM covers 3.5+). */
-    (void)OSSL_PROVIDER_load(ctx, "oqsprovider");
+    hybrid_test_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     printf("X-Wing KAT interop vs draft-connolly-cfrg-xwing-kem-11 reference vectors\n");
@@ -387,7 +389,7 @@ int main(int argc, char **argv)
      * not available here — skip, do not fail. */
     if (!xwing_available(ctx)) {
         printf("SKIP (X-Wing unavailable: no ML-KEM-768 from default or oqsprovider)\n");
-        OSSL_LIB_CTX_free(ctx);
+        hybrid_test_libctx_free(ctx);
         return 0;
     }
 
@@ -404,6 +406,7 @@ int main(int argc, char **argv)
                 || X25519_PRV != xw->comp[0].prv) {
             fprintf(stderr, "KAT size constants disagree with "
                             "hybrid_kem_sizes[xwing] — update them together\n");
+            hybrid_test_libctx_free(ctx);
             return 1;
         }
     }
@@ -411,11 +414,13 @@ int main(int argc, char **argv)
     nkeys = load_keys(keyfile, sks, blobs, MAX_VECTORS);
     if (nkeys < 0) {
         fprintf(stderr, "cannot open expanded-key oracle: %s\n", keyfile);
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
 
     if ((f = fopen(katfile, "r")) == NULL) {
         fprintf(stderr, "cannot open KAT file: %s\n", katfile);
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
     while ((n = getline(&line, &cap, f)) > 0) {
@@ -441,6 +446,6 @@ int main(int argc, char **argv)
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }

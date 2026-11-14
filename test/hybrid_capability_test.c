@@ -24,6 +24,7 @@
 #include <openssl/params.h>
 #include <openssl/core_names.h>
 #include "hybrid_prov.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 /* TLS-SIGALG capability params are OpenSSL 3.2+; on 3.0/3.1 only TLS-GROUP
  * (hybrid KEM) parity is checked. Feature-test on the capability param name
@@ -278,7 +279,7 @@ static void enum_hybrid(OSSL_LIB_CTX *ctx, ADVSET *groups, ADVSET *sigs)
 
     groups->n = 0;
     sigs->n = 0;
-    if ((h = OSSL_PROVIDER_load(ctx, "hybrid")) == NULL)
+    if ((h = hybrid_test_load(ctx, "hybrid")) == NULL)
         return;
     OSSL_PROVIDER_get_capabilities(h, "TLS-GROUP", collect_set, groups);
 #ifdef HYBRID_HAVE_TLS_SIGALG
@@ -296,10 +297,11 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    dflt = OSSL_PROVIDER_load(ctx, "default");
-    oqs = OSSL_PROVIDER_load(ctx, "oqsprovider");
+    dflt = hybrid_test_load(ctx, "default");
+    oqs = hybrid_test_load(ctx, "oqsprovider");
     if (dflt == NULL) {
         fprintf(stderr, "cannot load default provider\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
 
@@ -439,9 +441,9 @@ int main(void)
             OSSL_PROVIDER_set_default_search_path(actx, mods);
             OSSL_PROVIDER_set_default_search_path(dctx, mods);
         }
-        OSSL_PROVIDER_load(actx, "default");
-        OSSL_PROVIDER_load(actx, "oqsprovider");     /* may be absent; that's fine */
-        OSSL_PROVIDER_load(dctx, "default");
+        hybrid_test_load(actx, "default");
+        hybrid_test_load(actx, "oqsprovider");     /* may be absent; that's fine */
+        hybrid_test_load(dctx, "default");
         enum_hybrid(actx, &ag, &as);
         enum_hybrid(dctx, &dg, &ds);
 
@@ -519,8 +521,8 @@ int main(void)
         check_sig_operability(actx, &as, "default+oqs", &tests, &passed, &failed);
         check_sig_operability(dctx, &ds, "default-only", &tests, &passed, &failed);
 #endif
-        OSSL_LIB_CTX_free(dctx);
-        OSSL_LIB_CTX_free(actx);
+        hybrid_test_libctx_free(dctx);
+        hybrid_test_libctx_free(actx);
     }
 
     /* Buffer-safety: no advertised name was truncated into the capture buffers,
@@ -536,6 +538,6 @@ int main(void)
     printf("\nResults: %d/%d matched, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }

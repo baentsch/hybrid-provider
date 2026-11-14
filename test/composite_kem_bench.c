@@ -29,6 +29,7 @@
 #include <openssl/err.h>
 #include "../composite_kem_prov.h"
 #include "bench_util.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 #define KEYGEN_MIN_ITERS 2
 #define KEYGEN_MAX_ITERS 50
@@ -165,12 +166,13 @@ int main(int argc, char **argv)
     }
     bench_set_budget_ms(g_budget_ms);       /* shared with the guard timers */
     if (ctx == NULL
-            || OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+            || hybrid_test_load(ctx, "default") == NULL
+            || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "provider load failed\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
-    OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier */
+    hybrid_test_load(ctx, "oqsprovider");   /* optional: experimental tier */
 
     /*
      * Part 1 (informational, not asserted): the per-algorithm timing + size
@@ -247,6 +249,6 @@ int main(int argc, char **argv)
                    guard_failures);
     }
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return guard_failures == 0 ? 0 : 1;
 }

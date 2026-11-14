@@ -31,6 +31,7 @@
 #include <openssl/rand.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 /* The OSSL_DISPATCH terminator is spelled out as { 0, NULL } rather than via the
  * OSSL_DISPATCH_END convenience macro, which only exists from OpenSSL 3.2 — this
@@ -725,13 +726,14 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+            || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid providers\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
     /* Optional: enables Frodo/BIKE/HQC and the oqs-only sig bases. */
-    OSSL_PROVIDER_load(ctx, "oqsprovider");
+    hybrid_test_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     printf("hybrid EVP_PKEY parameter round-trip (full inventory)\n");
@@ -789,6 +791,6 @@ int main(void)
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }

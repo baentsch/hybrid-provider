@@ -39,6 +39,7 @@
 #include <openssl/err.h>
 #include "hybrid_prov.h"
 #include "hybrid_asn1_compat.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"
 #endif
@@ -329,12 +330,13 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+            || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid providers\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
-    OSSL_PROVIDER_load(ctx, "oqsprovider");
+    hybrid_test_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     printf("decoder robustness: external + malformed inputs\n");
@@ -360,6 +362,6 @@ int main(void)
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }

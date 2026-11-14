@@ -28,6 +28,7 @@
 #include <openssl/decoder.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"   /* HYBRID_KEM_* master table (issue #78) */
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 #ifdef HYBRID_COMPOSITE
 # include "composite_kem_prov.h"   /* composite KEM master table (names + pq_alg) */
 #endif
@@ -295,15 +296,16 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-        || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+        || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
     /* oqsprovider is the peer for the hybrid<->oqs interop section AND the source
      * of the experimental composite tier's PQ half; optional, so its absence only
      * skips the sections that need it, not the whole test. */
-    oqs = OSSL_PROVIDER_load(ctx, "oqsprovider");
+    oqs = hybrid_test_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     /*
@@ -366,6 +368,6 @@ int main(void)
 
     printf("\nResults: %d/%d passed, %d failed\n", passed, tests, failed);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }
