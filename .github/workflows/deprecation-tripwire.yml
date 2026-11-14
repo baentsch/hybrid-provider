@@ -85,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           TITLE="Deprecation tripwire: hybrid-provider fails to build against OpenSSL master"
-          cat > /tmp/tripwire-body.md <<EOF
+          cat > "$RUNNER_TEMP/tripwire-body.md" <<EOF
           The nightly deprecation tripwire failed: hybrid-provider no longer builds
           against OpenSSL master under -Werror=deprecated-declarations.
 
@@ -105,5 +105,5 @@ jobs:
           if [ -n "$NUM" ]; then
             gh issue comment "$NUM" --body "Still failing — ${RUN_URL} (commit ${GITHUB_SHA})."
           else
-            gh issue create --title "$TITLE" --label deprecation --body-file /tmp/tripwire-body.md
+            gh issue create --title "$TITLE" --label deprecation --body-file "$RUNNER_TEMP/tripwire-body.md"
           fi

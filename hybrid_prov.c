@@ -195,8 +195,13 @@ static int hybrid_setup_component_ctx(HYBRID_PROV_CTX *ctx,
 
         if (ctx->n_comp_provs >= HYBRID_MAX_COMPONENT_PROVIDERS)
             break;
-        if ((p = OSSL_PROVIDER_load(cc, tok)) == NULL)
+        if ((p = OSSL_PROVIDER_load(cc, tok)) == NULL) {
+            ERR_raise_data(ERR_LIB_PROV, ERR_R_INIT_FAIL,
+                           "%s: cannot load \"%s\" (search path: %s)",
+                           HYBRID_CONF_COMPONENT_PROVIDERS, tok,
+                           path != NULL ? path : "built-in default");
             goto err;
+        }
         ctx->comp_provs[ctx->n_comp_provs++] = p;
     }
     OPENSSL_free(list);
@@ -205,6 +210,10 @@ static int hybrid_setup_component_ctx(HYBRID_PROV_CTX *ctx,
     ctx->comp_owned = 1;
     return 1;
 err:
+    /* Unload what was loaded and forget it, so hybrid_teardown (the caller's
+     * error path) does not unload these handles again after cc is gone. */
+    while (ctx->n_comp_provs > 0)
+        OSSL_PROVIDER_unload(ctx->comp_provs[--ctx->n_comp_provs]);
     OPENSSL_free(list);
     OSSL_LIB_CTX_free(cc);
     return 0;

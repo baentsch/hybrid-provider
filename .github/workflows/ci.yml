@@ -758,7 +758,7 @@ jobs:
         run: |
           set -euo pipefail
           TITLE="weekly CI: OpenSSL ${{ matrix.openssl.name }} leg failing (main deps)"
-          cat > /tmp/weekly-body.md <<EOF
+          cat > "$RUNNER_TEMP/weekly-body.md" <<EOF
           The weekly exhaustive leg for OpenSSL \`${{ matrix.openssl.name }}\`
           (resolved \`${{ steps.ossl.outputs.ref }}\`), built against liboqs and
           oqs-provider \`main\`, failed. This tier tracks bleeding-edge upstream, so
@@ -786,7 +786,7 @@ jobs:
           if [ -n "$NUM" ]; then
             gh issue comment "$NUM" --body "Still failing — ${RUN_URL} (commit ${GITHUB_SHA})."
           else
-            gh issue create --title "$TITLE" --label weekly-ci --body-file /tmp/weekly-body.md
+            gh issue create --title "$TITLE" --label weekly-ci --body-file "$RUNNER_TEMP/weekly-body.md"
           fi
 
       - name: Close the tracking issue when this leg is green again
@@ -949,7 +949,7 @@ jobs:
         run: |
           set -euo pipefail
           TITLE="Fuzzer: decoder crash in hybrid_decode_fuzz"
-          cat > /tmp/fuzz-body.md <<EOF
+          cat > "$RUNNER_TEMP/fuzz-body.md" <<EOF
           The weekly libFuzzer decode leg crashed: a mutated input drove
           hybrid_decode()/hybrid_decode_p8() (or the component sub-key loading they
           drive) into an ASan-detected fault. This is the untrusted-key-material
@@ -980,5 +980,5 @@ jobs:
           if [ -n "$NUM" ]; then
             gh issue comment "$NUM" --body "Still crashing — ${RUN_URL} (commit ${GITHUB_SHA})."
           else
-            gh issue create --title "$TITLE" --label fuzz --body-file /tmp/fuzz-body.md
+            gh issue create --title "$TITLE" --label fuzz --body-file "$RUNNER_TEMP/fuzz-body.md"
           fi

@@ -30,6 +30,7 @@
 #include <openssl/core_names.h>
 #include "hybrid_prov.h"      /* HYBRID_ALG_NAME_MAX (advertised-name buffer) */
 #include "cert_util.h"        /* hybrid_test_cert_set_cn */
+#include "tmp_util.h"         /* hybrid_test_tmpfile */
 
 static int tests, passed, failed;
 #define TEST_START(n) do { tests++; printf("  %s ... ", n); fflush(stdout); } while (0)
@@ -42,16 +43,12 @@ static const char *module_dir;
  * "default oqsprovider" context. */
 static OSSL_LIB_CTX *make_app_ctx(void)
 {
-    char cnf[] = "/tmp/hybrid_compctx.XXXXXX";
-    int fd = mkstemp(cnf);
+    char cnf[HYBRID_TEST_PATH_MAX];
     OSSL_LIB_CTX *libctx = NULL;
     FILE *f;
 
-    if (fd < 0)
+    if ((f = hybrid_test_tmpfile(cnf, sizeof(cnf), "hybrid_compctx")) == NULL)
         return NULL;
-    close(fd);
-    if ((f = fopen(cnf, "w")) == NULL)
-        goto end;
     fprintf(f,
             "openssl_conf = c\n"
             "[c]\nproviders = p\n"
@@ -68,7 +65,6 @@ static OSSL_LIB_CTX *make_app_ctx(void)
         OSSL_LIB_CTX_free(libctx);
         libctx = NULL;
     }
-end:
     remove(cnf);
     return libctx;
 }
