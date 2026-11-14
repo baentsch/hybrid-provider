@@ -519,8 +519,14 @@ if(HYBRID_COMPOSITE)
     target_compile_definitions(hybrid_alloc_fail_test PRIVATE HYBRID_COMPOSITE)
 endif()
 add_test(NAME hybrid_alloc_fail_test COMMAND hybrid_alloc_fail_test)
+# LABELS "slow": one injected run per sampled allocation site of every row makes
+# this the suite's longest test (~45 s, ~100 s under ASan) and the critical path
+# of a parallel ctest, so the push/PR, sanitize and coverage legs exclude it
+# (`-LE 'bench|slow'`) and the weekly legs run it. `ctest -LE slow` skips it
+# locally.
 set_tests_properties(hybrid_alloc_fail_test PROPERTIES
-    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}")
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    LABELS "slow")
 
 # CMS SignedData with hybrid signatures (in-process analog of oqsprovider's CMS
 # scripts). ML-DSA hybrids need only the default provider; Falcon/MAYO/… self-
