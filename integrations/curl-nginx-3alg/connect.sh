@@ -11,19 +11,20 @@
 #   s_client  "Negotiated TLS1.3 group: <group>"
 #   server    nginx's $ssl_curve, echoed in the response body
 #   log       nginx's access log line for this exact request (same container only)
-#   comps     which provider each component of the group was fetched from
-#             (trace-enabled image only): the component fetches of the client's
-#             key-share keygen, from OpenSSL QUERY trace lines in the hybrid
-#             provider's private component context. A trace line records the
-#             property query, not the resolution, so only a strict
-#             "provider=<name>" pin proves the provider. A preference
-#             ("?provider=") or no query is reported as unverified: a FAIL
-#             under HYP_STEERING=strict, accepted (as OK*) under max.
+# and which provider served each component, from the hybrid provider's own
+# HYBRID_LOG=ops lines, which name the provider that ACTUALLY ran each component:
+#   client    curl's key-share keygen and decapsulate lines
+#   server    nginx's encapsulate line for this handshake (same container only)
+# A missing line means the hybrid provider did not run that side, so the lines
+# also prove the hybrid provider served the group itself. Under
+# HYP_STEERING=strict every component must come from the provider its
+# alg<N>-propquery pins; under max, a preference that was not honoured is noted.
 #
-# Env: HYP_HOST/HYP_PORT (default 127.0.0.1:4433), HYP_TRACE=0 to skip comps,
-#      HYP_STEERING / HYP_MLKEM_PROVIDER as for the server (a client in another
-#      container must use the same values to offer the same groups).
-# Exit 0 == every group negotiated as offered on every available source.
+# Env: HYP_HOST/HYP_PORT (default 127.0.0.1:4433); HYP_STEERING and
+#      HYP_MLKEM_PROVIDER as for the server (a client in another container must
+#      use the same values to offer the same groups).
+# Exit 0 == every group negotiated as offered, served by the hybrid provider,
+# with every pinned component from its pinned provider.
 # =============================================================================
 set -u
 . "$(dirname "$0")/hyp-env.sh"
@@ -54,31 +55,40 @@ CURL_ARGS=(--cacert "$CA" --resolve "localhost:${HYP_PORT}:${HYP_HOST}")
 SCLIENT_ARGS=(-connect "${HYP_HOST}:${HYP_PORT}" -servername localhost
               -verify_hostname localhost -verify_return_error -CAfile "$CA" -tls1_3)
 
-# Component provenance needs libcrypto built with enable-trace.
-TRACE=0
-if [ "${HYP_TRACE:-1}" != 0 ]; then
-    OPENSSL_TRACE=QUERY "$OPENSSL" list -providers >/dev/null 2>"$TMP/probe"
-    grep -q "QUERY:" "$TMP/probe" && TRACE=1
-fi
-# A hybrid's components are key types: keep only trace entries naming a key
-# manager of a component provider (drops the RNG/cipher/digest fetches those
-# keygens also make). Derived from the providers, not a hardcoded list.
-if [ "$TRACE" = 1 ]; then
-    for p in $(sed -n 's/^component-providers *= *//p' "$ACTIVE_CNF" | tr ',' ' '); do
-        OPENSSL_CONF=/dev/null "$OPENSSL" list -provider-path "$MODULES" -provider "$p"             -key-managers 2>/dev/null
-    done | sed -nE 's/^ *IDs: *//p' | sed -E 's/@.*//; s/[{}]//g' | tr ',' '\n' \
-        | sed -E 's/^ +//; s/ +$//' \
-        | grep -v '^$' | sort -u >"$TMP/keytypes"
-fi
+# Slot pins from the active cnf: PIN[N] = provider for alg<N>, "?name" when it
+# is only a preference. Log lines list components in slot order (alg1 first).
 STEERING=$(hyp_component_steering | tr '\n' ' ')
+declare -A PIN
+while read -r slot prov; do
+    PIN[${slot#alg}]=$prov
+done < <(hyp_component_steering)
 
-pass=0; fail=0; unverified=0
+# Components of the first "hybrid: <op> <group>: ..." line in a file, or "".
+op_line() { sed -n "s/^hybrid: $1 $2: //p" "$3" | head -1; }
+
+# Compare "<comp>@<provider> ..." with the slot pins; prints what differs.
+slot_mismatches() {
+    local n=0 c p want
+    for c in $1; do
+        n=$((n + 1)); p=${c##*@}; want=${PIN[$n]:-}
+        case "$want" in
+            "") ;;
+            \?*) [ "$p" = "${want#\?}" ] || echo -n "alg${n} preferred ${want#\?}, served by ${p}; " ;;
+            *)   [ "$p" = "$want" ]      || echo -n "alg${n} pinned ${want}, served by ${p}; " ;;
+        esac
+    done
+}
+
+pass=0; fail=0; noted=0
 for g in $GROUPS_LIST; do
     id=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
-    bad=0; unv=0
+    bad=0; note=""
 
-    "$CURL" -sv --curves "$g" "${CURL_ARGS[@]}" "${URL}/kem/${g}?id=${id}" \
-        -o "$TMP/body" 2>"$TMP/curl.log"
+    srv_off=-1
+    [ -r "$SERVER_LOG" ] && srv_off=$(stat -c %s "$SERVER_LOG")
+
+    HYBRID_LOG=ops "$CURL" -sv --curves "$g" "${CURL_ARGS[@]}" \
+        "${URL}/kem/${g}?id=${id}" -o "$TMP/body" 2>"$TMP/curl.log"
     curl_g=$(grep -oE 'SSL connection using TLSv1\.3 / [^/]+ / [^ ]+' "$TMP/curl.log" \
              | awk '{print $NF}')
     server_g=$(grep -oE 'negotiated=[^ ]+' "$TMP/body" 2>/dev/null | cut -d= -f2)
@@ -95,40 +105,47 @@ for g in $GROUPS_LIST; do
     for v in "$curl_g" "$sclient_g" "$server_g"; do [ "$v" = "$g" ] || bad=1; done
     [ "$log_g" = "n/a" ] || [ "$log_g" = "$g" ] || bad=1
 
-    comps="n/a (image built without ENABLE_TRACE=1)"
-    if [ "$TRACE" = 1 ]; then
-        OPENSSL_TRACE=QUERY "$OPENSSL" genpkey -algorithm "$g" -out /dev/null \
-            >/dev/null 2>"$TMP/trace" || true   # KEM keys have no encoder; keygen ran
-        comps=$(grep -E "Non-default library context, Algorithm \(" "$TMP/trace" \
-                | sed -E 's/.*Algorithm \(([^ ]+) [^)]*\), Properties \(([^)]*)\).*/\1 \2/' \
-                | grep -v "^${g} " | sort -u \
-                | while read -r name props; do
-                      grep -qxF "$name" "$TMP/keytypes" && echo "$name $props"
-                  done \
-                | while read -r name props; do
-                      case "$props" in
-                          provider=*)  echo -n "${name}<-${props#provider=} " ;;
-                          \?provider=*) echo -n "${name}<-unverified(prefers ${props#\?provider=}) " ;;
-                          *)           echo -n "${name}<-unverified(any provider) " ;;
-                      esac
-                  done)
-        [ -n "$comps" ] || comps="none traced (no private component context?)"
-        case "$comps" in
-            *unverified*) if [ "$STEERING_MODE" = strict ]; then bad=1; else unv=1; fi ;;
-        esac
+    # Provenance from the hybrid provider's own log lines.
+    cli_kg=$(op_line keygen "$g" "$TMP/curl.log")
+    cli_dc=$(op_line decapsulate "$g" "$TMP/curl.log")
+    [ -n "$cli_kg" ] && [ -n "$cli_dc" ] || bad=1
+    srv="n/a"
+    if [ "$srv_off" -ge 0 ]; then
+        srv=""
+        for _ in 1 2 3 4 5; do        # the copy of nginx's stderr may lag a moment
+            tail -c +$((srv_off + 1)) "$SERVER_LOG" >"$TMP/srv.log"
+            srv=$(op_line encapsulate "$g" "$TMP/srv.log")
+            [ -n "$srv" ] && break
+            sleep 0.2
+        done
+        [ -n "$srv" ] || { srv="<none>"; bad=1; }
     fi
+    for line in "$cli_kg" "$cli_dc" "$srv"; do
+        case "$line" in ""|n/a|"<none>") continue ;; esac
+        m=$(slot_mismatches "$line")
+        case "$m" in
+            "") ;;
+            *pinned*) bad=1; note="$m" ;;
+            *)        note="$m" ;;
+        esac
+    done
+
+    comps=${cli_kg:-<none: the hybrid provider did not run the client side>}
+    [ "$cli_dc" = "$cli_kg" ] || comps="$comps | decaps: ${cli_dc:-<none>}"
+    [ "$srv" = "$cli_kg" ] && srv="same"
 
     if [ "$bad" != 0 ]; then verdict=FAIL; fail=$((fail + 1))
-    elif [ "$unv" != 0 ]; then verdict="OK*"; pass=$((pass + 1)); unverified=$((unverified + 1))
+    elif [ -n "$note" ]; then verdict="OK*"; pass=$((pass + 1)); noted=$((noted + 1))
     else verdict=OK; pass=$((pass + 1)); fi
     printf '[%-4s] %s\n' "$verdict" "$g"
     printf '         curl=%s  s_client=%s  server=%s  log=%s\n' \
         "${curl_g:-<none>}" "${sclient_g:-<none>}" "${server_g:-<none>}" "${log_g:-<none>}"
-    printf '         comps: %s\n' "$comps"
+    printf '         comps: %s   (client keygen+decaps; server encaps: %s)\n' "$comps" "$srv"
+    [ -z "$note" ] || printf '         note:  %s\n' "$note"
 done
 
 echo
 echo "steering: HYP_STEERING=${STEERING_MODE}; active cnf: ${STEERING:-<none>}"
-[ "$unverified" = 0 ] || echo "OK* = negotiated as offered, but a component's provider is unverified (preference steering)"
-echo "RESULT: ${pass} OK (${unverified} of them OK*), ${fail} FAIL of $((pass + fail)) groups at ${HYP_HOST}:${HYP_PORT}"
+[ "$noted" = 0 ] || echo "OK* = served as negotiated, but a preferred provider was not the one used (HYP_STEERING=max)"
+echo "RESULT: ${pass} OK (${noted} of them OK*), ${fail} FAIL of $((pass + fail)) groups at ${HYP_HOST}:${HYP_PORT}"
 [ "$fail" = 0 ] && [ "$pass" -gt 0 ]

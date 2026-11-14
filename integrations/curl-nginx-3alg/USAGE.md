@@ -74,40 +74,47 @@ group from independent sources:
 | `s_client` | `Negotiated TLS1.3 group: <group>` from `openssl s_client` |
 | `server` | nginx's `$ssl_curve`, echoed in the response body |
 | `log` | nginx's access-log line for this exact request (matched by a random request id); `n/a` when the client runs outside the server's container |
-| `comps` | which provider each component came from (trace-enabled image only, see below) |
+
+It also checks which provider served each component, from the hybrid
+provider's own log (`HYBRID_LOG=ops`, see the main
+[USAGE.md](../../USAGE.md#which-provider-served-it-hybrid_logops)). Each line
+names the provider that **actually** ran each component:
+
+| side | lines |
+|------|-------|
+| client | curl's key-share `keygen` and `decapsulate` |
+| server | nginx's `encapsulate` for this handshake (read from `/tmp/hyp/server.log`; `n/a` from another container) |
 
 ```
 [OK  ] HQCKEM192MLKEM768X25519
          curl=HQCKEM192MLKEM768X25519  s_client=HQCKEM192MLKEM768X25519  server=HQCKEM192MLKEM768X25519  log=HQCKEM192MLKEM768X25519
-         comps: MLKEM768<-wolfprov X25519<-default hqc3<-oqsprovider
+         comps: X25519@default MLKEM768@wolfprov hqc3@oqsprovider   (client keygen+decaps; server encaps: same)
 ```
 
-A group is OK when every available source reports exactly the offered group.
+A missing line means the hybrid provider did not run that side, so the lines
+also prove that the hybrid provider served the group itself. Components are
+listed in slot order (`alg1` first) and compared with the `alg<N>-propquery`
+pins:
+- **`HYP_STEERING=strict`:** a component from any other provider is a FAIL.
+- **`max`:** a preference that was not honoured is noted and the group is
+  reported as `OK*`, e.g. `alg2 preferred wolfprov, served by oqsprovider` for
+  the Frodo/BIKE/HQC groups, which wolfProvider cannot serve.
 
-### Component provenance (trace-enabled image)
-
-On an image built with `--build-arg ENABLE_TRACE=1`, `connect.sh` also traces
-the client's key-share generation for each group (the same per-component
-fetches the TLS client makes) and reads the OpenSSL `QUERY` trace lines for the
-hybrid provider's private component context. Only key-type fetches count, so
-the RNG, cipher and digest lookups those keygens also make are ignored.
-
-A trace line records the property query, not which provider answered it. So a
-component's provider is **proven** only when it was fetched with a strict
-`provider=<name>` pin. A preference (`?provider=`) or no query is shown as
-`unverified(…)`. That is a FAIL under `HYP_STEERING=strict` and `OK*` under
-`max`.
+A group is OK when every available source reports exactly the offered group and
+the provenance lines are present and consistent with the pins. The server must
+keep `HYBRID_LOG` enabled (the entrypoint sets `ops`); with it off, the server
+side cannot be proven and every group fails.
 
 ## Environment variables
 
 | variable | values | used by | effect |
 |----------|--------|---------|--------|
-| `HYP_STEERING` | `strict` (default) / `max` | server, client | `strict`: `alg2-propquery = provider=<ML-KEM provider>`; only groups whose second component that provider serves (10 here), every component provable. `max`: `?provider=` preference; every group whose components exist (44 here), but components not served by the preferred provider are unverified. |
+| `HYP_STEERING` | `strict` (default) / `max` | server, client | `strict`: `alg2-propquery = provider=<ML-KEM provider>`; only groups whose second component that provider serves (10 here), and every component must come from its pinned provider. `max`: `?provider=` preference; every group whose components exist (44 here); a component served by another provider is reported (`OK*`). |
 | `HYP_MLKEM_PROVIDER` | `wolfprov` (default) / `default` | server, client | which provider `alg2` names (any provider in `component-providers` that serves ML-KEM). If `wolfprov` and its module is missing, it falls back to `default` and drops `wolfprov` from `component-providers`. The oqsprovider build here has no standalone ML-KEM, so `oqsprovider` would offer no ML-KEM groups. |
 | `HYP_SERVER_GROUPS` | group list (`:` or space separated) | server | offer exactly these instead of the derived list |
 | `HYP_PORT` | port (default `4433`) | server, client | listen / connect port |
 | `HYP_HOST` | host (default `127.0.0.1`) | client | server to connect to; the certificate is verified as `localhost` |
-| `HYP_TRACE` | `1` (default) / `0` | client | `0` skips component provenance |
+| `HYBRID_LOG` | `ops` (set by the entrypoint) | server | the hybrid provider's per-operation log that `connect.sh` reads; keep `ops` in it |
 
 A client in another container must use the same `HYP_STEERING` /
 `HYP_MLKEM_PROVIDER` as the server, so that it can offer the same groups:
