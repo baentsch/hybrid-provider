@@ -63,7 +63,8 @@ static int
 encap_keyexchange(OSSL_LIB_CTX *libctx, const char *propq,
                   EVP_PKEY *peer_pub,
                   uint8_t *ctext, size_t *ctlen,
-                  uint8_t *shsec, size_t *sslen)
+                  uint8_t *shsec, size_t *sslen,
+                  const OSSL_PROVIDER **prov)
 {
     EVP_PKEY_CTX *kctx = NULL;
     EVP_PKEY *ephemeral = NULL;
@@ -102,6 +103,7 @@ encap_keyexchange(OSSL_LIB_CTX *libctx, const char *propq,
     if (derlen != *sslen)
         goto end;
 
+    *prov = EVP_PKEY_CTX_get0_provider(dctx);   /* the key agreement's provider */
     ret = 1;
 end:
     EVP_PKEY_free(ephemeral);
@@ -118,7 +120,8 @@ static int
 decap_keyexchange(OSSL_LIB_CTX *libctx, const char *propq,
                   EVP_PKEY *own_prv,
                   const uint8_t *ctext, size_t ctlen,
-                  uint8_t *shsec, size_t *sslen)
+                  uint8_t *shsec, size_t *sslen,
+                  const OSSL_PROVIDER **prov)
 {
     EVP_PKEY *peer_pub = NULL;
     EVP_PKEY_CTX *dctx = NULL;
@@ -145,6 +148,7 @@ decap_keyexchange(OSSL_LIB_CTX *libctx, const char *propq,
     if (derlen != *sslen)
         goto end;
 
+    *prov = EVP_PKEY_CTX_get0_provider(dctx);
     ret = 1;
 end:
     EVP_PKEY_free(peer_pub);
@@ -159,7 +163,8 @@ static int
 encap_kem(OSSL_LIB_CTX *libctx, const char *propq,
           EVP_PKEY *pub_key,
           uint8_t *ctext, size_t *ctlen,
-          uint8_t *shsec, size_t *sslen)
+          uint8_t *shsec, size_t *sslen,
+          const OSSL_PROVIDER **prov)
 {
     EVP_PKEY_CTX *ctx;
     int ret = 0;
@@ -169,6 +174,7 @@ encap_kem(OSSL_LIB_CTX *libctx, const char *propq,
         || EVP_PKEY_encapsulate_init(ctx, NULL) <= 0
         || EVP_PKEY_encapsulate(ctx, ctext, ctlen, shsec, sslen) <= 0)
         goto end;
+    *prov = EVP_PKEY_CTX_get0_provider(ctx);
     ret = 1;
 end:
     EVP_PKEY_CTX_free(ctx);
@@ -182,7 +188,8 @@ static int
 decap_kem(OSSL_LIB_CTX *libctx, const char *propq,
           EVP_PKEY *prv_key,
           const uint8_t *ctext, size_t ctlen,
-          uint8_t *shsec, size_t *sslen)
+          uint8_t *shsec, size_t *sslen,
+          const OSSL_PROVIDER **prov)
 {
     EVP_PKEY_CTX *ctx;
     int ret = 0;
@@ -192,6 +199,7 @@ decap_kem(OSSL_LIB_CTX *libctx, const char *propq,
         || EVP_PKEY_decapsulate_init(ctx, NULL) <= 0
         || EVP_PKEY_decapsulate(ctx, shsec, sslen, ctext, ctlen) <= 0)
         goto end;
+    *prov = EVP_PKEY_CTX_get0_provider(ctx);
     ret = 1;
 end:
     EVP_PKEY_CTX_free(ctx);
@@ -289,6 +297,7 @@ static int hybrid_kem_encapsulate(void *vctx,
      * (HYBRID_MAX_COMP) stack arrays; only the key's n_comp entries are used. */
     uint8_t *ctp[HYBRID_MAX_COMP], *ssp[HYBRID_MAX_COMP];
     size_t ctl[HYBRID_MAX_COMP], ssl[HYBRID_MAX_COMP];
+    const OSSL_PROVIDER *prov[HYBRID_MAX_COMP] = { NULL };   /* HYBRID_LOG ops */
 
     if (!hybrid_have_pubkey(key))
         return 0;
@@ -349,12 +358,12 @@ static int hybrid_kem_encapsulate(void *vctx,
         if (hybrid_key_comp_is_kem(key, i)) {
             if (!encap_kem(key->libctx, hybrid_key_comp_propq(key, i),
                            HYBRID_KEY_COMP(key, i),
-                           ctp[i], &ctl[i], ssp[i], &ssl[i]))
+                           ctp[i], &ctl[i], ssp[i], &ssl[i], &prov[i]))
                 goto err;
         } else {
             if (!encap_keyexchange(key->libctx, hybrid_key_comp_propq(key, i),
                                    HYBRID_KEY_COMP(key, i),
-                                   ctp[i], &ctl[i], ssp[i], &ssl[i]))
+                                   ctp[i], &ctl[i], ssp[i], &ssl[i], &prov[i]))
                 goto err;
         }
     }
@@ -373,6 +382,7 @@ static int hybrid_kem_encapsulate(void *vctx,
         OPENSSL_cleanse(sscomp, sizeof(sscomp));
     }
 
+    hybrid_log_op(key, "encapsulate", prov);
     return 1;
 
 err:
@@ -399,6 +409,7 @@ static int hybrid_kem_decapsulate(void *vctx,
     const uint8_t *ctp[HYBRID_MAX_COMP];
     uint8_t *ssp[HYBRID_MAX_COMP];
     size_t ctl[HYBRID_MAX_COMP], ssl[HYBRID_MAX_COMP];
+    const OSSL_PROVIDER *prov[HYBRID_MAX_COMP] = { NULL };   /* HYBRID_LOG ops */
 
     if (!hybrid_have_prvkey(key))
         return 0;
@@ -457,12 +468,12 @@ static int hybrid_kem_decapsulate(void *vctx,
         if (hybrid_key_comp_is_kem(key, i)) {
             if (!decap_kem(key->libctx, hybrid_key_comp_propq(key, i),
                            HYBRID_KEY_COMP(key, i),
-                           ctp[i], ctl[i], ssp[i], &ssl[i]))
+                           ctp[i], ctl[i], ssp[i], &ssl[i], &prov[i]))
                 goto err;
         } else {
             if (!decap_keyexchange(key->libctx, hybrid_key_comp_propq(key, i),
                                    HYBRID_KEY_COMP(key, i),
-                                   ctp[i], ctl[i], ssp[i], &ssl[i]))
+                                   ctp[i], ctl[i], ssp[i], &ssl[i], &prov[i]))
                 goto err;
         }
     }
@@ -478,6 +489,7 @@ static int hybrid_kem_decapsulate(void *vctx,
         OPENSSL_cleanse(sscomp, sizeof(sscomp));
     }
 
+    hybrid_log_op(key, "decapsulate", prov);
     return 1;
 
 err:

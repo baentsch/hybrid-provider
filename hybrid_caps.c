@@ -8,6 +8,8 @@
 #include <openssl/prov_ssl.h>   /* TLS1_3_VERSION */
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
+#include <openssl/provider.h>
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"
 #endif
@@ -26,16 +28,80 @@
 # define HYBRID_HAVE_TLS_SIGALG 1
 #endif
 
-/* See hybrid_prov.h: silent unless HYBRID_LOG is set in the environment. */
+/* HYBRID_LOG category names (documented in hybrid_prov.h). */
+static const struct {
+    const char *name;
+    unsigned int bit;
+} hybrid_log_categories[] = {
+    { "caps", HYBRID_LOG_CAPS },
+    { "ops",  HYBRID_LOG_OPS  },
+};
+
+/* See hybrid_prov.h. Read on every call (no cached state): getenv is cheap next
+ * to the operations being logged, and nothing here needs a lock. */
+int hybrid_log_enabled(unsigned int category)
+{
+    const char *v = getenv(HYBRID_ENV_LOG), *p, *e;
+    unsigned int mask = 0;
+    size_t c;
+
+    if (v == NULL || *v == '\0' || strcmp(v, "0") == 0)
+        return 0;
+    for (p = v; *p != '\0'; p = (*e == ',') ? e + 1 : e) {
+        size_t n;
+        int known = 0;
+
+        if ((e = strchr(p, ',')) == NULL)
+            e = p + strlen(p);
+        n = (size_t)(e - p);
+        for (c = 0; c < sizeof(hybrid_log_categories)
+                            / sizeof(hybrid_log_categories[0]); c++)
+            if (strlen(hybrid_log_categories[c].name) == n
+                    && strncmp(p, hybrid_log_categories[c].name, n) == 0) {
+                mask |= hybrid_log_categories[c].bit;
+                known = 1;
+            }
+        if (!known && n > 0)
+            mask = ~0u;          /* any other value ("1", "yes"): everything */
+    }
+    return (mask & category) != 0;
+}
+
 void hybrid_log(const char *fmt, ...)
 {
     va_list ap;
 
-    if (getenv("HYBRID_LOG") == NULL)
+    if (!hybrid_log_enabled(HYBRID_LOG_CAPS))
         return;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
+}
+
+/* See hybrid_prov.h. Names and provider names only: nothing secret is logged. */
+void hybrid_log_op(const HYBRID_KEY *key, const char *op,
+                   const OSSL_PROVIDER *const prov[])
+{
+    char line[512];
+    size_t off = 0;
+    unsigned i;
+
+    if (!hybrid_log_enabled(HYBRID_LOG_OPS))
+        return;
+    line[0] = '\0';
+    for (i = 0; i < HYBRID_KEY_NCOMP(key); i++) {
+        const char *g = hybrid_key_comp_group(key, i);
+        const char *pn = prov[i] != NULL ? OSSL_PROVIDER_get0_name(prov[i]) : NULL;
+        int r = snprintf(line + off, sizeof(line) - off, "%s%s%s%s@%s",
+                         i > 0 ? " " : "", hybrid_key_comp_name(key, i),
+                         g != NULL ? ":" : "", g != NULL ? g : "",
+                         pn != NULL ? pn : "?");
+
+        if (r < 0 || (size_t)r >= sizeof(line) - off)
+            break;               /* truncated: keep what fits */
+        off += (size_t)r;
+    }
+    fprintf(stderr, "hybrid: %s %s: %s\n", op, hybrid_key_name(key), line);
 }
 
 /*

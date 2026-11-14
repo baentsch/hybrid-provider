@@ -1086,6 +1086,13 @@ static inline const char *hybrid_key_comp_name(const HYBRID_KEY *k, unsigned i)
     return i == 0 ? HYBRID_KEY_ALG1_NAME(k) : HYBRID_KEY_ALG2_NAME(k);
 }
 
+/* The hybrid algorithm's own name (both info structs lead with hybrid_name). */
+static inline const char *hybrid_key_name(const HYBRID_KEY *k)
+{
+    return k->is_kem ? ((const HYBRID_KEM_INFO *)k->info)->hybrid_name
+                     : ((const HYBRID_SIG_INFO *)k->info)->hybrid_name;
+}
+
 static inline const char *hybrid_key_comp_group(const HYBRID_KEY *k, unsigned i)
 {
     if (k->is_kem)
@@ -1242,13 +1249,33 @@ int hybrid_get_capabilities(void *provctx, const char *capability,
                             OSSL_CALLBACK *cb, void *arg);
 
 /*
- * Diagnostic log (hybrid_caps.c). Silent unless the environment variable
- * HYBRID_LOG is set, so normal runs stay quiet; when set, each call writes one
- * line to stderr. Used to record advertisement decisions the operator cannot
- * otherwise see — a hybrid dropped because a component is not fetchable, or an
- * advertisement dropped because the per-enumeration cap was hit (issue #45).
+ * Diagnostic log (hybrid_caps.c), to stderr, one line per event. Silent unless
+ * the environment variable HYBRID_LOG selects a category:
+ *   unset, empty or "0"   off
+ *   "caps"                advertisement decisions the operator cannot otherwise
+ *                         see: a hybrid dropped because a component is not
+ *                         fetchable, or the per-enumeration cap hit (issue #45)
+ *   "ops"                 per operation (keygen, encapsulate, decapsulate,
+ *                         sign, verify): the provider that ACTUALLY served each
+ *                         component. The line only exists when this provider
+ *                         ran the operation, so it also proves which provider
+ *                         served the hybrid itself.
+ *   anything else ("1")   all categories
+ * Categories combine with commas ("caps,ops").
  */
-void hybrid_log(const char *fmt, ...);
+#define HYBRID_ENV_LOG   "HYBRID_LOG"
+#define HYBRID_LOG_CAPS  0x1u
+#define HYBRID_LOG_OPS   0x2u
+int hybrid_log_enabled(unsigned int category);
+void hybrid_log(const char *fmt, ...);      /* category HYBRID_LOG_CAPS */
+
+/*
+ * HYBRID_LOG_OPS line for one operation on `key`:
+ *   hybrid: <op> <hybrid>: <comp>[:<group>]@<provider> ...
+ * prov[i] is the provider that served component i (NULL prints "?").
+ */
+void hybrid_log_op(const HYBRID_KEY *key, const char *op,
+                   const OSSL_PROVIDER *const prov[]);
 
 /*
  * Component extraction. A hybrid/composite key composes a
