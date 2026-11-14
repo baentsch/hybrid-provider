@@ -964,7 +964,15 @@ have no paths filter — they always run in full.
   both the coherence of the local copy with the pinned tag and the appearance of
   a newer draft tag — filing and auto-closing a tracking issue the same way (the
   combiner and vectors are version-sensitive, so a newer draft is a prompt to
-  evaluate a bump, never an auto-chase).
+  evaluate a bump, never an auto-chase). A third weekly job, `pqc-certs-interop`
+  (`scripts/check-pqc-certs-drift.sh`), keeps the composite OIDs aligned with the
+  IETF Hackathon pqc-certificates corpus. It is the one watcher that builds
+  OpenSSL and the provider, because OID alignment is only proven by reading
+  other implementations' artifacts. It diffs the OIDs our encoder emits against
+  the corpus's `docs/oid_mapping.md` in both directions, reads every default
+  peer's sig certs, KEM decaps vectors and CMS KEMRI blobs in `--strict` mode,
+  and flags a newer artifact round. It files and auto-closes a
+  `pqc-certs-drift` issue the same way.
 
 The pinned tier caches its toolchain as **three independent `actions/cache`
 entries**, not one bundle, so a pin that did not change is never rebuilt: OpenSSL
@@ -1019,6 +1027,14 @@ liboqs release. It arrives in two shapes, with **different** correct responses:
   (new names + OIDs + TLS code points, and regenerated sizes) into the PR that
   bumps `LIBOQS_REF` / `OQSPROV_REF`.** Capture the new OIDs/code points on the
   drift issue meanwhile so the follow-up is mechanical.
+
+An open `pqc-certs-drift` issue splits the same way. An **OID-table diff** means
+the corpus's canonical mapping changed: check the cited spec before touching
+`COMPOSITE_SIG_LIST` / `COMPOSITE_KEM_LIST`, and follow a published RFC/draft,
+not the table alone. A **peer FAIL** is either a regression here (it then fails
+for every peer) or a peer-side change such as a renamed directory or an older
+draft (it then fails for that peer only, and the fix is the script's default
+peer list). A **newer round** is a prompt to evaluate bumping `ROUND` / `VER`.
 
 Rule of thumb: the committed tables and size constants track the **pinned
 release**, never `main`. The weekly tier is the signal that a future pin bump has

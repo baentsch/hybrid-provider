@@ -37,6 +37,10 @@
 # be fetched or a component is unavailable; a shared OID that fails to decapsulate
 # to the reference secret is a real FAIL. Not wired into ctest (needs network + an
 # external corpus).
+# --strict (or STRICT=1) turns the two "nothing to compare" outcomes of a verify
+# -- a peer zip that cannot be fetched, and a peer with no artifacts on our arc --
+# from SKIP into FAIL. Scheduled drift checks (scripts/check-pqc-certs-drift.sh)
+# use it: there a vanished or renamed peer is drift to triage, not a clean skip.
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,6 +56,7 @@ RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/mast
 OUTDIR=""
 KEEP=0
 MODE="verify"
+STRICT="${STRICT:-0}"
 
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
@@ -59,7 +64,7 @@ case "$(uname -s)" in
     *)                    SOEXT="${SOEXT:-so}";;
 esac
 
-usage() { sed -n '3,40p' "$0" | sed 's/^# \{0,1\}//'; cat <<EOF
+usage() { awk 'NR > 2 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; cat <<EOF
 
 Usage: $(basename "$0") [options] [verify|generate|all]
 
@@ -71,6 +76,7 @@ Options:
   --round R         artifact round            (default: $ROUND)
   --outdir DIR      generate output dir       (default: <module-dir>/pqc-kem-artifacts)
   --keep            keep the temp work dir
+  --strict          unreachable / empty peer is FAIL, not SKIP
   -h, --help        this help
 EOF
 }
@@ -84,6 +90,7 @@ while [ $# -gt 0 ]; do
         --round)      ROUND="$2"; shift 2;;
         --outdir)     OUTDIR="$2"; shift 2;;
         --keep)       KEEP=1; shift;;
+        --strict)     STRICT=1; shift;;
         -h|--help)    usage; exit 0;;
         verify|generate|all) MODE="$1"; shift;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
@@ -105,6 +112,8 @@ ok()   { echo "  ${C_OK}PASS${C_Z}  $*"; pass=$((pass+1)); }
 no()   { echo "  ${C_NO}FAIL${C_Z}  $*"; fail=$((fail+1)); }
 note() { echo "  ${C_SK}SKIP${C_Z}  $*"; skip=$((skip+1)); }
 hdr()  { echo; echo "== $* =="; }
+# A peer with nothing comparable: SKIP by default, FAIL under --strict.
+miss() { if [ "$STRICT" -eq 1 ]; then no "$@"; else note "$@"; fi; }
 
 if [ ! -f "$MODULE_DIR/hybrid.$SOEXT" ]; then
     echo "hybrid.$SOEXT not found in $MODULE_DIR -- build the provider first" >&2
@@ -132,7 +141,11 @@ module = $MODULE_DIR/hybrid.$SOEXT
 activate = 1
 EOF
 
-ARC='1\.3\.6\.1\.5\.5\.7\.6\.(5[5-9]|6[0-6])'   # LAMPS composite-KEM OID arc
+# The whole LAMPS composite arc, not just the KEM OIDs we serve today (.55..66):
+# only KEMs ship decaps vectors, so the wider match is still KEM-only, and a NEW
+# composite-KEM OID in the corpus is then tried -- and FAILs -- instead of being
+# silently ignored.
+ARC='1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
 
 # Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
@@ -153,7 +166,7 @@ verify_peer() {   # $1 = provider dir name
     local peer="$1" zip="$WORKDIR/$1.zip" d="$WORKDIR/$1" n=0 p=0
     if ! curl -fsSL "$RAW_BASE/$peer/artifacts_certs_$ROUND.zip" -o "$zip" 2>/dev/null \
             || [ ! -s "$zip" ]; then
-        note "$peer: no artifacts_certs_$ROUND.zip (unreachable / absent)"; return
+        miss "$peer: no artifacts_certs_$ROUND.zip (unreachable / absent)"; return
     fi
     mkdir -p "$d"; unzip -qo "$zip" -d "$d" 2>/dev/null
     : > "$WORKDIR/$peer.oids"
@@ -178,7 +191,7 @@ verify_peer() {   # $1 = provider dir name
         fi
     done < <(find "$d" -type f -name '*_ss.bin' | grep -E "$ARC" | sort)
     if [ "$n" -eq 0 ]; then
-        note "$peer: no composite-KEM ($ARC) decaps vectors in $ROUND (certs-only or none)"
+        miss "$peer: no composite-KEM ($ARC) decaps vectors in $ROUND (certs-only or none)"
     else
         local dist; dist=$(sort -u "$WORKDIR/$peer.oids" | wc -l)
         ok "$peer: $dist/12 composite-KEM OIDs decapsulated to the peer's secret ($p/$n vectors)"

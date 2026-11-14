@@ -1,0 +1,137 @@
+name: PQC certs interop drift
+
+# Weekly guard that the composite (LAMPS) OIDs this provider emits stay aligned
+# with the IETF Hackathon pqc-certificates corpus — the multi-vendor X.509/CMS
+# interop set (BC, composite-crypto, the LAMPS reference impls, ...). It runs
+# scripts/check-pqc-certs-drift.sh, which (1) diffs the OIDs our encoder emits
+# against the corpus's canonical docs/oid_mapping.md, (2) reads every default
+# peer's composite sig certs, KEM decaps vectors and CMS KEMRI blobs in --strict
+# mode, and (3) flags a newer artifact round. On drift it opens a tracking issue
+# in this repo; it auto-closes that issue once back in sync.
+#
+# Unlike the buildless oqs-hybrid-drift / xwing-kat-drift jobs this one builds
+# OpenSSL + the provider: OID alignment is only proven by reading third-party
+# artifacts. Latest OpenSSL release, since the CMS KEMRI read needs 3.6.0+. The
+# OpenSSL cache key matches ci.yml's, so the build is normally a cache hit.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"   # Mondays 07:00 UTC (after the CI weekly + oqs drift jobs)
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: pqc-certs-interop
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      LABEL: pqc-certs-drift
+      OSSL_INSTALL: ${{ github.workspace }}/ossl-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve latest OpenSSL release
+        id: ossl
+        run: |
+          set -euo pipefail
+          REF=$(git ls-remote --tags --refs https://github.com/openssl/openssl 'openssl-*' \
+                | awk -F/ '{print $NF}' | grep -E '^openssl-[0-9]+\.[0-9]+\.[0-9]+$' \
+                | sort -V | tail -1)
+          SHA=$(git ls-remote https://github.com/openssl/openssl "refs/tags/$REF" | cut -f1)
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"; echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenSSL: $REF ($SHA)"
+
+      - name: Cache OpenSSL
+        id: cache-ossl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OSSL_INSTALL }}
+          key: ossl-${{ runner.os }}-${{ steps.ossl.outputs.sha }}
+
+      - name: Build OpenSSL
+        if: steps.cache-ossl.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.ossl.outputs.ref }}" \
+            https://github.com/openssl/openssl ossl-src
+          cd ossl-src
+          ./Configure --prefix="$OSSL_INSTALL" --libdir=lib64 no-docs
+          make -j"$(nproc)"
+          make install_sw
+
+      # Provider only (composite family is on by default): no tests, no oqsprovider.
+      - name: Build hybrid provider
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DOPENSSL_ROOT_DIR="$OSSL_INSTALL"
+          cmake --build build --target hybrid-provider -j"$(nproc)"
+
+      - name: Check composite OIDs vs pqc-certificates
+        id: check
+        env:
+          OPENSSL_BIN: ${{ env.OSSL_INSTALL }}/bin/openssl
+          OPENSSL_LIBPATH: ${{ env.OSSL_INSTALL }}/lib64
+          MODULE_DIR: ${{ github.workspace }}/build
+        run: |
+          set +e
+          ./scripts/check-pqc-certs-drift.sh | tee report.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # status 2 = build/fetch/tooling error; surface as a failed run, not an issue.
+      - name: Fail on tooling error
+        if: steps.check.outputs.status == '2'
+        run: |
+          echo "pqc-certs drift check errored (see log above)"
+          exit 1
+
+      - name: Open tracking issue on drift
+        if: steps.check.outputs.status == '1'
+        run: |
+          set -euo pipefail
+          gh label create "$LABEL" --color BFD4F2 --force \
+            --description "composite OIDs drifted from the pqc-certificates corpus"
+          existing=$(gh issue list --label "$LABEL" --state open \
+                       --json number --jq '.[0].number // empty')
+          {
+            echo "Automated weekly check: this provider's composite (LAMPS) OIDs or"
+            echo "artifacts no longer line up with the IETF Hackathon"
+            echo "[pqc-certificates](https://github.com/IETF-Hackathon/pqc-certificates) corpus."
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo "**Triage:** see design.md \"Triaging a weekly failure (runbook)\"."
+            echo "An OID-table diff means \`COMPOSITE_SIG_LIST\` / \`COMPOSITE_KEM_LIST\`"
+            echo "need review against the cited spec; a peer FAIL is either a"
+            echo "regression here or a peer-side change (renamed dir, older draft);"
+            echo "a newer round is a prompt to evaluate bumping \`ROUND\` / \`VER\`."
+            echo
+            echo "_This check runs weekly and will not re-notify while this issue"
+            echo "is open; it auto-closes once back in sync._"
+            echo "_Source: .github/workflows/pqc-certs-interop.yml · run ${{ github.run_id }}_"
+          } > body.md
+          if [ -n "$existing" ]; then
+            echo "drift already tracked in #$existing — leaving it open"
+          else
+            gh issue create --title "pqc-certificates composite OID drift detected" \
+              --label "$LABEL" --body-file body.md
+          fi
+
+      - name: Close tracking issue when back in sync
+        if: steps.check.outputs.status == '0'
+        run: |
+          set -euo pipefail
+          for n in $(gh issue list --label "$LABEL" --state open \
+                       --json number --jq '.[].number'); do
+            gh issue comment "$n" \
+              --body "Back in sync as of run ${{ github.run_id }} — closing."
+            gh issue close "$n"
+          done

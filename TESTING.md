@@ -252,6 +252,16 @@ absent, and FAILs only on a real mismatch:
   (`_ciphertext.bin` + `_ss.bin`) instead of CMS (3.5+; details in
   [docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)).
 
+The three corpus scripts (`pqc_certificates_interop.sh` for composite
+signatures, plus the two KEM ones above) also run weekly in
+`.github/workflows/pqc-certs-interop.yml`, via `scripts/check-pqc-certs-drift.sh`.
+That script also diffs the composite OIDs our encoder emits against the corpus's
+canonical `docs/oid_mapping.md`, and flags a newer artifact round. There the
+scripts run with `--strict`, which turns an unreachable or empty peer from SKIP
+into FAIL. On drift the job opens a `pqc-certs-drift` tracking issue. Run it
+locally with the same `OPENSSL_BIN` / `OPENSSL_LIBPATH` / `MODULE_DIR` the
+scripts take; it exits 0 in sync, 1 on drift, and 2 on a tooling error.
+
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).
 
