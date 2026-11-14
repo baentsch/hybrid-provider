@@ -52,6 +52,7 @@
 #include <openssl/err.h>
 #include "hybrid_prov.h"       /* hybrid_sig_table — drive the list from the master */
 #include "cert_util.h"         /* hybrid_test_cert_set_cn */
+#include "tmp_util.h"          /* hybrid_test_tmpfile */
 #include "composite_prov.h"    /* composite_sig_table (data only; self-skips if the
                                 * provider was built without composite) */
 
@@ -67,20 +68,14 @@ static int tests, passed, failed, skipped;
 static OSSL_LIB_CTX *make_app_ctx(void)
 {
     const char *module_dir = getenv("OPENSSL_MODULES");
-    char cnf[] = "/tmp/hybrid_cert_tls.XXXXXX";
+    char cnf[HYBRID_TEST_PATH_MAX];
     OSSL_LIB_CTX *libctx = NULL;
-    int fd;
     FILE *f;
 
     if (module_dir == NULL)
         module_dir = ".";
-    if ((fd = mkstemp(cnf)) < 0)
+    if ((f = hybrid_test_tmpfile(cnf, sizeof(cnf), "hybrid_cert_tls")) == NULL)
         return NULL;
-    close(fd);
-    if ((f = fopen(cnf, "w")) == NULL) {
-        remove(cnf);
-        return NULL;
-    }
     fprintf(f,
             "openssl_conf = c\n"
             "[c]\nproviders = p\n"

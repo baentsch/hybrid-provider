@@ -22,6 +22,7 @@
 #include <openssl/err.h>
 #include <openssl/crypto.h>
 #include <openssl/provider.h>
+#include "tmp_util.h"           /* hybrid_test_tmpfile */
 
 static int test_count, pass_count, fail_count;
 
@@ -35,21 +36,6 @@ static const char *module_dir;
 /* No provider module by this name exists anywhere on the search path. */
 #define BOGUS_PROVIDER "no-such-component-provider"
 
-/* Directory for temporary files: $TMPDIR if set, else the platform default
- * (POSIX P_tmpdir). */
-static const char *tmp_dir(void)
-{
-    const char *d = getenv("TMPDIR");
-
-    if (d != NULL && *d != '\0')
-        return d;
-#ifdef P_tmpdir
-    return P_tmpdir;
-#else
-    return "/tmp";
-#endif
-}
-
 /*
  * Create a unique temporary openssl.cnf loading default + hybrid, with optional
  * extra hybrid-section lines (e.g. the propquery keys). With activate == 0 the
@@ -60,17 +46,10 @@ static const char *tmp_dir(void)
 static int make_cnf(char *path, size_t pathsz, const char *hybrid_extra,
                     int activate)
 {
-    int n = snprintf(path, pathsz, "%s/hybrid_cfg_test.XXXXXX", tmp_dir());
-    int fd;
-    FILE *f;
+    FILE *f = hybrid_test_tmpfile(path, pathsz, "hybrid_cfg_test");
 
-    if (n < 0 || (size_t)n >= pathsz || (fd = mkstemp(path)) < 0)
+    if (f == NULL)
         return 0;
-    if ((f = fdopen(fd, "w")) == NULL) {
-        close(fd);
-        remove(path);
-        return 0;
-    }
     fprintf(f,
             "openssl_conf = c\n"
             "[c]\nproviders = p\n"
@@ -94,7 +73,7 @@ static int make_cnf(char *path, size_t pathsz, const char *hybrid_extra,
  */
 static int load_fails_naming(const char *hybrid_extra, const char *needle)
 {
-    char cnf[4096];
+    char cnf[HYBRID_TEST_PATH_MAX];
     OSSL_LIB_CTX *libctx = NULL;
     OSSL_PROVIDER *prov = NULL;
     const char *data;
@@ -120,7 +99,7 @@ static int load_fails_naming(const char *hybrid_extra, const char *needle)
  * (A keygen probe cannot tell: "?provider=hybrid" falls back to default.) */
 static int hybrid_active(const char *hybrid_extra)
 {
-    char cnf[4096];
+    char cnf[HYBRID_TEST_PATH_MAX];
     OSSL_LIB_CTX *libctx = NULL;
     int ok = 0;
 
@@ -138,7 +117,7 @@ static int hybrid_active(const char *hybrid_extra)
 /* Load cnf into a fresh libctx and try to keygen the hybrid; return 1 if ok. */
 static int keygen_ok(const char *hybrid_extra)
 {
-    char cnf[4096];
+    char cnf[HYBRID_TEST_PATH_MAX];
     OSSL_LIB_CTX *libctx = NULL;
     EVP_PKEY_CTX *ctx = NULL;
     EVP_PKEY *pkey = NULL;

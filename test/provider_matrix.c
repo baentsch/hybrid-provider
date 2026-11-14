@@ -52,6 +52,7 @@
 # include "../composite_kem_prov.h"
 #endif
 #include "bench_util.h"
+#include "tmp_util.h"             /* hybrid_test_tmpfile */
 
 static double g_budget_ms = 200.0;
 static const char *g_module_dir = ".";
@@ -102,19 +103,13 @@ static int module_exists(const char *file)
  */
 static OSSL_LIB_CTX *make_libctx(const char *pq_source)
 {
-    char cnf[] = "/tmp/provmatrix.XXXXXX";
-    int fd = mkstemp(cnf);
+    char cnf[HYBRID_TEST_PATH_MAX];
     FILE *f;
     OSSL_LIB_CTX *libctx = NULL;
     size_t i;
 
-    if (fd < 0)
+    if ((f = hybrid_test_tmpfile(cnf, sizeof(cnf), "provmatrix")) == NULL)
         return NULL;
-    close(fd);
-    if ((f = fopen(cnf, "w")) == NULL) {
-        remove(cnf);
-        return NULL;
-    }
     fprintf(f, "openssl_conf = c\n[c]\nproviders = p\n[p]\n");
     fprintf(f, "default = s_default\nhybrid = s_hybrid\n");
     for (i = 1; i < NPROV; i++)          /* skip default (index 0) */
