@@ -296,23 +296,60 @@ are advertised whenever the default provider (3.5+) or oqsprovider can supply
 that component. Each algorithm is advertised under its own fixed code point, so a
 dropped one never shifts another's value.
 
-Set `HYBRID_LOG=1` to have the provider print, to stderr, each advertisement it
-drops and why (component not fetchable, or the per-enumeration cap reached):
+Set `HYBRID_LOG=caps` to have the provider print, to stderr, each advertisement
+it drops and why (component not fetchable, or the per-enumeration cap reached):
 
 ```sh
-HYBRID_LOG=1 ./your-app
+HYBRID_LOG=caps ./your-app
 ```
+
+## Which provider served it (`HYBRID_LOG=ops`)
+
+With `HYBRID_LOG=ops` the provider prints one line to stderr per operation it
+runs (`keygen`, `encapsulate`, `decapsulate`, `sign`, `verify`), naming the
+provider that **actually** served each component, in slot order (`alg1`
+first):
+
+```
+hybrid: keygen HQCKEM192MLKEM768X25519: X25519@default MLKEM768@wolfprov hqc3@oqsprovider
+hybrid: encapsulate p384_mlkem768: EC:P-384@default MLKEM768@wolfprov
+hybrid: sign p256_mldsa44: EC:P-256@default MLDSA44@default
+```
+
+That answers two questions a cnf alone cannot:
+
+- **Which provider served each component.** The line reports the provider that
+  ran the component operation, not the property query that was asked for. With
+  a preference `?provider=` steering, or none, this is the only way to know.
+- **Whether the hybrid provider ran the algorithm at all.** A line is written
+  only when this provider ran the operation. If another provider serves the same
+  name (for instance the default provider's native `X25519MLKEM768` when
+  cede-to-default is off), there is no line. OpenSSL may even split one
+  algorithm across providers: generate the key here, then export it to another
+  provider's KEM for encapsulation. The lines show that too.
+
+A TLS 1.3 handshake over a hybrid KEM group gives `keygen` and `decapsulate` on
+the client and `encapsulate` on the server. Nothing secret is logged: only
+algorithm, component and provider names. The
+[curl/nginx integration](integrations/curl-nginx-3alg/USAGE.md) uses these lines
+to validate every handshake.
+
+`HYBRID_LOG` values: unset, empty or `0` is off; `caps` and `ops` select a
+category and combine with commas (`caps,ops`); any other value (e.g. `1`)
+enables all categories. The variable is read on every log call, so it can be
+set per process. Some servers clear the environment of their worker processes
+(nginx, for example, needs `env HYBRID_LOG;` in its config).
 
 ## Environment variables
 
-The provider reads two environment variables at load time; both are detailed in
-the sections above. (Benchmark/test knobs — `BENCH_*`, `HYBRID_BENCH_GUARD_ONLY`,
+The provider reads two environment variables, both detailed in the sections
+above: `HYBRID_CEDE_TO_DEFAULT` at load time, `HYBRID_LOG` whenever it logs. (Benchmark/test knobs — `BENCH_*`, `HYBRID_BENCH_GUARD_ONLY`,
 `COMPOSITE_TRAD_PROPQ` — are documented in [TESTING.md](TESTING.md) instead.)
 
 | Variable | Effect | Details |
 |---|---|---|
 | `HYBRID_CEDE_TO_DEFAULT` | Boolean; overrides the `cede-to-default` config key. `0`/`no`/`off`/`false` keeps the default provider's algorithms present alongside the hybrid provider's own (coexist mode). Set wins over config. | [Ceding to the default provider](#ceding-to-the-default-provider-cede-to-default) above |
-| `HYBRID_LOG` | `1` makes the provider print, to stderr, each advertisement it drops and why. | [Only operable algorithms are advertised](#only-operable-algorithms-are-advertised) above |
+| `HYBRID_LOG` | Diagnostic lines to stderr. `caps`: each advertisement dropped and why. `ops`: per operation, the provider that actually served each component. Comma-combinable; `1` (any other value) = all; unset/empty/`0` = off. | [Only operable algorithms are advertised](#only-operable-algorithms-are-advertised), [Which provider served it](#which-provider-served-it-hybrid_logops) above |
 
 `OPENSSL_MODULES` (OpenSSL's standard module-search-path variable, not specific to
 this provider) locates `hybrid.so` when it is not on the default path.

@@ -972,6 +972,13 @@ static void *hybrid_gen(void *vgctx, OSSL_CALLBACK *cb, void *cbarg)
         }
     }
     key->state = HYBRID_HAVE_PRVKEY;
+    if (hybrid_log_enabled(HYBRID_LOG_OPS)) {
+        const OSSL_PROVIDER *prov[HYBRID_MAX_COMP] = { NULL };
+
+        for (i = 0; i < HYBRID_KEY_NCOMP(key); i++)
+            prov[i] = EVP_PKEY_get0_provider(HYBRID_KEY_COMP(key, i));
+        hybrid_log_op(key, "keygen", prov);
+    }
     return key;
 }
 
