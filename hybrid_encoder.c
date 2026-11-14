@@ -611,12 +611,6 @@ const OSSL_DISPATCH hybrid_pkcs8_pem_encoder_functions[] = {
 /* --- Human-readable text encoder (openssl pkey -text), matching oqsprovider's
  * layout: a header line then a colon-hex dump of each component's material. --- */
 
-static const char *hybrid_key_name(const HYBRID_KEY *key)
-{
-    return key->is_kem ? ((const HYBRID_KEM_INFO *)key->info)->hybrid_name
-                       : ((const HYBRID_SIG_INFO *)key->info)->hybrid_name;
-}
-
 static int text_block(BIO *mem, const char *label,
                       const unsigned char *buf, size_t len)
 {

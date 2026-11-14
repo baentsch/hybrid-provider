@@ -290,7 +290,8 @@ static void hybrid_sig_component(const HYBRID_KEY *key, unsigned i,
 static int hybrid_sig_digest_taking_op(const HYBRID_KEY *key,
                         const HYBRID_SIG_COMP *c, int sign, const EVP_MD *md,
                         const unsigned char *tbs, size_t tbslen,
-                        unsigned char *sig, size_t *siglen)
+                        unsigned char *sig, size_t *siglen,
+                        const OSSL_PROVIDER **prov)
 {
     EVP_PKEY_CTX *pctx = NULL;
     unsigned char dig[EVP_MAX_MD_SIZE];
@@ -318,6 +319,7 @@ static int hybrid_sig_digest_taking_op(const HYBRID_KEY *key,
         if (EVP_PKEY_verify(pctx, sig, *siglen, dig, diglen) <= 0)
             goto end;
     }
+    *prov = EVP_PKEY_CTX_get0_provider(pctx);
     ret = 1;
 end:
     EVP_PKEY_CTX_free(pctx);
@@ -362,7 +364,8 @@ static OSSL_PARAM *pq_ctx_params(HYBRID_SIG_CTX *ctx, OSSL_PARAM store[2])
 static int hybrid_sig_mdless_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
                         const HYBRID_SIG_COMP *c, int sign,
                         const unsigned char *tbs, size_t tbslen,
-                        unsigned char *sig, size_t *siglen)
+                        unsigned char *sig, size_t *siglen,
+                        const OSSL_PROVIDER **prov)
 {
     EVP_MD_CTX *mctx = EVP_MD_CTX_new();
     OSSL_PARAM pqp_store[2], *pqp = pq_ctx_params(ctx, pqp_store);
@@ -384,6 +387,7 @@ static int hybrid_sig_mdless_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
         if (EVP_DigestVerify(mctx, sig, *siglen, tbs, tbslen) <= 0)
             goto end;
     }
+    *prov = EVP_PKEY_CTX_get0_provider(EVP_MD_CTX_get_pkey_ctx(mctx));
     ret = 1;
 end:
     EVP_MD_CTX_free(mctx);
@@ -399,15 +403,17 @@ end:
 static int hybrid_sig_component_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
                         const HYBRID_SIG_COMP *c, int sign,
                         const unsigned char *tbs, size_t tbslen,
-                        unsigned char *sig, size_t *slen)
+                        unsigned char *sig, size_t *slen,
+                        const OSSL_PROVIDER **prov)
 {
     const HYBRID_SIG_INFO *info = (const HYBRID_SIG_INFO *)key->info;
 
     if (c->digest_taking)
         return hybrid_sig_digest_taking_op(key, c, sign,
                                            classical_md(info->nist_level),
-                                           tbs, tbslen, sig, slen);
-    return hybrid_sig_mdless_op(ctx, key, c, sign, tbs, tbslen, sig, slen);
+                                           tbs, tbslen, sig, slen, prov);
+    return hybrid_sig_mdless_op(ctx, key, c, sign, tbs, tbslen, sig, slen,
+                                prov);
 }
 
 /*
@@ -424,6 +430,7 @@ hybrid_sig_digest_sign(void *vctx,
     HYBRID_KEY *key = ctx->key;
     HYBRID_SIG_COMP c0, c1;
     size_t len0 = 0, len1 = 0, maxsig;
+    const OSSL_PROVIDER *prov[HYBRID_MAX_COMP] = { NULL };   /* HYBRID_LOG ops */
 
     maxsig = hybrid_sig_max_sig_bytes(key);
 
@@ -455,7 +462,8 @@ hybrid_sig_digest_sign(void *vctx,
 
     /* component 0 signature, written after the 4-byte length prefix */
     if (!hybrid_sig_component_op(ctx, key, &c0, 1, tbs, tbslen,
-                                 sig + sizeof(uint32_t), &len0)) {
+                                 sig + sizeof(uint32_t), &len0,
+                                 &prov[HYBRID_COMP_ALG1])) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "hybrid component 1 signing failed");
         return 0;
@@ -467,13 +475,15 @@ hybrid_sig_digest_sign(void *vctx,
 
     /* component 1 signature over the same message, appended as the tail */
     if (!hybrid_sig_component_op(ctx, key, &c1, 1, tbs, tbslen,
-                                 sig + sizeof(uint32_t) + len0, &len1)) {
+                                 sig + sizeof(uint32_t) + len0, &len1,
+                                 &prov[HYBRID_COMP_ALG2])) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "hybrid component 2 signing failed");
         return 0;
     }
 
     *siglen = sizeof(uint32_t) + len0 + len1;
+    hybrid_log_op(key, "sign", prov);
     return 1;
 }
 
@@ -489,6 +499,7 @@ hybrid_sig_digest_verify(void *vctx,
     HYBRID_KEY *key = ctx->key;
     HYBRID_SIG_COMP c0, c1;
     size_t len0, len1;
+    const OSSL_PROVIDER *prov[HYBRID_MAX_COMP] = { NULL };   /* HYBRID_LOG ops */
 
     if (!hybrid_have_pubkey(key)) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PUBLIC_KEY,
@@ -523,7 +534,7 @@ hybrid_sig_digest_verify(void *vctx,
     /* verify component 0 (after the length prefix) */
     if (!hybrid_sig_component_op(ctx, key, &c0, 0, tbs, tbslen,
                                  (unsigned char *)sig + sizeof(uint32_t),
-                                 &len0)) {
+                                 &len0, &prov[HYBRID_COMP_ALG1])) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "hybrid component 1 verification failed");
         return 0;
@@ -532,12 +543,13 @@ hybrid_sig_digest_verify(void *vctx,
      * md-less component on both the sign and verify sides */
     if (!hybrid_sig_component_op(ctx, key, &c1, 0, tbs, tbslen,
                                  (unsigned char *)sig + sizeof(uint32_t) + len0,
-                                 &len1)) {
+                                 &len1, &prov[HYBRID_COMP_ALG2])) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "hybrid component 2 verification failed");
         return 0;
     }
 
+    hybrid_log_op(key, "verify", prov);
     return 1;
 }
 
