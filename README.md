@@ -28,6 +28,8 @@ relying on internal OpenSSL headers.
 
 **Algorithms served:** 56 hybrid KEMs + 30 hybrid signatures = 86 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 138 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 86 hybrids (108 total).
 
+**Usable in TLS:** 48 of the 56 hybrid KEMs have a TLS group code point (also checked by `hybrid_count_test`); the rest (X-Wing and the research-only rows) are KEM-API only, as are all composite KEMs. How many groups a given installation actually offers is lower and decided at run time: groups the OpenSSL default provider already serves are left to it (cede-to-default), and a group is offered only if every component is available, which depends on the loaded component providers and the OpenSSL version (e.g. `curveSM2MLKEM768` needs OpenSSL 4.0+).
+
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
 in `composite_kem_prov.h`) — those tables are the single source of truth. Names, OIDs and TLS code points match their origins:

@@ -18,6 +18,9 @@
  *   <core> hybrid algorithms; with `-DHYBRID_COMPOSITE`, <csig> composite
  *   signatures + <ckem> composite KEMs = <comp> more, for <total> total.
  *
+ * A second line, "**Usable in TLS:** <tls> of the <kem> hybrid KEMs ...", is
+ * checked the same way: <tls> is the number of HYBRID_KEM_LIST rows with a TLS
+ * group code point (tls_codepoint != 0).
  * Built inside the HYBRID_COMPOSITE block so all four counts are visible.
  *
  * argv[1] = path to README.md (passed by CMake from ${CMAKE_SOURCE_DIR}).
@@ -31,6 +34,7 @@
 #include "../composite_kem_prov.h"
 
 #define ANCHOR "**Algorithms served:**"
+#define TLS_ANCHOR "**Usable in TLS:**"
 
 /* Pull the first n non-negative integers appearing at/after p into out[]. */
 static int scan_ints(const char *p, long *out, int n)
@@ -58,11 +62,15 @@ int main(int argc, char **argv)
     const long core  = kem + sig;
     const long comp  = csig + ckem;
     const long total = core + comp;
-    long v[7];
+    long v[7], t[2], tls = 0;
     char *buf, *anchor;
     long flen;
     FILE *f;
     int fail = 0;
+
+    for (size_t i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+        if (hybrid_kem_table[i].tls_codepoint != 0)
+            tls++;
 
     if (argc < 2) {
         fprintf(stderr, "usage: %s <path-to-README.md>\n", argv[0]);
@@ -122,13 +130,25 @@ int main(int argc, char **argv)
     CHECK("composite KEMs",      v[4], ckem);
     CHECK("composite total",     v[5], comp);
     CHECK("grand total",         v[6], total);
+
+    if ((anchor = strstr(buf, TLS_ANCHOR)) == NULL
+            || scan_ints(anchor + strlen(TLS_ANCHOR), t, 2) != 2) {
+        fprintf(stderr, "FAIL: README missing \"%s <tls> of the <kem> ...\"\n",
+                TLS_ANCHOR);
+        fail = 1;
+    } else {
+        printf("README TLS line says: tls=%ld of kem=%ld (tables: %ld of %ld)\n",
+               t[0], t[1], tls, kem);
+        CHECK("hybrid KEMs with a TLS code point", t[0], tls);
+        CHECK("hybrid KEMs (TLS line)",            t[1], kem);
+    }
 #undef CHECK
 
     free(buf);
     if (fail) {
         fprintf(stderr,
-                "\nUpdate the \"Algorithms served:\" line in README.md to match "
-                "the algorithm tables.\n");
+                "\nUpdate the \"Algorithms served:\" / \"Usable in TLS:\" lines "
+                "in README.md to match the algorithm tables.\n");
         return 1;
     }
     printf("PASS: README headline matches the algorithm tables\n");
