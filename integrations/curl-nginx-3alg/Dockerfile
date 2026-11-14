@@ -17,8 +17,8 @@
 #     ### +++ ADDED: hybrid-provider demo +++
 # so a reviewer can confirm the functional change is confined to config.
 #
-# Build (context = repo root):   docker build -f integrations/curl-nginx-3alg/Dockerfile -t hp-3alg .
-# Run the proof:                 docker run --rm hp-3alg
+# Build (context = repo root):   docker build -f integrations/curl-nginx-3alg/Dockerfile -t hyp-3alg .
+# Run the proof:                 docker run --rm hyp-3alg
 # =============================================================================
 
 ARG ALPINE_VERSION=3.21
@@ -159,12 +159,14 @@ RUN OPENSSL_CONF=/dev/null openssl req -x509 -newkey ec -pkeyopt ec_paramgen_cur
 COPY integrations/curl-nginx-3alg/openssl.cnf        ${INSTALLDIR}/ssl/openssl.cnf
 COPY integrations/curl-nginx-3alg/openssl-stock.cnf  ${INSTALLDIR}/ssl/openssl-stock.cnf
 COPY integrations/curl-nginx-3alg/nginx.conf         ${NGINX_PREFIX}/conf/nginx-demo.conf
+### +++ ADDED: long-running server (entrypoint.sh) + client validator
+### (connect.sh), sharing paths/config via hyp-env.sh +++
+COPY integrations/curl-nginx-3alg/hyp-env.sh          ${INSTALLDIR}/bin/hyp-env.sh
 COPY integrations/curl-nginx-3alg/entrypoint.sh      ${INSTALLDIR}/bin/entrypoint.sh
-### +++ ADDED (opt-in): trace collector/analyser (used when HP_TRACE=1) +++
-COPY integrations/curl-nginx-3alg/tls-trace.sh       ${INSTALLDIR}/bin/tls-trace.sh
+COPY integrations/curl-nginx-3alg/connect.sh         ${INSTALLDIR}/bin/connect.sh
 ### +++ ADDED (opt-in): what works WITHOUT openssl.cnf (`docker run … noconf.sh`) +++
 COPY integrations/curl-nginx-3alg/noconf.sh          ${INSTALLDIR}/bin/noconf.sh
-RUN chmod +x ${INSTALLDIR}/bin/entrypoint.sh ${INSTALLDIR}/bin/tls-trace.sh ${INSTALLDIR}/bin/noconf.sh
+RUN chmod +x ${INSTALLDIR}/bin/entrypoint.sh ${INSTALLDIR}/bin/connect.sh ${INSTALLDIR}/bin/noconf.sh
 
 # -----------------------------------------------------------------------------
 ### === oqs-demos: slim runtime stage ===
@@ -184,4 +186,7 @@ ENV LD_LIBRARY_PATH=${INSTALLDIR}/lib64
 ENV OPENSSL_CONF=${INSTALLDIR}/ssl/openssl.cnf
 
 EXPOSE 4433
-CMD ["entrypoint.sh"]
+# server (default): nginx in the foreground; selftest: one-shot CI run;
+# any other command (noconf.sh, bash, ...) is run as given.
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["server"]

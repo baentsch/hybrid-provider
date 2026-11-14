@@ -5,7 +5,10 @@ software — a currently-released **curl** and **nginx** — purely as an
 `openssl.cnf` plugin, and that one hybrid KEM group can be composed from **three
 different crypto providers at once**.
 
-The handshake negotiates the draft-preussmattsson group
+The image runs an nginx server offering every hybrid KEM group the hybrid
+provider serves in it, and a client validator (`connect.sh`) that checks, per
+group, which KEM was actually negotiated and which provider served each
+component. The headline group is the draft-preussmattsson
 **`HQCKEM192MLKEM768X25519`** (TLS codepoint `0xfe44`), whose three components are
 each served by a different provider:
 
@@ -38,7 +41,7 @@ from the working tree:
 
 ```sh
 # default image (proves the negotiated group)
-docker build -f integrations/curl-nginx-3alg/Dockerfile -t hp-3alg .
+docker build -f integrations/curl-nginx-3alg/Dockerfile -t hyp-3alg .
 ```
 
 That is the only command needed; then see [USAGE.md](USAGE.md) to run it.
@@ -50,7 +53,7 @@ second image with OpenSSL's tracing compiled in (off by default — a single
 conditional word on the OpenSSL `./config` line):
 
 ```sh
-docker build -f integrations/curl-nginx-3alg/Dockerfile --build-arg ENABLE_TRACE=1 -t hp-3alg-trace .
+docker build -f integrations/curl-nginx-3alg/Dockerfile --build-arg ENABLE_TRACE=1 -t hyp-3alg-trace .
 ```
 
 ### Build arguments
@@ -104,8 +107,9 @@ provider instead (still all 3 algorithms, from 2 providers) — see
 |------|---------|
 | `Dockerfile` | multi-stage build of the shared OpenSSL + all providers + nginx + curl |
 | `openssl.cnf` / `openssl-stock.cnf` | the hybrid config and the stock baseline; their `diff` is the whole functional change |
-| `nginx.conf` | TLS 1.3 server offering only `HQCKEM192MLKEM768X25519` |
-| `entrypoint.sh` | default container command — runs and asserts the proof |
-| `tls-trace.sh` | opt-in provenance tracer (used with `HP_TRACE=1`) |
+| `nginx.conf` | nginx config template; the entrypoint fills in every offered group and logs the negotiated one per request |
+| `entrypoint.sh` | container entrypoint: `server` (default, long-running), `selftest` (one-shot), or any other command |
+| `connect.sh` | client validator: per group, the negotiated KEM from curl, `s_client`, the server and its log, plus component provenance on the trace image |
+| `hyp-env.sh` | shared paths, active config and group derivation for both scripts |
 | `noconf.sh` | opt-in test: what still works with the `openssl.cnf` removed (CLI-only activation) |
 | `build-wolfprovider-lean.sh` | lean wolfSSL+wolfProvider build + the drift guard |

@@ -6,143 +6,170 @@ read the output, and how to poke at it interactively.
 
 ## What the image is
 
-A single, self-contained image that runs **both** sides of a TLS 1.3 handshake —
-an nginx server and a curl client — and proves they negotiate the
-draft-preussmattsson hybrid KEM group **`HQCKEM192MLKEM768X25519`**, whose three
-components are supplied by three different OpenSSL providers (X25519 ← default,
-ML-KEM-768 ← wolfProvider, HQC-192 ← oqsprovider), composed by hybrid-provider
-through `openssl.cnf` alone. It is a **demonstration/validation image**, not a
-production server.
+A self-contained image with an **nginx TLS 1.3 server** that offers every hybrid
+KEM group the hybrid provider can serve in it, and a **client validator**
+(`connect.sh`) that connects with curl and `openssl s_client` and checks which
+KEM group was actually negotiated. The headline group is the draft-preussmattsson
+**`HQCKEM192MLKEM768X25519`**, whose three components come from three different
+OpenSSL providers (X25519 ← default, ML-KEM-768 ← wolfProvider, HQC-192 ←
+oqsprovider), composed by hybrid-provider through `openssl.cnf` alone. It is a
+**demonstration/validation image**, not a production server.
 
 ## Quick start
 
 ```sh
-docker run --rm hp-3alg
+# server: runs in the foreground until the container is stopped
+docker run -d --name hyp -p 4433:4433 hyp-3alg
+
+# client: validate every offered group (exit 0 = all OK)
+docker exec hyp connect.sh
+docker exec hyp connect.sh HQCKEM192MLKEM768X25519   # or just some groups
+
+docker logs -f hyp      # server log: one line per request with the negotiated group
+docker stop hyp && docker rm hyp
 ```
 
-The container runs the proof and exits. **Exit code 0 = PASS**: curl and nginx
-completed the handshake over `HQCKEM192MLKEM768X25519`. Non-zero = the expected
-group was not negotiated (the output shows why). Nothing listens after it exits;
-it is a one-shot self-test, not a long-running service.
+For CI, `selftest` does both in one container and exits with the client's result:
 
-## Reading the output
+```sh
+docker run --rm hyp-3alg selftest
+```
 
-The run prints these sections in order:
+## What the server offers
 
-1. **component → provider map** — the three components and the provider each is
-   steered to.
-2. **config-only proof** — `diff` of `openssl-stock.cnf` vs `openssl.cnf`: the
-   entire functional change is that one `[hybrid_sect]` stanza.
-3. **group availability without / with the plugin** — the group is absent from
-   `openssl list -tls-groups` under the stock config and present under the hybrid
-   config.
-4. **curl -v** — the real client handshake; look for
-   `SSL connection using TLSv1.3 / … / HQCKEM192MLKEM768X25519`, then the HTTP 200
-   body.
-5. **openssl s_client** — an independent cross-check printing
-   `Negotiated TLS1.3 group: HQCKEM192MLKEM768X25519`.
-6. **nginx debug log** — server-side handshake confirmation.
-7. **RESULT** — `PASS`/`FAIL`.
+At start the entrypoint derives the group list from what is actually loaded:
+every TLS group available under the hybrid config minus those OpenSSL offers
+without any cnf. Nothing is hardcoded. Two things deliberately keep groups out:
+
+- **Ceded groups.** Groups the default provider already serves natively are
+  left to it (cede-to-default), so they are not part of this demo.
+- **Steering** (`HYP_STEERING`, below). `alg<N>-propquery` is positional:
+  `alg2` pins the second component of *every* group. Pinned strictly to
+  wolfProvider, which only has ML-KEM, that leaves the 10 ML-KEM-based groups;
+  `max` mode offers all 44.
+
+The startup output shows the component steering, the `diff` between the stock
+and the hybrid `openssl.cnf` (the entire functional change), and the offered
+groups. A `*` marks names the stock cnf also offers (oqsprovider's own hybrids);
+here the hybrid provider serves them.
+
+Every handshake is logged in nginx's `kem` access-log format, to stdout and to
+`/opt/nginx/logs/kem-access.log`:
+
+```
+uri=/kem/HQCKEM192MLKEM768X25519?id=7936cd0b2af6 curve=HQCKEM192MLKEM768X25519 protocol=TLSv1.3 cipher=TLS_AES_256_GCM_SHA384 client=127.0.0.1 time=...
+```
+
+The response body also carries `negotiated=<group>` (nginx's `$ssl_curve`), so
+any client can see the server's view of the handshake.
+
+## Validating with connect.sh
+
+For each group, `connect.sh` offers only that group and checks the negotiated
+group from independent sources:
+
+| source | evidence |
+|--------|----------|
+| `curl` | curl's own `SSL connection using TLSv1.3 / … / <group>` |
+| `s_client` | `Negotiated TLS1.3 group: <group>` from `openssl s_client` |
+| `server` | nginx's `$ssl_curve`, echoed in the response body |
+| `log` | nginx's access-log line for this exact request (matched by a random request id); `n/a` when the client runs outside the server's container |
+| `comps` | which provider each component came from (trace-enabled image only, see below) |
+
+```
+[OK  ] HQCKEM192MLKEM768X25519
+         curl=HQCKEM192MLKEM768X25519  s_client=HQCKEM192MLKEM768X25519  server=HQCKEM192MLKEM768X25519  log=HQCKEM192MLKEM768X25519
+         comps: MLKEM768<-wolfprov X25519<-default hqc3<-oqsprovider
+```
+
+A group is OK when every available source reports exactly the offered group.
+
+### Component provenance (trace-enabled image)
+
+On an image built with `--build-arg ENABLE_TRACE=1`, `connect.sh` also traces
+the client's key-share generation for each group (the same per-component
+fetches the TLS client makes) and reads the OpenSSL `QUERY` trace lines for the
+hybrid provider's private component context. Only key-type fetches count, so
+the RNG, cipher and digest lookups those keygens also make are ignored.
+
+A trace line records the property query, not which provider answered it. So a
+component's provider is **proven** only when it was fetched with a strict
+`provider=<name>` pin. A preference (`?provider=`) or no query is shown as
+`unverified(…)`. That is a FAIL under `HYP_STEERING=strict` and `OK*` under
+`max`.
 
 ## Environment variables
 
-| variable | values | effect |
-|----------|--------|--------|
-| `HP_MLKEM_PROVIDER` | `wolfprov` (default) / `default` | which provider supplies the ML-KEM-768 component (any provider in `component-providers` that serves it). If `wolfprov` and the wolfProvider module is missing, the entrypoint auto-falls back to `default`: still all 3 algorithms, from 2 providers. A provider that cannot serve ML-KEM-768 makes the run FAIL; the steering is strict. The oqsprovider build in this image registers no standalone ML-KEM-768, so `oqsprovider` is not a valid value. |
-| `HP_TRACE` | `0` (default) / `1` | when `1`, also run `tls-trace.sh` to show which provider served each component. Meaningful only on an image built with `--build-arg ENABLE_TRACE=1` (otherwise it prints how to rebuild). |
+| variable | values | used by | effect |
+|----------|--------|---------|--------|
+| `HYP_STEERING` | `strict` (default) / `max` | server, client | `strict`: `alg2-propquery = provider=<ML-KEM provider>`; only groups whose second component that provider serves (10 here), every component provable. `max`: `?provider=` preference; every group whose components exist (44 here), but components not served by the preferred provider are unverified. |
+| `HYP_MLKEM_PROVIDER` | `wolfprov` (default) / `default` | server, client | which provider `alg2` names (any provider in `component-providers` that serves ML-KEM). If `wolfprov` and its module is missing, it falls back to `default` and drops `wolfprov` from `component-providers`. The oqsprovider build here has no standalone ML-KEM, so `oqsprovider` would offer no ML-KEM groups. |
+| `HYP_SERVER_GROUPS` | group list (`:` or space separated) | server | offer exactly these instead of the derived list |
+| `HYP_PORT` | port (default `4433`) | server, client | listen / connect port |
+| `HYP_HOST` | host (default `127.0.0.1`) | client | server to connect to; the certificate is verified as `localhost` |
+| `HYP_TRACE` | `1` (default) / `0` | client | `0` skips component provenance |
 
-Examples:
+A client in another container must use the same `HYP_STEERING` /
+`HYP_MLKEM_PROVIDER` as the server, so that it can offer the same groups:
 
 ```sh
-# source ML-KEM-768 from the default provider instead of wolfProvider
-docker run --rm -e HP_MLKEM_PROVIDER=default hp-3alg
-
-# provenance trace (requires the ENABLE_TRACE=1 image)
-docker run --rm -e HP_TRACE=1 hp-3alg-trace
+docker run --rm --network container:hyp -e HYP_STEERING=max hyp-3alg connect.sh
 ```
-
-## Provenance trace: what crypto really operates
-
-On the trace-enabled image, `HP_TRACE=1` runs one handshake with OpenSSL tracing
-and `tls-trace.sh` analyses it, printing a table that cross-checks the cnf's
-intent against what actually happened:
-
-```
-COMPONENT  FETCH-NAME   CNF-STEER    RESOLVED     MATCH
-X25519     X25519       default      default      OK
-ML-KEM-768 MLKEM768     wolfprov     wolfprov     OK
-HQC-192    hqc3         oqsprovider  oqsprovider  OK
-```
-
-The evidence comes from OpenSSL `QUERY` trace lines showing each component being
-fetched in the hybrid provider's *private* (non-default) library context under
-its `provider=…` property query.
 
 ## Exploring interactively
 
-Drop into a shell to run the tools yourself:
-
 ```sh
-docker run --rm -it hp-3alg bash
+docker exec -it hyp bash            # into the running server container
+docker run --rm -it hyp-3alg bash   # or a fresh one without a server
 ```
-
-Useful layout inside the image:
 
 | path | what |
 |------|------|
 | `/opt/pq` | the shared OpenSSL install (prefix); `bin/openssl`, `bin/curl` |
 | `/opt/pq/lib64/ossl-modules` | provider modules: `hybrid.so`, `oqsprovider.so`, `wolfprov.so` |
-| `/opt/pq/ssl/openssl.cnf` | the active hybrid config (also `OPENSSL_CONF`) |
+| `/opt/pq/ssl/openssl.cnf` | the hybrid config as shipped (also `OPENSSL_CONF`) |
+| `/tmp/hyp/openssl-active.cnf` | the config in use, after `HYP_STEERING` / `HYP_MLKEM_PROVIDER` |
+| `/tmp/hyp/server-groups`, `/tmp/hyp/nginx.conf` | the offered groups and the generated nginx config |
 | `/opt/pq/ssl/openssl-stock.cnf` | the stock baseline (for the diff) |
 | `/opt/pq/demo/` | demo CA + server cert/key (classical ECDSA P-256) |
-| `/opt/nginx` | nginx prefix; `sbin/nginx`, `conf/nginx-demo.conf` |
-
-Some things to try:
+| `/opt/nginx` | nginx prefix; `conf/nginx-demo.conf` is the template |
 
 ```sh
-# which providers/groups are active under the hybrid config
+export OPENSSL_CONF=/tmp/hyp/openssl-active.cnf
 openssl list -providers
-openssl list -tls-groups | tr ':' '\n' | grep HQCKEM
-
-# re-run just the proof, or just the trace (if server is up on 4433)
-entrypoint.sh
-tls-trace.sh 4433
-
-# start the server yourself and connect manually
-nginx -p /opt/nginx -c conf/nginx-demo.conf &
 openssl s_client -connect 127.0.0.1:4433 -groups HQCKEM192MLKEM768X25519 \
     -CAfile /opt/pq/demo/CA.crt -tls1_3
-curl -v --curves HQCKEM192MLKEM768X25519 --cacert /opt/pq/demo/CA.crt https://127.0.0.1:4433/
+curl -v --curves HQCKEM192MLKEM768X25519 --cacert /opt/pq/demo/CA.crt https://localhost:4433/
 ```
 
 ## Changing the provider split
 
 The split is pure configuration. Edit the `alg*-propquery` lines in
-`/opt/pq/ssl/openssl.cnf` (or mount your own over it) to re-route any component
-to any loaded provider — e.g. `alg2-propquery = provider=default` sources
-ML-KEM-768 from the default provider. The providers available to the components
-are those listed in `component-providers` (loaded into the hybrid provider's
-private context). No rebuild is needed.
+`/opt/pq/ssl/openssl.cnf` (or mount your own over it) to re-route a component
+slot to any loaded provider, e.g. `alg2-propquery = provider=default` sources the
+second component from the default provider. The providers available to the
+components are those listed in `component-providers` (loaded into the hybrid
+provider's private context). No rebuild is needed.
 
-The demo uses the strict form `provider=<name>`: if that provider cannot serve
-the component, the group disappears and the run fails. The preference form
-`?provider=<name>` would instead fall back silently to any provider that has
-the component, so the provider that actually serves it would no longer be the
-one the cnf names.
+The default strict form `provider=<name>` makes a group disappear when that
+provider cannot serve its component. The preference form `?provider=<name>`
+falls back silently to any provider that has the component, so the cnf no
+longer says which provider served it (see `HYP_STEERING=max`).
 
 ## The scripts
 
 | script | when it runs | what it does |
 |--------|--------------|--------------|
-| `entrypoint.sh` | default `CMD` | builds the active config (honouring `HP_MLKEM_PROVIDER`), starts nginx, runs curl + `openssl s_client`, asserts the negotiated group; optionally invokes the tracer when `HP_TRACE=1` |
-| `tls-trace.sh` | via `HP_TRACE=1`, or manually with a port arg | runs one traced handshake + key-share keygen and reports which provider served each component |
-| `noconf.sh` | manually: `docker run --rm hp-3alg noconf.sh` | removes `openssl.cnf`, then asserts what each tool can still do with command-line provider activation alone (see [Without openssl.cnf](#without-opensslcnf)) |
+| `entrypoint.sh` | container entrypoint | `server` (default): builds the active config, derives the group list, runs nginx in the foreground. `selftest`: server in the background plus `connect.sh`, exit with its result. Anything else is run as given (`noconf.sh`, `bash`, …). |
+| `connect.sh` | `docker exec <container> connect.sh [GROUP...]` | client validation as described above |
+| `hyp-env.sh` | sourced by both | shared paths, the active config, and the group derivation |
+| `noconf.sh` | `docker run --rm hyp-3alg noconf.sh` | removes `openssl.cnf`, then asserts what each tool can still do with command-line provider activation alone (see [Without openssl.cnf](#without-opensslcnf)) |
 | `build-wolfprovider-lean.sh` | **build time only** | compiles wolfSSL + wolfProvider against the shared OpenSSL and asserts the pinned wolfSSL flags against wolfProvider upstream (not used at run time) |
 
 ## Without openssl.cnf
 
 ```sh
-docker run --rm hp-3alg noconf.sh
+docker run --rm hyp-3alg noconf.sh
 ```
 
 removes the config from `OPENSSLDIR`, unsets `OPENSSL_CONF`, and asserts the
@@ -161,9 +188,9 @@ wolfProvider), the provider that serves it is not pinned.
 
 ## Caveats
 
-- TLS codepoint `0xfe44` for `HQCKEM192MLKEM768X25519` is **provisional / private-use**
-  (draft-preussmattsson), not an IANA assignment — fine for this closed
-  client+server demo, not for interop with other stacks.
+- The HQC groups' TLS code points (e.g. `0xfe44` for `HQCKEM192MLKEM768X25519`)
+  are **provisional / private-use** (draft-preussmattsson), not IANA assignments:
+  fine for this closed client+server setup, not for interop with other stacks.
 - The server certificate is a throwaway classical ECDSA P-256 cert; the KEM group
   is independent of the certificate signature algorithm.
 - This image is for demonstration and validation only.
