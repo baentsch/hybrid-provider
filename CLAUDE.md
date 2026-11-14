@@ -88,6 +88,8 @@ hybrid-provider/
     ├── hybrid_encode_test.c       ← SPKI/PKCS8 key round-trips vs oqsprovider
     ├── hybrid_kem_encode_test.c   ← KEM key-file round-trips: hybrid↔oqs (HYBRID_KEM_ENCODERS) + composite self (HYBRID_COMPOSITE)
     ├── hybrid_param_test.c        ← raw-param (OSSL_PARAM) round-trips
+    ├── hybrid_op_neg_test.c       ← sign/verify + encaps/decaps misuse negatives (all families)
+    ├── hybrid_dispatch_test.c     ← dup / ctx-dup / introspection / set_params entry points
     ├── hybrid_cms_test.c          ← CMS SignedData
     ├── hybrid_cms_kem_test.c      ← composite KEM (both tiers) as CMS KEMRI recipient (RFC 9629)
     ├── hybrid_capability_test.c   ← TLS code-point parity vs default/oqsprovider

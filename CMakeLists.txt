@@ -482,6 +482,23 @@ set_tests_properties(hybrid_decode_neg_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Operation-level negatives (sign/verify, encaps/decaps misuse: missing key
+# material, short buffers, malformed signatures/ciphertexts) and the dispatch
+# entry points no round-trip reaches (key/ctx dup, param introspection,
+# set_params guards). Every family iterated from its table; composite with
+# -DHYBRID_COMPOSITE.
+foreach(_t hybrid_op_neg_test hybrid_dispatch_test)
+    add_executable(${_t} test/${_t}.c)
+    target_include_directories(${_t} PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(${_t} PRIVATE OpenSSL::Crypto)
+    if(HYBRID_COMPOSITE)
+        target_compile_definitions(${_t} PRIVATE HYBRID_COMPOSITE)
+    endif()
+    add_test(NAME ${_t} COMMAND ${_t})
+    set_tests_properties(${_t} PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}")
+endforeach()
+
 # CMS SignedData with hybrid signatures (in-process analog of oqsprovider's CMS
 # scripts). ML-DSA hybrids need only the default provider; Falcon/MAYO/… self-
 # skip without oqsprovider, and each algorithm self-skips if unavailable.

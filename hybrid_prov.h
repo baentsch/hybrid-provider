@@ -1216,6 +1216,10 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out,
 extern const OSSL_DISPATCH hybrid_spki_der_decoder_functions[];
 extern const OSSL_DISPATCH hybrid_pkcs8_der_decoder_functions[];
 
+/* Cap on the decoder input read from the core BIO: hybrid keys are a few KB at
+ * most. Shared with the tests that probe the bound (hybrid_decode_neg_test). */
+#define HYBRID_MAX_KEY_DER (1024 * 1024)
+
 /*
  * Parse a SubjectPublicKeyInfo into its algorithm OID and raw public-key bits
  * WITHOUT the eager EVP_PKEY decode that d2i_X509_PUBKEY() performs — that eager

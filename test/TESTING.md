@@ -18,6 +18,10 @@ this file is the *what-covers-what* map.
   fewest rows self-skip. Counts on 3.0–3.4 or without oqsprovider are strictly
   lower (more skips).
 - Command: `ctest -V` (full suite, 40 tests, all passed).
+- The per-algorithm counts below predate #41 `hybrid_op_neg_test` and #42
+  `hybrid_dispatch_test`. Both iterate every row of every family table, so each
+  algorithm whose components are available gains two runs on top of its listed
+  count.
 - Attribution: each algorithm's public name was matched as a whole token in the
   per-test verbose output and classified **run** (appears on at least one
   non-SKIP line) vs **skipped** (appears only on SKIP lines). Nine tests report
@@ -42,7 +46,10 @@ layered and the overlaps are complementary, not duplicative:
 - **Different surface.** `hybrid_param_test` (raw `OSSL_PARAM`),
   `hybrid_encode_test` (SPKI/PKCS8 DER), `hybrid_text_test` (`-text`),
   `hybrid_extract_test` (component split), and `hybrid_decode_neg_test`
-  (malformed input) each hit a distinct serialization/decode path.
+  (malformed input) each hit a distinct serialization/decode path;
+  `hybrid_op_neg_test` (operation misuse) and `hybrid_dispatch_test` (dup /
+  ctx-dup / introspection / set_params entry points) reach provider entry points
+  that no round-trip calls.
 - **KAT vs self-consistency.** `*_kat_test` / `xwing_kat_test` pin behaviour to
   external draft vectors; the interop/round-trip tests only prove internal
   consistency.
@@ -55,7 +62,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 
 ## Test purposes (two lines each)
 
-### In-process functional (`ctest` #1–#30, #37–#40)
+### In-process functional (`ctest` #1–#30, #37–#39, #41–#42)
 
 #### 1. hybrid_interop_test
 
@@ -107,7 +114,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — `pkey -text` coverage: every key type prints a named, two-component, non-truncated text form (hybrid + composite families).
 #### 17. hybrid_decode_neg_test
 
-— Decoder robustness: multi-object PEM (target not first) and malformed/truncated/garbage SPKI must fail cleanly, no crash (ASan).
+— Decoder robustness: multi-object PEM (target not first), malformed/truncated/garbage SPKI, and per-OID crafted SPKI/PKCS#8 (every family) must fail cleanly; oversize input and foreign OIDs are refused (ASan).
 #### 18. hybrid_cms_test
 
 — CMS SignedData with hybrid signatures (signed-attr and `-noattr`); `OQS_CEDE_HYBRIDS` so our names aren't shadowed; per-alg self-skip.
@@ -156,6 +163,12 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 #### 39. hybrid_leakcheck_test
 
 — Leak-check with teeth: exercise+free every allocation path across all 138 algorithms, unload-clean before LSan (no broad libcrypto catch-all).
+#### 41. hybrid_op_neg_test
+
+— Operation misuse across every family: missing key material at init, short output buffers, malformed signatures and ciphertexts must fail cleanly (never the real secret).
+#### 42. hybrid_dispatch_test
+
+— Entry points no round-trip reaches: key dup, ctx dup (incl. mid-stream), param introspection, set_params guards. Expectations come from probing each component standalone, so a component-provider limit is asserted as such.
 
 ### Benchmarks (guard-only smoke under `ctest`)
 
