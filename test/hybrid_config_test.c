@@ -35,16 +35,42 @@ static const char *module_dir;
 /* No provider module by this name exists anywhere on the search path. */
 #define BOGUS_PROVIDER "no-such-component-provider"
 
-/* Write an openssl.cnf loading default + hybrid, with optional extra hybrid
- * section lines (e.g. the propquery keys). With activate == 0 the hybrid
- * section is only registered, for a later explicit OSSL_PROVIDER_load().
- * Returns 1 on success. */
-static int write_cnf2(const char *path, const char *hybrid_extra, int activate)
+/* Directory for temporary files: $TMPDIR if set, else the platform default
+ * (POSIX P_tmpdir). */
+static const char *tmp_dir(void)
 {
-    FILE *f = fopen(path, "w");
+    const char *d = getenv("TMPDIR");
 
-    if (f == NULL)
+    if (d != NULL && *d != '\0')
+        return d;
+#ifdef P_tmpdir
+    return P_tmpdir;
+#else
+    return "/tmp";
+#endif
+}
+
+/*
+ * Create a unique temporary openssl.cnf loading default + hybrid, with optional
+ * extra hybrid-section lines (e.g. the propquery keys). With activate == 0 the
+ * hybrid section is only registered, for a later explicit OSSL_PROVIDER_load().
+ * Its path goes to path[pathsz]; the caller removes the file. Returns 1 on
+ * success (no file is left behind on failure).
+ */
+static int make_cnf(char *path, size_t pathsz, const char *hybrid_extra,
+                    int activate)
+{
+    int n = snprintf(path, pathsz, "%s/hybrid_cfg_test.XXXXXX", tmp_dir());
+    int fd;
+    FILE *f;
+
+    if (n < 0 || (size_t)n >= pathsz || (fd = mkstemp(path)) < 0)
         return 0;
+    if ((f = fdopen(fd, "w")) == NULL) {
+        close(fd);
+        remove(path);
+        return 0;
+    }
     fprintf(f,
             "openssl_conf = c\n"
             "[c]\nproviders = p\n"
@@ -53,13 +79,11 @@ static int write_cnf2(const char *path, const char *hybrid_extra, int activate)
             "[h]\nmodule = %s/hybrid.so\n%s%s",
             module_dir, activate ? "activate = 1\n" : "",
             hybrid_extra ? hybrid_extra : "");
-    fclose(f);
+    if (fclose(f) != 0) {
+        remove(path);
+        return 0;
+    }
     return 1;
-}
-
-static int write_cnf(const char *path, const char *hybrid_extra)
-{
-    return write_cnf2(path, hybrid_extra, 1);
 }
 
 /*
@@ -70,18 +94,15 @@ static int write_cnf(const char *path, const char *hybrid_extra)
  */
 static int load_fails_naming(const char *hybrid_extra, const char *needle)
 {
-    char cnf[] = "/tmp/hybrid_cfg_test.XXXXXX";
-    int fd = mkstemp(cnf);
+    char cnf[4096];
     OSSL_LIB_CTX *libctx = NULL;
     OSSL_PROVIDER *prov = NULL;
     const char *data;
     int flags, named = 0;
 
-    if (fd < 0)
+    if (!make_cnf(cnf, sizeof(cnf), hybrid_extra, 0))
         return 0;
-    close(fd);
-    if (write_cnf2(cnf, hybrid_extra, 0)
-            && (libctx = OSSL_LIB_CTX_new()) != NULL
+    if ((libctx = OSSL_LIB_CTX_new()) != NULL
             && OSSL_LIB_CTX_load_config(libctx, cnf)) {
         prov = OSSL_PROVIDER_load(libctx, "hybrid");
         while (ERR_get_error_all(NULL, NULL, NULL, &data, &flags) != 0)
@@ -99,16 +120,13 @@ static int load_fails_naming(const char *hybrid_extra, const char *needle)
  * (A keygen probe cannot tell: "?provider=hybrid" falls back to default.) */
 static int hybrid_active(const char *hybrid_extra)
 {
-    char cnf[] = "/tmp/hybrid_cfg_test.XXXXXX";
-    int fd = mkstemp(cnf);
+    char cnf[4096];
     OSSL_LIB_CTX *libctx = NULL;
     int ok = 0;
 
-    if (fd < 0)
+    if (!make_cnf(cnf, sizeof(cnf), hybrid_extra, 1))
         return -1;
-    close(fd);
-    if (write_cnf(cnf, hybrid_extra)
-            && (libctx = OSSL_LIB_CTX_new()) != NULL
+    if ((libctx = OSSL_LIB_CTX_new()) != NULL
             && OSSL_LIB_CTX_load_config(libctx, cnf))
         ok = OSSL_PROVIDER_available(libctx, "hybrid");
     OSSL_LIB_CTX_free(libctx);
@@ -120,18 +138,14 @@ static int hybrid_active(const char *hybrid_extra)
 /* Load cnf into a fresh libctx and try to keygen the hybrid; return 1 if ok. */
 static int keygen_ok(const char *hybrid_extra)
 {
-    char cnf[] = "/tmp/hybrid_cfg_test.XXXXXX";
-    int fd = mkstemp(cnf);
+    char cnf[4096];
     OSSL_LIB_CTX *libctx = NULL;
     EVP_PKEY_CTX *ctx = NULL;
     EVP_PKEY *pkey = NULL;
     int ok = 0;
 
-    if (fd < 0)
+    if (!make_cnf(cnf, sizeof(cnf), hybrid_extra, 1))
         return -1;
-    close(fd);
-    if (!write_cnf(cnf, hybrid_extra))
-        goto end;
     if ((libctx = OSSL_LIB_CTX_new()) == NULL
             || !OSSL_LIB_CTX_load_config(libctx, cnf))
         goto end;
