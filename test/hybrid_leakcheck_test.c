@@ -7,22 +7,18 @@
  *
  * Why this test exists
  * --------------------
- * The general HYBRID_SANITIZE leg runs LSan with the fast unwinder, so every
- * leak stack is captured only as [malloc, CRYPTO_malloc]; the broad
- * `leak:libcrypto` suppression in test/lsan.supp then matches that CRYPTO_malloc
- * frame and masks essentially any leak — INCLUDING a future unfreed allocation
- * in this provider's own code (all provider heap goes through OPENSSL_malloc ->
- * CRYPTO_malloc). That leg therefore cannot, by itself, catch a newly introduced
- * provider leak.
+ * The sanitizer build runs every test under LSan with test/lsan.supp, which
+ * suppresses only the un-instrumented PQ dependencies' init state (no
+ * `leak:libcrypto` catch-all; all provider heap goes through OPENSSL_malloc ->
+ * CRYPTO_malloc, so such a rule would mask the provider's own leaks). A provider
+ * leak therefore fails whichever test reaches the leaking path; this test makes
+ * sure every path is reached.
  *
- * This test closes that gap. It is UNLOAD-CLEAN: it frees every object it makes
- * and unloads every provider before freeing the libctx, so the provider teardown
- * (and the libctx method-store cleanup) runs before LSan's end-of-run check. An
- * unload-clean run leaves nothing for the provider to leak, so it is run WITHOUT
- * the `leak:libcrypto` catch-all (CMake pins LSAN_OPTIONS to test/lsan_leakcheck.supp,
- * which suppresses only the genuine one-time init state of the un-instrumented PQ
- * dependencies). Consequently, a leak newly introduced in ANY exercised provider
- * path — keygen, key free, import/export, match, sign/verify, encaps/decaps,
+ * It is UNLOAD-CLEAN, like every test (test/prov_util.h): it frees every object
+ * it makes and unloads every provider before freeing the libctx, so the provider
+ * teardown (and the libctx method-store cleanup) runs before LSan's end-of-run
+ * check. Consequently, a leak newly introduced in ANY exercised provider path —
+ * keygen, key free, import/export, match, sign/verify, encaps/decaps,
  * encode/decode — surfaces unmasked and fails this test.
  *
  * It drives the full inventory (hybrid signatures + KEMs and, when built,
@@ -285,8 +281,7 @@ int main(void)
 #endif
 
     /* Unload-clean shutdown: unload every provider we loaded so teardown runs
-     * before the libctx (and LSan's leak check). This is what lets the test run
-     * without the leak:libcrypto catch-all — see the file header. */
+     * before the libctx (and LSan's leak check) — see the file header. */
     OSSL_PROVIDER_unload(oqs);
     OSSL_PROVIDER_unload(hyb);
     OSSL_PROVIDER_unload(dflt);

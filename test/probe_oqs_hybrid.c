@@ -21,6 +21,7 @@
 #include <openssl/provider.h>
 #include <openssl/core_names.h>
 #include <openssl/err.h>
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 static size_t octet_size(EVP_PKEY *k, const char *pname)
 {
@@ -73,14 +74,16 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL) {
         fprintf(stderr, "failed to load 'default' provider\n");
         ERR_print_errors_fp(stderr);
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
-    if (OSSL_PROVIDER_load(ctx, "oqsprovider") == NULL) {
+    if (hybrid_test_load(ctx, "oqsprovider") == NULL) {
         fprintf(stderr, "failed to load 'oqsprovider' provider\n");
         ERR_print_errors_fp(stderr);
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
 
@@ -90,6 +93,6 @@ int main(void)
     probe(ctx, "SecP256r1MLKEM512", 65, 800);
     probe(ctx, "x448_mlkem768",   56, 1184);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return 0;
 }

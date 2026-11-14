@@ -31,6 +31,7 @@
 #include "hybrid_prov.h"      /* HYBRID_ALG_NAME_MAX (advertised-name buffer) */
 #include "cert_util.h"        /* hybrid_test_cert_set_cn */
 #include "tmp_util.h"         /* hybrid_test_tmpfile */
+#include "prov_util.h"        /* hybrid_test_load, hybrid_test_libctx_free */
 
 static int tests, passed, failed;
 #define TEST_START(n) do { tests++; printf("  %s ... ", n); fflush(stdout); } while (0)
@@ -215,7 +216,7 @@ static int can_keygen(OSSL_LIB_CTX *ctx, const char *name)
 int main(void)
 {
     OSSL_LIB_CTX *app = NULL, *oqs = NULL, *defonly = NULL;
-    OSSL_PROVIDER *od = NULL, *oq = NULL;
+    OSSL_PROVIDER *oq = NULL;
     /*
      * The group set is derived at runtime from oqsprovider's own TLS-GROUP
      * advertisement (issue #78) — NOT hand-maintained. A group qualifies when
@@ -237,6 +238,7 @@ int main(void)
      */
     const char *groups[HYBRID_MAX_GROUPS];
     size_t i, n = 0;
+    int rc = 1;
 
     module_dir = getenv("OPENSSL_MODULES");
     if (module_dir == NULL)
@@ -249,13 +251,14 @@ int main(void)
     oqs = OSSL_LIB_CTX_new();
     if (app == NULL || oqs == NULL) {
         fprintf(stderr, "context setup failed\n");
-        return 1;
+        goto end;
     }
-    if ((od = OSSL_PROVIDER_load(oqs, "default")) == NULL
-            || (oq = OSSL_PROVIDER_load(oqs, "oqsprovider")) == NULL) {
+    if (hybrid_test_load(oqs, "default") == NULL
+            || (oq = hybrid_test_load(oqs, "oqsprovider")) == NULL) {
         printf("oqsprovider unavailable -- SKIPPING\n");
         ERR_clear_error();
-        return 0;
+        rc = 0;
+        goto end;
     }
 
     /* Enumerate oqsprovider's advertised TLS groups (name + min TLS version). */
@@ -274,11 +277,11 @@ int main(void)
      */
     defonly = OSSL_LIB_CTX_new();
     if (defonly == NULL
-            || OSSL_PROVIDER_load(defonly, "default") == NULL
-            || OSSL_PROVIDER_load(defonly, "hybrid") == NULL) {
+            || hybrid_test_load(defonly, "default") == NULL
+            || hybrid_test_load(defonly, "hybrid") == NULL) {
         fprintf(stderr, "default-only probe context setup failed\n");
         ERR_print_errors_fp(stderr);
-        return 1;
+        goto end;
     }
     for (i = 0; i < (size_t)nadv; i++) {
         if (adv[i].min_tls == -1)                   /* not TLS-enabled (BIKE-L1) */
@@ -289,7 +292,7 @@ int main(void)
             continue;
         groups[n++] = adv[i].name;                  /* adv[] outlives this scope */
     }
-    OSSL_LIB_CTX_free(defonly);
+    hybrid_test_libctx_free(defonly);
     defonly = NULL;
 
     /* A non-empty derived set is part of the contract: an empty set would make
@@ -340,10 +343,11 @@ int main(void)
     printf("\nResults: %d/%d passed", passed, tests);
     if (failed) printf(" (%d FAILED)", failed);
     printf("\n");
+    rc = failed == 0 ? 0 : 1;
 
-    OSSL_PROVIDER_unload(oq);
-    OSSL_PROVIDER_unload(od);
-    OSSL_LIB_CTX_free(oqs);
-    OSSL_LIB_CTX_free(app);
-    return failed == 0 ? 0 : 1;
+end:    /* every exit, the SKIP included, frees what it set up */
+    hybrid_test_libctx_free(defonly);
+    hybrid_test_libctx_free(oqs);
+    hybrid_test_libctx_free(app);
+    return rc;
 }

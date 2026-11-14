@@ -45,6 +45,37 @@
 
 static const char *module_path;   /* OPENSSL_MODULES, for per-thread libctxs */
 
+/* The providers load_providers() loaded into one libctx. */
+typedef struct {
+    OSSL_PROVIDER *p[3];        /* default, [oqsprovider], hybrid */
+    int n;
+} PROVS;
+
+#if OPENSSL_VERSION_NUMBER < 0x30500000L
+/*
+ * Below 3.5 every libctx here also holds oqsprovider. This test guards THIS
+ * provider; concurrent teardown of a component provider is outside its scope,
+ * so there the libctx frees are serialized. From 3.5 on (no oqsprovider) they
+ * run concurrently.
+ */
+static pthread_mutex_t free_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+/* Unload pv's providers (hybrid first), then free libctx; the teardowns run in
+ * OSSL_LIB_CTX_free. NULL-safe. */
+static void release_providers(OSSL_LIB_CTX *libctx, PROVS *pv)
+{
+    while (pv->n > 0)
+        OSSL_PROVIDER_unload(pv->p[--pv->n]);
+#if OPENSSL_VERSION_NUMBER < 0x30500000L
+    pthread_mutex_lock(&free_lock);
+    OSSL_LIB_CTX_free(libctx);
+    pthread_mutex_unlock(&free_lock);
+#else
+    OSSL_LIB_CTX_free(libctx);
+#endif
+}
+
 /*
  * Load the providers a worker needs into `libctx`: the hybrid provider under
  * test, the default provider for the classical halves, and — on OpenSSL < 3.5,
@@ -57,29 +88,31 @@ static const char *module_path;   /* OPENSSL_MODULES, for per-thread libctxs */
  * oqsprovider is not loaded — the guard then exercises just the default and
  * hybrid providers, keeping it focused on the code under test.
  *
- * Returns the HYBRID provider handle (NULL on failure) for the caller to unload
- * before OSSL_LIB_CTX_free. OpenSSL defers a provider's teardown while a
- * load-reference is held, so unloading is what makes the hybrid teardown actually
- * run at libctx free — and run concurrently in the load/unload leg (test 3),
- * which is the coverage that leg exists for. Only the hybrid handle is unloaded:
- * this leg is scoped to THIS provider's teardown, so the component providers
- * (default, and oqsprovider below 3.5) are intentionally left loaded rather than
- * torn down here — their shutdown behaviour is not what this test covers. The
- * hybrid provctx keeps no shared mutable state, so tearing it down concurrently
- * is safe; the retained component-provider refs are library-init state filtered
- * by test/lsan.supp under ASan.
+ * Every handle goes to `pv`, for release_providers() to unload before it frees
+ * the libctx. OpenSSL defers a provider's teardown while a load-reference is
+ * held, so unloading is what makes the teardowns actually run at libctx free —
+ * concurrently in the load/unload leg (test 3), which is the coverage that leg
+ * exists for — and what leaves nothing for LeakSanitizer to report. A thread
+ * only ever releases its own libctx. (Not prov_util.h: its tracker is
+ * single-threaded, and test 3 loads from worker threads.)
  */
-static OSSL_PROVIDER *load_providers(OSSL_LIB_CTX *libctx)
+static int load_providers(OSSL_LIB_CTX *libctx, PROVS *pv)
 {
+    pv->n = 0;
     if (module_path != NULL)
         OSSL_PROVIDER_set_default_search_path(libctx, module_path);
-    if (OSSL_PROVIDER_load(libctx, "default") == NULL)
-        return NULL;
+    if ((pv->p[pv->n] = OSSL_PROVIDER_load(libctx, "default")) == NULL)
+        return 0;
+    pv->n++;
 #if OPENSSL_VERSION_NUMBER < 0x30500000L
-    (void)OSSL_PROVIDER_load(libctx, "oqsprovider");   /* PQ half; native >= 3.5 */
+    if ((pv->p[pv->n] = OSSL_PROVIDER_load(libctx, "oqsprovider")) != NULL)
+        pv->n++;                                    /* PQ half; native >= 3.5 */
 #endif
     ERR_clear_error();
-    return OSSL_PROVIDER_load(libctx, "hybrid");        /* caller unloads this */
+    if ((pv->p[pv->n] = OSSL_PROVIDER_load(libctx, "hybrid")) == NULL)
+        return 0;
+    pv->n++;
+    return 1;
 }
 
 static int sig_sign_verify(OSSL_LIB_CTX *libctx, EVP_PKEY *key,
@@ -325,13 +358,12 @@ static void *loadunload_worker(void *v)
 
     for (i = 0; i < 6; i++) {
         OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new();
-        OSSL_PROVIDER *hyb = NULL;
+        PROVS pv = { { NULL }, 0 };
         int ok = 0;
 
-        if (libctx != NULL && (hyb = load_providers(libctx)) != NULL)
+        if (libctx != NULL && load_providers(libctx, &pv))
             ok = do_kem(libctx, KEM_ALG);
-        OSSL_PROVIDER_unload(hyb);   /* drop our ref so hybrid teardown runs */
-        OSSL_LIB_CTX_free(libctx);
+        release_providers(libctx, &pv);   /* teardowns run here */
         if (!ok)
             atomic_fetch_add(failures, 1);
     }
@@ -367,14 +399,13 @@ static int test_fork(void)
     if (pid == 0) {
         /* Child: independent libctx, do real work, exit 0 on success. */
         OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new();
-        OSSL_PROVIDER *hyb = NULL;
+        PROVS pv = { { NULL }, 0 };
         int ok = 0;
 
         if (libctx != NULL) {
-            if ((hyb = load_providers(libctx)) != NULL)
+            if (load_providers(libctx, &pv))
                 ok = do_kem(libctx, KEM_ALG) && do_sig(libctx, SIG_ALG);
-            OSSL_PROVIDER_unload(hyb);
-            OSSL_LIB_CTX_free(libctx);
+            release_providers(libctx, &pv);
         }
         _exit(ok ? 0 : 1);
     }
@@ -403,7 +434,7 @@ static int run(const char *name, int result, int *fails)
 int main(void)
 {
     OSSL_LIB_CTX *libctx = NULL;
-    OSSL_PROVIDER *hyb = NULL;
+    PROVS pv = { { NULL }, 0 };
     int fails = 0;
 
     module_path = getenv("OPENSSL_MODULES");
@@ -412,7 +443,7 @@ int main(void)
     printf("================================================\n");
 
     libctx = OSSL_LIB_CTX_new();
-    if (libctx == NULL || (hyb = load_providers(libctx)) == NULL) {
+    if (libctx == NULL || !load_providers(libctx, &pv)) {
         fprintf(stderr, "provider load failed\n");
         ERR_print_errors_fp(stderr);
         fails = 1;
@@ -425,8 +456,7 @@ int main(void)
     run("fork then operate", test_fork(), &fails);
 
 done:
-    OSSL_PROVIDER_unload(hyb);   /* drop our ref so hybrid teardown runs */
-    OSSL_LIB_CTX_free(libctx);
+    release_providers(libctx, &pv);   /* teardowns run here */
 
     printf("================================================\n");
     printf("%s\n", fails == 0 ? "ALL PASS" : "FAILURES");

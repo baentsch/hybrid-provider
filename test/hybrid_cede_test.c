@@ -43,6 +43,7 @@
 #include <openssl/params.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 static int tests, passed, failed;
 #define OK(cond, ...) do { tests++; if (cond) { passed++; } \
@@ -147,7 +148,8 @@ static void probe_default_caps(OSSL_LIB_CTX *ctx, int *kem_flags, int *sig_flags
 }
 
 /* Load default + hybrid into a fresh libctx with the cede lever forced to
- * `cede` (via HYBRID_CEDE_TO_DEFAULT, read at hybrid init). Caller frees ctx. */
+ * `cede` (via HYBRID_CEDE_TO_DEFAULT, read at hybrid init). Caller frees ctx
+ * with hybrid_test_libctx_free. */
 static OSSL_LIB_CTX *load(const char *mods, int cede)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -155,9 +157,9 @@ static OSSL_LIB_CTX *load(const char *mods, int cede)
     setenv("HYBRID_CEDE_TO_DEFAULT", cede ? "1" : "0", 1);
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
-        OSSL_LIB_CTX_free(ctx);
+    if (hybrid_test_load(ctx, "default") == NULL
+            || hybrid_test_load(ctx, "hybrid") == NULL) {
+        hybrid_test_libctx_free(ctx);
         return NULL;
     }
     return ctx;
@@ -202,7 +204,7 @@ int main(void)
         OK(sig_resolves(ctx, nm, "provider=hybrid"),
            "SIG %s: provider=hybrid must resolve with cede off", nm);
     }
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
 
     /* Phase 2 — cede ON (default): hybrid serves a name IFF the default provider
      * does not (i.e. it withdraws exactly what phase 1 found default serving). */
@@ -226,7 +228,7 @@ int main(void)
            nm, sig_in_default[i] ? "NOT " : "",
            sig_in_default[i] ? "does" : "does not");
     }
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
 
     printf("\n  default serves %d of our identifiers -> %d ceded, %zu retained\n",
            served, served, (HYBRID_KEM_ALG_COUNT + HYBRID_SIG_ALG_COUNT) - served);

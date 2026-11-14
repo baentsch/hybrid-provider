@@ -27,6 +27,7 @@
 #include <openssl/encoder.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"
 # include "composite_kem_prov.h"
@@ -184,14 +185,15 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-            || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+            || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid providers\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
     /* Best-effort: supplies the non-native PQ bases (Falcon/MAYO/…) and, below
      * OpenSSL 3.5, ML-DSA/ML-KEM. */
-    OSSL_PROVIDER_load(ctx, "oqsprovider");
+    hybrid_test_load(ctx, "oqsprovider");
     ERR_clear_error();
 
     printf("pkey -text (TEXT) encoder coverage\n");
@@ -210,6 +212,6 @@ int main(void)
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }

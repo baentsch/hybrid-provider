@@ -28,6 +28,7 @@
 #include <openssl/provider.h>
 #include <openssl/err.h>
 #include "composite_kem_prov.h"
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 static int tests, passed, failed, skipped;
 
@@ -191,11 +192,12 @@ int main(void)
 
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL) {
         fprintf(stderr, "failed to load default provider\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
-    OSSL_PROVIDER_load(ctx, "oqsprovider");   /* optional: experimental tier PQ half */
+    hybrid_test_load(ctx, "oqsprovider");   /* optional: experimental tier PQ half */
     ERR_clear_error();
 
     printf("composite (LAMPS) ML-KEM combiner tests\n");
@@ -206,6 +208,6 @@ int main(void)
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }

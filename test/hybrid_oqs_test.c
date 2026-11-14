@@ -20,6 +20,7 @@
 #include <openssl/core_names.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"   /* HYBRID_KEM_* table + origin side-table (issue #78) */
+#include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 
 static int tests = 0, passed = 0, failed = 0, skipped = 0;
 
@@ -279,14 +280,16 @@ int main(void)
     if (mods != NULL)
         OSSL_PROVIDER_set_default_search_path(ctx, mods);
 
-    if (OSSL_PROVIDER_load(ctx, "default") == NULL
-        || OSSL_PROVIDER_load(ctx, "hybrid") == NULL) {
+    if (hybrid_test_load(ctx, "default") == NULL
+        || hybrid_test_load(ctx, "hybrid") == NULL) {
         fprintf(stderr, "failed to load default/hybrid providers\n");
+        hybrid_test_libctx_free(ctx);
         return 1;
     }
-    if (OSSL_PROVIDER_load(ctx, "oqsprovider") == NULL) {
+    if (hybrid_test_load(ctx, "oqsprovider") == NULL) {
         printf("oqsprovider unavailable -- SKIPPING cross-provider tests\n");
         printf("(run test/setup_oqs_interop.sh to build the interop peer)\n");
+        hybrid_test_libctx_free(ctx);
         return 0;
     }
 
@@ -319,6 +322,6 @@ int main(void)
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 
-    OSSL_LIB_CTX_free(ctx);
+    hybrid_test_libctx_free(ctx);
     return failed == 0 ? 0 : 1;
 }
