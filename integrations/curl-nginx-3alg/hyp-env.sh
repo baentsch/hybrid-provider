@@ -20,6 +20,7 @@ HYP_STATE=${HYP_STATE:-/tmp/hyp}                     # per-container runtime sta
 ACTIVE_CNF=${HYP_STATE}/openssl-active.cnf
 GROUPS_FILE=${HYP_STATE}/server-groups
 NGINX_CONF=${HYP_STATE}/nginx.conf
+SERVER_LOG=${HYP_STATE}/server.log                # nginx stderr: HYBRID_LOG lines
 
 HYP_HOST=${HYP_HOST:-127.0.0.1}
 HYP_PORT=${HYP_PORT:-4433}

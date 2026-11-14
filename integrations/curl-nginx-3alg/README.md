@@ -22,7 +22,7 @@ The selection is expressed only in `openssl.cnf` (`component-providers` +
 `alg1/2/3-propquery`); no application, library, or build change is involved.
 
 > **This file is the build guide.** For running and exploring the resulting
-> image (environment variables, the trace mode, interactive use, the scripts and
+> image (environment variables, the provenance log, interactive use, the scripts and
 > config files), see **[USAGE.md](USAGE.md)**.
 
 ## Prerequisites
@@ -48,9 +48,11 @@ That is the only command needed; then see [USAGE.md](USAGE.md) to run it.
 
 ### Optional: trace-enabled image
 
-To additionally trace *which provider served each component* at run time, build a
-second image with OpenSSL's tracing compiled in (off by default — a single
-conditional word on the OpenSSL `./config` line):
+Which provider served each component is reported by the hybrid provider itself
+(`HYBRID_LOG=ops`), so no special build is needed for that. For raw OpenSSL
+tracing (`OPENSSL_TRACE=…`) while exploring, build a second image with tracing
+compiled in (off by default; a single conditional word on the OpenSSL
+`./config` line):
 
 ```sh
 docker build -f integrations/curl-nginx-3alg/Dockerfile --build-arg ENABLE_TRACE=1 -t hyp-3alg-trace .
@@ -109,7 +111,7 @@ provider instead (still all 3 algorithms, from 2 providers) — see
 | `openssl.cnf` / `openssl-stock.cnf` | the hybrid config and the stock baseline; their `diff` is the whole functional change |
 | `nginx.conf` | nginx config template; the entrypoint fills in every offered group and logs the negotiated one per request |
 | `entrypoint.sh` | container entrypoint: `server` (default, long-running), `selftest` (one-shot), or any other command |
-| `connect.sh` | client validator: per group, the negotiated KEM from curl, `s_client`, the server and its log, plus component provenance on the trace image |
+| `connect.sh` | client validator: per group, the negotiated KEM from curl, `s_client`, the server and its log, plus which provider served each component on both ends (from the hybrid provider's `HYBRID_LOG=ops` lines) |
 | `hyp-env.sh` | shared paths, active config and group derivation for both scripts |
 | `noconf.sh` | opt-in test: what still works with the `openssl.cnf` removed (CLI-only activation) |
 | `build-wolfprovider-lean.sh` | lean wolfSSL+wolfProvider build + the drift guard |

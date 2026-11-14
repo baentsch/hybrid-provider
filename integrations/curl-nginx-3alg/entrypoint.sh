@@ -54,17 +54,24 @@ prepare_server() {
     "$NGINX" -p "$NGINX_PREFIX" -c "$NGINX_CONF" -t -q || return 1
 }
 
+# The hybrid provider logs, per operation, the provider that actually served
+# each component (HYBRID_LOG=ops); connect.sh reads the server's lines from
+# SERVER_LOG, a copy of nginx's stderr.
+export HYBRID_LOG="${HYBRID_LOG:-ops}"
+
 case "${1:-server}" in
 server)
     prepare_server || exit 1
     hr "serving on port ${HYP_PORT}"
     echo "    validate with:  docker exec <container> connect.sh [GROUP...]"
     echo "    per-handshake log (also below): ${KEM_LOG}"
-    exec "$NGINX" -p "$NGINX_PREFIX" -c "$NGINX_CONF"
+    echo "    hybrid provider operations (HYBRID_LOG=${HYBRID_LOG}): ${SERVER_LOG}"
+    : >"$SERVER_LOG"
+    exec "$NGINX" -p "$NGINX_PREFIX" -c "$NGINX_CONF" 2> >(tee -a "$SERVER_LOG" >&2)
     ;;
 selftest)
     prepare_server || exit 1
-    "$NGINX" -p "$NGINX_PREFIX" -c "$NGINX_CONF" >/dev/null 2>"${HYP_STATE}/nginx.log" &
+    "$NGINX" -p "$NGINX_PREFIX" -c "$NGINX_CONF" >/dev/null 2>"$SERVER_LOG" &
     NGINX_PID=$!
     hyp_wait_port 127.0.0.1 "$HYP_PORT" || { echo "FAIL: nginx did not come up" >&2; exit 1; }
     "$(dirname "$0")/connect.sh"
