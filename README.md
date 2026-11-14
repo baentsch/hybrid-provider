@@ -28,6 +28,8 @@ relying on internal OpenSSL headers.
 
 **Algorithms served:** 56 hybrid KEMs + 30 hybrid signatures = 86 hybrid algorithms; with `-DHYBRID_COMPOSITE`, 31 composite signatures + 21 composite KEMs = 52 more, for 138 total. (This line is checked against the tables by `hybrid_count_test`; update it whenever a row is added.) On OpenSSL < 3.5 the standardized composite tiers self-deactivate (no seed API), so only the *experimental* composites — 13 signatures + 9 KEMs — are served alongside the 86 hybrids (108 total).
 
+**Usable in TLS:** 48 of the 56 hybrid KEMs have a TLS group code point (also checked by `hybrid_count_test`); the rest (X-Wing and the research-only rows) are KEM-API only, as are all composite KEMs. How many groups a given installation actually offers is lower and decided at run time: groups the OpenSSL default provider already serves are left to it (cede-to-default), and a group is offered only if every component is available, which depends on the loaded component providers and the OpenSSL version (e.g. `curveSM2MLKEM768` needs OpenSSL 4.0+).
+
 The full inventory is table-driven (`HYBRID_KEM_LIST` / `HYBRID_SIG_LIST` in
 `hybrid_prov.h`, `COMPOSITE_SIG_LIST` in `composite_prov.h`, `COMPOSITE_KEM_LIST`
 in `composite_kem_prov.h`) — those tables are the single source of truth. Names, OIDs and TLS code points match their origins:
@@ -362,6 +364,7 @@ and their test coverage are documented in [test/TESTING.md](test/TESTING.md).
 | [test/TESTING.md](test/TESTING.md) | Supported algorithms and their per-test coverage (which tests run, pass or skip each, and why) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Code conventions, project layout, how to add a hybrid, coverage invariants |
 | [design.md](design.md) | Full architecture and design decisions |
+| [integrations/curl-nginx-3alg/](integrations/curl-nginx-3alg/README.md) | Downstream Docker demo: curl↔nginx TLS 1.3 over a 3-provider hybrid KEM (X25519+ML-KEM-768+HQC-192 from default+wolfProvider+oqsprovider), config-only |
 | [STANDARDS.md](STANDARDS.md) | Standards & standards-proposals catalogue by provenance: ceded, standard/draft-backed, convention-only, future work |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Expected conduct (follows the spirit of the OpenSSL Code of Conduct) |
 | [SECURITY.md](SECURITY.md) | Security status and how to report issues (experimental; no embargo or CVE process) |

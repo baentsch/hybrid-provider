@@ -1,0 +1,52 @@
+# =============================================================================
+# THE demo: this openssl.cnf is the ONLY functional difference between a stock
+# oqs-demos stack and the 3-provider hybrid one. `diff openssl-stock.cnf
+# openssl.cnf` is the whole change — no application, library or build change.
+#
+# Application context loads only  default + hybrid.  The hybrid provider then
+# builds its OWN private component context holding  default + oqsprovider +
+# wolfprov  (component-providers), and each component of a hybrid group is
+# fetched from that context under the per-component property query below. So the
+# HQC group name resolves unambiguously to hybrid-provider in the app context,
+# while its three halves come from three different providers underneath.
+# =============================================================================
+
+openssl_conf = osslcfg
+
+[osslcfg]
+providers = prov_sect
+ssl_conf  = ssl_sect
+
+[prov_sect]
+default = default_sect
+hybrid  = hybrid_sect
+
+[default_sect]
+activate = 1
+
+[hybrid_sect]
+module   = /opt/pq/lib64/ossl-modules/hybrid.so
+activate = 1
+
+# --- private component context: three providers, loaded by the hybrid provider
+#     into its own libctx (never into the application's) ---
+component-providers = default oqsprovider wolfprov
+component-path      = /opt/pq/lib64/ossl-modules
+
+# --- per-component steering for HQCKEM192MLKEM768X25519 (logical order:
+#     alg1=X25519, alg2=ML-KEM-768, alg3=HQC-192). Strict "provider=", not the
+#     "?provider=" preference: a component the named provider cannot serve must
+#     make the group disappear, not silently resolve to another provider. ---
+alg1-propquery = provider=default         # X25519      from the default provider
+alg2-propquery = provider=wolfprov        # ML-KEM-768  from wolfProvider
+alg3-propquery = provider=oqsprovider     # HQC-192     from oqsprovider
+
+# cede-to-default stays ON (the default): the default provider does not serve
+# HQCKEM192MLKEM768X25519, so nothing is withdrawn.
+
+# Offer the 3-alg group by default so `openssl`/libssl clients negotiate it.
+[ssl_sect]
+system_default = system_default_sect
+
+[system_default_sect]
+Groups = HQCKEM192MLKEM768X25519
