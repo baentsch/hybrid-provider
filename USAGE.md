@@ -264,7 +264,9 @@ That answers two questions a cnf alone cannot:
 
 A TLS 1.3 handshake over a hybrid KEM group gives `keygen` and `decapsulate` on
 the client and `encapsulate` on the server. Nothing secret is logged: only
-algorithm, component and provider names.
+algorithm, component and provider names. The
+[curl/nginx integration](integrations/curl-nginx-3alg/USAGE.md) uses these lines
+to validate every handshake.
 
 `HYBRID_LOG` values: unset, empty or `0` is off; `caps` and `ops` select a
 category and combine with commas (`caps,ops`); any other value (e.g. `1`)
