@@ -58,33 +58,60 @@ pqc_setup
 
 # ---- verify: third-party artifacts read + verified by hybrid-provider --------
 verify_peer() {   # $1 = provider dir name
-    local peer="$1" d="$WORKDIR/$1" n=0 p=0 u=0
+    local peer="$1" d="$WORKDIR/$1" n=0 p=0 u=0 kn=0 kp=0 ku=0
     pqc_fetch_peer "$peer" || return
     # Single-algorithm trust-anchor certs of the family, matched by the OID in
     # the filename. A provider may ship several files for the same OID (duplicate
     # / renamed copies), so certs (files) and distinct OIDs are counted separately.
     while IFS= read -r ta; do
-        local oid pem priv why bad=0
+        local oid pem priv privs why bad=0 tapub kpub
         oid="$(pqc_name_oid "$ta")"; [ -z "$oid" ] && continue
         n=$((n+1)); pem="$ta.pem"
         pqc_report_oid sig "$peer" "$oid"
+        privs="$(pqc_privs "${ta%_ta.der}")"
         # The OID in the name must be the one inside: the cert and every key form.
         if ! why="$(pqc_oid_check "$ta" "$oid")"; then no "$peer: $why"; continue; fi
         while IFS= read -r priv; do
+            [ -n "$priv" ] || continue
             why="$(pqc_oid_check "$priv" "$oid")" || { no "$peer: $why"; bad=1; }
-        done < <(pqc_privs "${ta%_ta.der}")
+        done <<< "$privs"
         [ "$bad" -eq 1 ] && continue
         oss x509 -inform DER -in "$ta" -out "$pem" 2>/dev/null || pem="$ta"
         if ! pqc_cert_loadable "$pem"; then
             u=$((u+1)); miss "$peer: $oid ($(basename "$ta")) not loadable by: $PQC_PROVIDERS"
+            continue
         elif oss verify -no_check_time -CAfile "$pem" "$pem" >/dev/null 2>&1; then
             p=$((p+1)); pqc_record_ok "$peer" "$oid"
         else
             no "$peer: $oid ($(basename "$ta")) not verified by: $PQC_PROVIDERS"
         fi
+        # Key forms: each shipped private key (_priv, or ML-DSA's _seed /
+        # _expandedkey / _both) must load and yield the trust anchor's public key.
+        # This exercises the provider's PKCS#8 decoder, which the cert verify alone
+        # never touches. A different key is a FAIL. A key that does not load is a
+        # SKIP even under --strict: peers also ship encodings the spec does not
+        # define (e.g. an "expanded" composite key; draft-19 composite keys are
+        # seed-based only), and rejecting those is correct. The per-peer line
+        # counts them, so a decoder that rejects a standard form still shows.
+        tapub="$(oss x509 -in "$pem" -noout -pubkey 2>/dev/null)"
+        while IFS= read -r priv; do
+            [ -n "$priv" ] || continue
+            kn=$((kn+1))
+            if ! pqc_key_loadable "$priv"; then
+                ku=$((ku+1)); note "$peer: $oid ($(basename "$priv")) key form not loadable by: $PQC_PROVIDERS"
+                continue
+            fi
+            kpub="$(oss pkey -in "$priv" -inform DER -pubout 2>/dev/null)"
+            if [ -n "$kpub" ] && [ "$kpub" = "$tapub" ]; then
+                kp=$((kp+1))
+            else
+                no "$peer: $oid ($(basename "$priv")) public key differs from its trust anchor's"
+            fi
+        done <<< "$privs"
     done < <(find "$d" -type f -name '*_ta.der' | grep -E "$ARC" | sort)
-    pqc_peer_summary "$peer" "$n" "$p" "verified" "certs incl. duplicates" \
-        "no $PQC_FAMILY ($ARC) trust-anchor certs in $ROUND" "$u"
+    pqc_peer_summary "$peer" "$((n + kn))" "$((p + kp))" "verified" \
+        "certs incl. duplicates + key forms; $((kn - ku))/$kn key forms load" \
+        "no $PQC_FAMILY ($ARC) trust-anchor certs in $ROUND" "$((u + ku))"
 }
 
 cmd_verify() {

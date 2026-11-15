@@ -287,9 +287,16 @@ The same three scripts also test **plain PQ from a component provider**
 | Prefer a provider while others stay loaded | `--propquery "?provider=NAME"` |
 
 Each shipped private-key form (`_seed`, `_expandedkey`, `_both`) is its own
-check. An artifact the loaded providers cannot load at all (an unserved
-algorithm, such as HashML-DSA in the default provider, or an unsupported key
-encoding) is a SKIP, or a FAIL under `--strict`. A filename naming two OIDs
+check. For KEMs it decapsulates the peer's vector. For signatures it must load
+and yield the trust anchor's public key, which exercises the provider's PKCS#8
+decoder that a cert verify never touches; the per-peer line reports `k/K key
+forms load`. A loaded key with a different public key always FAILs. A signature
+key form that does not load stays a SKIP even under `--strict`, because peers
+also ship encodings the spec does not define, such as "expanded" composite keys.
+Any other artifact the loaded providers cannot load at all (an unserved
+algorithm, such as HashML-DSA in the default provider, or a KEM key encoding) is
+a SKIP, or a FAIL under `--strict`. `PQC_RAW_BASE` points the scripts at a
+local corpus mirror (`file://` works) instead of GitHub. A filename naming two OIDs
 (`catalyst_<a>_with_<b>`, ...) is a multi-algorithm artifact and is skipped.
 `generate` stays composite-only. Peer lists default to the composite ones; widen
 them with `--peers`, since many more corpus providers ship plain PQ.

@@ -40,7 +40,8 @@ ARC_COMPOSITE='1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'
 ARC_NIST_PQ='2\.16\.840\.1\.101\.3\.4\.(3\.(1[7-9]|[23][0-9]|4[0-6])|4\.[1-3])'
 ARC="$ARC_COMPOSITE"
 
-RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/master/providers"
+# Corpus root; PQC_RAW_BASE overrides it (a local mirror, or file:// for tests).
+RAW_BASE="${PQC_RAW_BASE:-https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/master/providers}"
 
 # ---- OID helpers --------------------------------------------------------------
 
