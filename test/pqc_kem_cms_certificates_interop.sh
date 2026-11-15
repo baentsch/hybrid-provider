@@ -119,6 +119,7 @@ verify_peer() {   # $1 = provider dir name
         if ! why="$(pqc_oid_check "$blob" "$oid")"; then
             n=$((n+1)); no "$peer: $why"; continue
         fi
+        local res=""   # cms v3 row: Y if every loadable key form decrypted
         while IFS= read -r priv; do
             n=$((n+1))
             if ! why="$(pqc_oid_check "$priv" "$oid")"; then
@@ -131,11 +132,13 @@ verify_peer() {   # $1 = provider dir name
             out="$WORKDIR/$(basename "$priv").out"
             if oss cms -decrypt -inform DER -in "$blob" -inkey "$priv" -keyform DER \
                     -out "$out" >/dev/null 2>&1 && cmp -s "$out" "$exp"; then
-                p=$((p+1)); pqc_record_ok "$peer" "$oid"
+                p=$((p+1)); pqc_record_ok "$peer" "$oid"; res="${res:-Y}"
             else
                 no "$peer: $oid ($(basename "$priv")) did not decrypt to expected plaintext"
+                res=N
             fi
         done <<< "$privs"
+        [ -n "$res" ] && pqc_csv_row "$peer" "$oid" "$res"
     done < <(find "$d" -type f -name '*_kemri_id-alg-hkdf-with-sha256.der' \
                 | grep -v '_kemri_auth' | grep -E "$ARC" | sort)
     pqc_peer_summary "$peer" "$n" "$p" "decrypted to the peer's plaintext" "blobs" \

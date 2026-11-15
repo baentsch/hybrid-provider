@@ -79,6 +79,23 @@ verify_peer() {   # $1 = provider dir name
         if [ -z "$privs" ] || [ ! -f "$ct" ]; then
             n=$((n+1)); no "$peer: $oid missing _priv.der / _ciphertext.bin"; continue
         fi
+        # The EE cert, when shipped: it must parse and accept an encapsulation (the
+        # r5 "cert" test as the corpus's own OpenSSL checker runs it), and each key
+        # form's public key must match it (the r5 "consistent" test).
+        local ee="${base}_ee.der" eepub="" cons="" kpub
+        if [ -f "$ee" ] && eepub="$(oss x509 -in "$ee" -inform DER -noout -pubkey 2>/dev/null)" \
+                && [ -n "$eepub" ]; then
+            printf '%s\n' "$eepub" > "$WORKDIR/eepub.pem"
+            if oss pkeyutl -encap -pubin -inkey "$WORKDIR/eepub.pem" \
+                    -secret "$WORKDIR/ee.ss" -out "$WORKDIR/ee.ct" >/dev/null 2>&1; then
+                pqc_csv_row "$peer" "$oid" cert Y
+            else
+                no "$peer: $oid ($(basename "$ee")) public key does not encapsulate"
+                pqc_csv_row "$peer" "$oid" cert N
+            fi
+        else
+            eepub=""
+        fi
         while IFS= read -r priv; do
             n=$((n+1))
             if ! why="$(pqc_oid_check "$priv" "$oid")"; then
@@ -88,14 +105,27 @@ verify_peer() {   # $1 = provider dir name
                 u=$((u+1)); miss "$peer: $oid ($(basename "$priv")) not loadable by: $PQC_PROVIDERS"
                 continue
             fi
+            local mism=0
+            if [ -n "$eepub" ]; then
+                kpub="$(oss pkey -in "$priv" -inform DER -pubout 2>/dev/null)"
+                if [ -n "$kpub" ] && [ "$kpub" = "$eepub" ]; then
+                    cons="${cons:-Y}"
+                else
+                    cons=N; mism=1
+                    no "$peer: $oid ($(basename "$priv")) public key differs from its EE cert's"
+                fi
+            fi
             out="$WORKDIR/$(basename "$priv").out"
             if oss pkeyutl -decap -inkey "$priv" -keyform DER -in "$ct" \
                     -secret "$out" >/dev/null 2>&1 && cmp -s "$out" "$ss"; then
-                p=$((p+1)); pqc_record_ok "$peer" "$oid"
+                [ "$mism" -eq 0 ] && { p=$((p+1)); pqc_record_ok "$peer" "$oid"; }
+                pqc_csv_row "$peer" "$oid" "$(pqc_key_form "$priv")" Y
             else
                 no "$peer: $oid ($(basename "$priv")) did not decapsulate to its secret"
+                pqc_csv_row "$peer" "$oid" "$(pqc_key_form "$priv")" N
             fi
         done <<< "$privs"
+        [ -n "$cons" ] && pqc_csv_row "$peer" "$oid" consistent "$cons"
     done < <(find "$d" -type f -name '*_ss.bin' | grep -E "$ARC" | sort)
     pqc_peer_summary "$peer" "$n" "$p" "decapsulated to the peer's secret" "vectors" \
         "no $PQC_FAMILY ($ARC) KEM decaps vectors in $ROUND (certs-only or none)" "$u"

@@ -81,33 +81,46 @@ verify_peer() {   # $1 = provider dir name
             u=$((u+1)); miss "$peer: $oid ($(basename "$ta")) not loadable by: $PQC_PROVIDERS"
             continue
         elif oss verify -no_check_time -CAfile "$pem" "$pem" >/dev/null 2>&1; then
-            p=$((p+1)); pqc_record_ok "$peer" "$oid"
+            p=$((p+1)); pqc_record_ok "$peer" "$oid"; pqc_csv_row "$peer" "$oid" cert Y
         else
             no "$peer: $oid ($(basename "$ta")) not verified by: $PQC_PROVIDERS"
+            pqc_csv_row "$peer" "$oid" cert N
         fi
         # Key forms: each shipped private key (_priv, or ML-DSA's _seed /
-        # _expandedkey / _both) must load and yield the trust anchor's public key.
-        # This exercises the provider's PKCS#8 decoder, which the cert verify alone
-        # never touches. A different key is a FAIL. A key that does not load is a
-        # SKIP even under --strict: peers also ship encodings the spec does not
-        # define (e.g. an "expanded" composite key; draft-19 composite keys are
-        # seed-based only), and rejecting those is correct. The per-peer line
-        # counts them, so a decoder that rejects a standard form still shows.
+        # _expandedkey / _both) must load, yield the trust anchor's public key
+        # (the r5 "consistent" test) and sign a message that verifies under it
+        # (the r5 per-form test). This exercises the provider's PKCS#8 decoder and
+        # its use of the decoded secret, which the cert verify alone never touches.
+        # A different key or a failing signature is a FAIL. A key that does not
+        # load is a SKIP even under --strict: peers also ship encodings the spec
+        # does not define (e.g. an "expanded" composite key; draft-19 composite
+        # keys are seed-based only), and rejecting those is correct. The per-peer
+        # line counts them, so a decoder that rejects a standard form still shows.
+        local tapem="$WORKDIR/tapub.pem" cons="" ok_pub ok_sig form
         tapub="$(oss x509 -in "$pem" -noout -pubkey 2>/dev/null)"
+        printf '%s\n' "$tapub" > "$tapem"
         while IFS= read -r priv; do
             [ -n "$priv" ] || continue
-            kn=$((kn+1))
+            kn=$((kn+1)); form="$(pqc_key_form "$priv")"
             if ! pqc_key_loadable "$priv"; then
                 ku=$((ku+1)); note "$peer: $oid ($(basename "$priv")) key form not loadable by: $PQC_PROVIDERS"
                 continue
             fi
             kpub="$(oss pkey -in "$priv" -inform DER -pubout 2>/dev/null)"
-            if [ -n "$kpub" ] && [ "$kpub" = "$tapub" ]; then
-                kp=$((kp+1))
-            else
+            ok_pub=1; [ -n "$kpub" ] && [ "$kpub" = "$tapub" ] && ok_pub=0
+            ok_sig=1; pqc_sign_check "$priv" "$tapem" && ok_sig=0
+            [ "$ok_pub" -eq 0 ] && cons="${cons:-Y}"
+            [ "$ok_pub" -ne 0 ] && cons=N
+            pqc_csv_row "$peer" "$oid" "$form" "$(pqc_yn "$ok_sig")"
+            if [ "$ok_pub" -ne 0 ]; then
                 no "$peer: $oid ($(basename "$priv")) public key differs from its trust anchor's"
+            elif [ "$ok_sig" -ne 0 ]; then
+                no "$peer: $oid ($(basename "$priv")) signature does not verify under its trust anchor"
+            else
+                kp=$((kp+1))
             fi
         done <<< "$privs"
+        [ -n "$cons" ] && pqc_csv_row "$peer" "$oid" consistent "$cons"
     done < <(find "$d" -type f -name '*_ta.der' | grep -E "$ARC" | sort)
     pqc_peer_summary "$peer" "$((n + kn))" "$((p + kp))" "verified" \
         "certs incl. duplicates + key forms; $((kn - ku))/$kn key forms load" \

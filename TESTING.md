@@ -283,14 +283,17 @@ The same three scripts also test **plain PQ from a component provider**
 |---|---|
 | Qualify a component provider (does it read the corpus?) | `--family nist-pq --providers default` |
 | Coexistence (co-loading hybrid changes nothing) | `--family nist-pq` (default providers `default hybrid`), diffed against the line above |
-| A third provider as the only PQ source | `--family nist-pq --providers "base NAME=/path/module"`, e.g. mldsa-native-provider (`base` supplies the decoders and store loaders; a mandatory `--propquery provider=...` would exclude those too) |
+| A third provider as the only PQ source | `--family nist-pq --providers "base NAME=/path/module"`, e.g. mldsa-native-provider (`base` supplies the decoders and store loaders; a mandatory `--propquery provider=...` would exclude those too). Without `default` in the list, default is loaded for its DRBG only (signing needs randomness, and base has none); every other fetch excludes it |
 | Prefer a provider while others stay loaded | `--propquery "?provider=NAME"` |
 
 Each shipped private-key form (`_seed`, `_expandedkey`, `_both`) is its own
-check. For KEMs it decapsulates the peer's vector. For signatures it must load
-and yield the trust anchor's public key, which exercises the provider's PKCS#8
-decoder that a cert verify never touches; the per-peer line reports `k/K key
-forms load`. A loaded key with a different public key always FAILs. A signature
+check, as in the corpus's own r5 checker. For KEMs it decapsulates the peer's
+vector, and must yield the EE cert's public key when one is shipped. For
+signatures it must load, yield the trust anchor's public key, and sign a message
+that verifies under it. This exercises the provider's PKCS#8 decoder and its use
+of the decoded secret, which a cert verify never touches; the per-peer line
+reports `k/K key forms load`. A loaded key with a different public key, or a
+signature that does not verify, always FAILs. A signature
 key form that does not load stays a SKIP even under `--strict`, because peers
 also ship encodings the spec does not define, such as "expanded" composite keys.
 Any other artifact the loaded providers cannot load at all (an unserved
@@ -300,6 +303,19 @@ local corpus mirror (`file://` works) instead of GitHub. A filename naming two O
 (`catalyst_<a>_with_<b>`, ...) is a multi-algorithm artifact and is skipped.
 `generate` stays composite-only. Peer lists default to the composite ones; widen
 them with `--peers`, since many more corpus providers ship plain PQ.
+
+`--csv DIR` also writes every result in the corpus's own consumer format
+(`docs/compat_matrix_instructions.md` there), ready to commit as
+`providers/<consumer>/compatMatrices/<zip dir>/<producer>_<consumer>.csv`:
+`key_algorithm_oid,type,test_result` rows for certs r5 (`cert`, `priv`, `seed`,
+`expandedkey`, `both`, `consistent`) and `key_algorithm_oid,test_result` for cms
+v3. An untested or unloadable artifact has no row, which the format reads as
+"not performed". The sig and KEM scripts share the certs files, so start from an
+empty DIR. `--csv-consumer NAME` sets the consumer name (default: the last
+provider other than base/default); use the corpus directory name for a
+submission, e.g. `hybrid-provider`. The KEM `cert` row follows the corpus's
+OpenSSL checker: the EE cert parses and its public key accepts an
+encapsulation. It does not check the EE's signature by its TA.
 
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).
