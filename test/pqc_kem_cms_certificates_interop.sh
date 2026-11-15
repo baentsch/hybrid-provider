@@ -167,11 +167,8 @@ module = $MODULE_DIR/hybrid.$SOEXT
 activate = 1
 EOF
 
-# The whole LAMPS composite arc, not just the KEM OIDs we serve today (.55..66):
-# only KEMs ship KEMRI blobs, so the wider match is still KEM-only, and a NEW
-# composite-KEM OID in the corpus is then tried -- and FAILs -- instead of being
-# silently ignored.
-ARC='1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'
+# shellcheck source=pqc_corpus_common.sh
+. "$REPO/test/pqc_corpus_common.sh"   # ARC (whole composite arc), OID coherence
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
 
 # Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
@@ -209,13 +206,20 @@ verify_peer() {   # $1 = provider dir name
     # authenticated and user-keying-material variants). Standalone ML-KEM entries
     # (OID arc 2.16.840... / BC vendor arc) do not match ARC and are ignored.
     while IFS= read -r blob; do
-        local base oid priv out
+        local base oid priv out why
         base="${blob%_kemri_id-alg-hkdf-with-sha256.der}"
         oid="$(echo "$base" | grep -oE "$ARC" | head -1)"; [ -z "$oid" ] && continue
         n=$((n+1))
+        pqc_report_oid cms "$peer" "$oid"
         priv="${base}_priv.der"
         if [ ! -f "$priv" ]; then
             no "$peer: $oid missing _priv.der"; continue
+        fi
+        # The KEMRI's kem AlgorithmIdentifier and the recipient key must both
+        # carry the filename OID.
+        if ! why="$(pqc_oid_check "$blob" "$oid")" \
+                || ! why="$(pqc_oid_check "$priv" "$oid")"; then
+            no "$peer: $why"; continue
         fi
         out="$WORKDIR/$(basename "$base").out"
         if oss cms -decrypt -inform DER -in "$blob" -inkey "$priv" -keyform DER \

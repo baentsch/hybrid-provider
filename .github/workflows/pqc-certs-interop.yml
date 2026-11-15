@@ -6,7 +6,8 @@ name: PQC certs interop drift
 # scripts/check-pqc-certs-drift.sh, which (1) diffs the OIDs our encoder emits
 # against the corpus's canonical docs/oid_mapping.md, (2) reads every default
 # peer's composite sig certs, KEM decaps vectors and CMS KEMRI blobs in --strict
-# mode, and (3) flags a newer artifact round. On drift it opens a tracking issue
+# mode, each artifact's embedded OID checked against its filename, and (3) flags
+# a newer artifact round. The report also lists per-peer OID coverage (info only). On drift it opens a tracking issue
 # in this repo; it auto-closes that issue once back in sync.
 #
 # Unlike the buildless oqs-hybrid-drift / xwing-kat-drift jobs this one builds

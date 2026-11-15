@@ -8,7 +8,7 @@
 # the multi-vendor X.509/CMS interop set. Run weekly by
 # .github/workflows/pqc-certs-interop.yml; also runnable locally.
 #
-# Four checks, each against the corpus's live `master`:
+# Four checks, each against the corpus's live `master`, plus a coverage report:
 #   1. OUR OIDs      -- the composite-arc OIDs our encoder actually emits, taken
 #                       from the generate mode of the sig + KEM corpus scripts (a
 #                       real SPKI per algorithm, so no OID list is duplicated here
@@ -18,9 +18,15 @@
 #                       we emit that the table no longer lists (renumbering).
 #   3. CORPUS READ   -- the three verify scripts in --strict mode: every default
 #                       peer's sig certs, KEM decaps vectors and CMS KEMRI blobs
-#                       must be read by us; an unreachable or empty peer FAILs.
+#                       must be read by us; an unreachable or empty peer FAILs, and
+#                       so does an artifact whose embedded OID is not the one in
+#                       its filename (test/pqc_corpus_common.sh).
 #   4. ROUND         -- a newer artifact round (certs rN / cms vN) than the one the
 #                       scripts read is a prompt to evaluate a bump.
+#   COVERAGE (informational, never drift) -- per peer and family, how many of our
+#                       OIDs it ships and which it does not. A peer that ships an
+#                       OID we do not serve already FAILs check 3. The reverse is
+#                       the peer's own coverage gap, not drift.
 #
 # Exit status: 0 = in sync, 1 = drift (report on stdout), 2 = tooling error.
 #
@@ -39,7 +45,8 @@ TREE_API="https://api.github.com/repos/$CORPUS/git/trees/master?recursive=1"
 ROUND="${ROUND:-r5}"
 VER="${VER:-v3}"
 export ROUND VER
-ARC='1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'   # LAMPS composite OID arc (sigs + KEMs)
+# shellcheck source=../test/pqc_corpus_common.sh
+. "$REPO_ROOT/test/pqc_corpus_common.sh"   # ARC (composite OID arc), pqc_report_oid
 # Check OUR implementations: if the default provider ever serves a composite, the
 # cede-to-default lever would otherwise withdraw ours and we would test theirs.
 export HYBRID_CEDE_TO_DEFAULT=0
@@ -65,8 +72,11 @@ for fam in sig kem; do
         die "$script generate failed (provider not built/loadable, or self-verify broke)"
     fi
 done
-find "$tmp"/gen-sig "$tmp"/gen-kem -type f 2>/dev/null \
-    | grep -oE "$ARC" | sort -u > "$tmp/ours"
+for fam in sig kem; do
+    find "$tmp/gen-$fam" -type f 2>/dev/null | grep -oE "$ARC" | sort -u > "$tmp/ours-$fam"
+done
+cp "$tmp/ours-kem" "$tmp/ours-cms"   # KEMRI blobs carry the composite-KEM OIDs
+sort -u "$tmp/ours-sig" "$tmp/ours-kem" > "$tmp/ours"
 [ -s "$tmp/ours" ] || die "provider emitted no composite-arc OIDs (built without HYBRID_COMPOSITE, or OpenSSL < 3.5?)"
 
 # ---- 2. vs the corpus OID table ----------------------------------------------
@@ -84,6 +94,8 @@ comm -23 "$tmp/table" "$tmp/ours" > "$tmp/missing"
 comm -13 "$tmp/table" "$tmp/ours" > "$tmp/unlisted"
 
 # ---- 3. read the corpus, strictly --------------------------------------------
+export PQC_OID_REPORT="$tmp/peer-oids"   # "<family> <peer> <oid>" per shipped OID
+: > "$PQC_OID_REPORT"
 for script in pqc_certificates_interop.sh pqc_kem_certificates_interop.sh \
               pqc_kem_cms_certificates_interop.sh; do
     "$REPO_ROOT/test/$script" --strict verify > "$tmp/$script.log" 2>&1
@@ -144,6 +156,21 @@ if [ -n "$newer" ]; then
     echo "## Newer artifact round in the corpus:"
     printf '%s' "$newer"; echo
 fi
+
+# Informational: each peer's coverage of our OIDs. It does not set drift. A
+# shipped OID we do not serve is already a check-3 FAIL above.
+echo "## Per-peer coverage of our OIDs (informational):"
+for fam in sig kem cms; do
+    for peer in $(awk -v f="$fam" '$1 == f { print $2 }' "$tmp/peer-oids" | sort -u); do
+        awk -v f="$fam" -v p="$peer" '$1 == f && $2 == p { print $3 }' \
+            "$tmp/peer-oids" | sort -u > "$tmp/theirs"
+        have=$(comm -12 "$tmp/ours-$fam" "$tmp/theirs" | wc -l)
+        gaps="$(comm -23 "$tmp/ours-$fam" "$tmp/theirs" | sed -E 's/.*\./\./' | tr '\n' ' ')"
+        printf '  %-3s %-36s %2d/%d%s\n' "$fam" "$peer" "$have" \
+            "$(wc -l < "$tmp/ours-$fam")" "${gaps:+   not shipped: ${gaps% }}"
+    done
+done
+echo
 
 if [ "$drift" -eq 0 ]; then
     echo "IN SYNC — OID table matches, every default peer read, no newer round."

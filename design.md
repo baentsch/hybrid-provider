@@ -970,8 +970,10 @@ have no paths filter — they always run in full.
   OpenSSL and the provider, because OID alignment is only proven by reading
   other implementations' artifacts. It diffs the OIDs our encoder emits against
   the corpus's `docs/oid_mapping.md` in both directions, reads every default
-  peer's sig certs, KEM decaps vectors and CMS KEMRI blobs in `--strict` mode,
-  and flags a newer artifact round. It files and auto-closes a
+  peer's sig certs, KEM decaps vectors and CMS KEMRI blobs in `--strict` mode
+  (each artifact's embedded OID must match its filename), and flags a newer
+  artifact round. A per-peer coverage table of our OIDs is informational only;
+  a peer not shipping a combo is its gap, not drift. It files and auto-closes a
   `pqc-certs-drift` issue the same way.
 
 The pinned tier caches its toolchain as **three independent `actions/cache`
@@ -1034,7 +1036,9 @@ the corpus's canonical mapping changed: check the cited spec before touching
 not the table alone. A **peer FAIL** is either a regression here (it then fails
 for every peer) or a peer-side change such as a renamed directory or an older
 draft (it then fails for that peer only, and the fix is the script's default
-peer list). A **newer round** is a prompt to evaluate bumping `ROUND` / `VER`.
+peer list). A peer FAIL reading "embeds [X] instead of its filename OID Y" is a
+mislabelled peer artifact, also peer-side: our tables are not at fault. A
+**newer round** is a prompt to evaluate bumping `ROUND` / `VER`.
 
 Rule of thumb: the committed tables and size constants track the **pinned
 release**, never `main`. The weekly tier is the signal that a future pin bump has

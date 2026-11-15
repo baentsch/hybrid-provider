@@ -258,7 +258,10 @@ signatures, plus the two KEM ones above) also run weekly in
 That script also diffs the composite OIDs our encoder emits against the corpus's
 canonical `docs/oid_mapping.md`, and flags a newer artifact round. There the
 scripts run with `--strict`, which turns an unreachable or empty peer from SKIP
-into FAIL. On drift the job opens a `pqc-certs-drift` tracking issue. Run it
+into FAIL. Every read artifact must also embed the OID its filename names
+(`test/pqc_corpus_common.sh`), so a mislabelled peer file FAILs instead of being
+counted under the wrong OID. The report ends with an informational per-peer
+coverage table: which of our OIDs each peer ships. On drift the job opens a `pqc-certs-drift` tracking issue. Run it
 locally with the same `OPENSSL_BIN` / `OPENSSL_LIBPATH` / `MODULE_DIR` the
 scripts take; it exits 0 in sync, 1 on drift, and 2 on a tooling error.
 

@@ -134,7 +134,8 @@ module = $MODULE_DIR/hybrid.$SOEXT
 activate = 1
 EOF
 
-ARC='1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'          # LAMPS composite-signature OID arc
+# shellcheck source=pqc_corpus_common.sh
+. "$REPO/test/pqc_corpus_common.sh"   # ARC (composite OID arc), OID coherence
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
 
 # Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
@@ -164,9 +165,16 @@ verify_peer() {   # $1 = provider dir name
     # copies), so certs (files) and distinct OIDs are counted separately — the
     # OID count is what maps to our 18 composite algorithms.
     while IFS= read -r ta; do
-        local oid pem
+        local oid pem priv why
         oid="$(echo "$ta" | grep -oE "$ARC" | head -1)"; [ -z "$oid" ] && continue
         n=$((n+1)); pem="$ta.pem"
+        pqc_report_oid sig "$peer" "$oid"
+        # The OID in the name must be the one inside: cert and key, if shipped.
+        priv="${ta%_ta.der}_priv.der"
+        if ! why="$(pqc_oid_check "$ta" "$oid")" \
+                || { [ -f "$priv" ] && ! why="$(pqc_oid_check "$priv" "$oid")"; }; then
+            no "$peer: $why"; continue
+        fi
         oss x509 -inform DER -in "$ta" -out "$pem" 2>/dev/null || pem="$ta"
         if oss verify -no_check_time -CAfile "$pem" "$pem" >/dev/null 2>&1; then
             p=$((p+1)); echo "$oid" >> "$WORKDIR/verified_oids"
