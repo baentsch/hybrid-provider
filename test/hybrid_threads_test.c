@@ -47,33 +47,40 @@ static const char *module_path;   /* OPENSSL_MODULES, for per-thread libctxs */
 
 /* The providers load_providers() loaded into one libctx. */
 typedef struct {
-    OSSL_PROVIDER *p[3];        /* default, [oqsprovider], hybrid */
-    int n;
+    OSSL_PROVIDER *hybrid;      /* the provider under test */
+    OSSL_PROVIDER *comp[2];     /* its components: default, [oqsprovider] */
+    int n;                      /* entries used in comp[] */
 } PROVS;
 
 #if OPENSSL_VERSION_NUMBER < 0x30500000L
 /*
- * Below 3.5 every libctx here also holds oqsprovider. This test guards THIS
- * provider; concurrent teardown of a component provider is outside its scope,
- * so there the libctx frees are serialized. From 3.5 on (no oqsprovider) they
- * run concurrently.
+ * Below 3.5 every libctx here also holds oqsprovider, whose instances share
+ * process-wide state that each one's init and teardown modify. This test guards
+ * THIS provider; concurrent init/teardown of a component provider is outside
+ * its scope, so below 3.5 the component loads and the component unloads +
+ * libctx free run under comp_lock. The hybrid provider's own load and unload
+ * stay outside it, concurrent. From 3.5 on (no oqsprovider) the lock is a
+ * no-op and everything runs concurrently.
  */
-static pthread_mutex_t free_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t comp_lock = PTHREAD_MUTEX_INITIALIZER;
+# define COMP_LOCK()    pthread_mutex_lock(&comp_lock)
+# define COMP_UNLOCK()  pthread_mutex_unlock(&comp_lock)
+#else
+# define COMP_LOCK()    ((void)0)
+# define COMP_UNLOCK()  ((void)0)
 #endif
 
-/* Unload pv's providers (hybrid first), then free libctx; the teardowns run in
- * OSSL_LIB_CTX_free. NULL-safe. */
+/* Unload pv's providers (hybrid first), then free libctx. Unloading drops the
+ * load references, so the teardowns run here. NULL-safe. */
 static void release_providers(OSSL_LIB_CTX *libctx, PROVS *pv)
 {
+    OSSL_PROVIDER_unload(pv->hybrid);
+    pv->hybrid = NULL;
+    COMP_LOCK();
     while (pv->n > 0)
-        OSSL_PROVIDER_unload(pv->p[--pv->n]);
-#if OPENSSL_VERSION_NUMBER < 0x30500000L
-    pthread_mutex_lock(&free_lock);
+        OSSL_PROVIDER_unload(pv->comp[--pv->n]);
     OSSL_LIB_CTX_free(libctx);
-    pthread_mutex_unlock(&free_lock);
-#else
-    OSSL_LIB_CTX_free(libctx);
-#endif
+    COMP_UNLOCK();
 }
 
 /*
@@ -98,21 +105,24 @@ static void release_providers(OSSL_LIB_CTX *libctx, PROVS *pv)
  */
 static int load_providers(OSSL_LIB_CTX *libctx, PROVS *pv)
 {
+    int ok;
+
+    pv->hybrid = NULL;
     pv->n = 0;
     if (module_path != NULL)
         OSSL_PROVIDER_set_default_search_path(libctx, module_path);
-    if ((pv->p[pv->n] = OSSL_PROVIDER_load(libctx, "default")) == NULL)
-        return 0;
-    pv->n++;
+    COMP_LOCK();
+    ok = (pv->comp[pv->n] = OSSL_PROVIDER_load(libctx, "default")) != NULL;
+    if (ok)
+        pv->n++;
 #if OPENSSL_VERSION_NUMBER < 0x30500000L
-    if ((pv->p[pv->n] = OSSL_PROVIDER_load(libctx, "oqsprovider")) != NULL)
+    if (ok && (pv->comp[pv->n] = OSSL_PROVIDER_load(libctx, "oqsprovider"))
+              != NULL)
         pv->n++;                                    /* PQ half; native >= 3.5 */
 #endif
+    COMP_UNLOCK();
     ERR_clear_error();
-    if ((pv->p[pv->n] = OSSL_PROVIDER_load(libctx, "hybrid")) == NULL)
-        return 0;
-    pv->n++;
-    return 1;
+    return ok && (pv->hybrid = OSSL_PROVIDER_load(libctx, "hybrid")) != NULL;
 }
 
 static int sig_sign_verify(OSSL_LIB_CTX *libctx, EVP_PKEY *key,
@@ -358,7 +368,7 @@ static void *loadunload_worker(void *v)
 
     for (i = 0; i < 6; i++) {
         OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new();
-        PROVS pv = { { NULL }, 0 };
+        PROVS pv = { NULL, { NULL }, 0 };
         int ok = 0;
 
         if (libctx != NULL && load_providers(libctx, &pv))
@@ -399,7 +409,7 @@ static int test_fork(void)
     if (pid == 0) {
         /* Child: independent libctx, do real work, exit 0 on success. */
         OSSL_LIB_CTX *libctx = OSSL_LIB_CTX_new();
-        PROVS pv = { { NULL }, 0 };
+        PROVS pv = { NULL, { NULL }, 0 };
         int ok = 0;
 
         if (libctx != NULL) {
@@ -434,7 +444,7 @@ static int run(const char *name, int result, int *fails)
 int main(void)
 {
     OSSL_LIB_CTX *libctx = NULL;
-    PROVS pv = { { NULL }, 0 };
+    PROVS pv = { NULL, { NULL }, 0 };
     int fails = 0;
 
     module_path = getenv("OPENSSL_MODULES");
