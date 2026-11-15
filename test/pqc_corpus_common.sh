@@ -126,6 +126,54 @@ pqc_privs() {   # $1 = artifact base (path without its _<suffix>)
 pqc_cert_loadable() { oss x509 -in "$1" -noout -pubkey >/dev/null 2>&1; }
 pqc_key_loadable()  { oss pkey -in "$1" -inform DER -noout >/dev/null 2>&1; }
 
+# The r5 result `type` of a private-key file: seed / expandedkey / both for
+# the CHOICE forms (ML-DSA, ML-KEM), priv for a single-form key.
+pqc_key_form() {   # $1 = private key file
+    case "$(basename "$1")" in
+        *_seed_priv.der)        echo seed;;
+        *_expandedkey_priv.der) echo expandedkey;;
+        *_both_priv.der)        echo both;;
+        *)                      echo priv;;
+    esac
+}
+
+# Sign a fixed message with the private key, verify it with the given public
+# key (PEM). This is what the corpus's own r5 checker requires of each key form;
+# a key can derive the right public key yet carry a broken expanded secret.
+pqc_sign_check() {   # $1 = private key (DER), $2 = public key (PEM)
+    local msg="$WORKDIR/sign-check.msg" sig="$WORKDIR/sign-check.sig"
+    [ -f "$msg" ] || printf 'pqc-certificates key-form sign check\n' > "$msg"
+    rm -f "$sig"
+    oss pkeyutl -sign -inkey "$1" -keyform DER -rawin -in "$msg" -out "$sig" \
+            >/dev/null 2>&1 \
+        && oss pkeyutl -verify -pubin -inkey "$2" -rawin -in "$msg" -sigfile "$sig" \
+            >/dev/null 2>&1
+}
+
+# ---- corpus result CSVs (--csv DIR) -------------------------------------------
+# Rows in the corpus's own consumer format, so a run can be submitted as
+# providers/<consumer>/compatMatrices/<zip dir>/<producer>_<consumer>.csv
+# (docs/compat_matrix_instructions.md there):
+#   certs r5: key_algorithm_oid,type,test_result  (type: cert, priv, seed,
+#             expandedkey, both, consistent)
+#   cms v3:   key_algorithm_oid,test_result
+# Untested = no row (the format's "not performed"); unloadable artifacts write
+# none. The sig and KEM scripts share a certs file; identical rows are written
+# once, so start from an empty DIR for a clean submission.
+pqc_csv_row() {   # $1 = peer, $2 = OID, $3 = type (certs only) or Y/N, [$4 = Y/N]
+    [ -n "${PQC_CSV_DIR:-}" ] || return 0
+    local dir="$PQC_CSV_DIR/artifacts_${PQC_KIND}_$(pqc_round)" f row
+    f="$dir/${1}_${PQC_CSV_CONSUMER}.csv"
+    if [ "$PQC_KIND" = cms ]; then row="$2,$3"; else row="$2,$3,$4"; fi
+    mkdir -p "$dir"
+    if [ ! -s "$f" ]; then
+        if [ "$PQC_KIND" = cms ]; then echo "key_algorithm_oid,test_result" > "$f"
+        else echo "key_algorithm_oid,type,test_result" > "$f"; fi
+    fi
+    grep -qxF "$row" "$f" || echo "$row" >> "$f"
+}
+pqc_yn() { if [ "$1" -eq 0 ]; then echo Y; else echo N; fi; }
+
 # ---- corpus-script scaffolding ------------------------------------------------
 # Everything below is only used by the corpus scripts, via pqc_main.
 
@@ -145,6 +193,8 @@ pqc_defaults() {
     PQC_FAMILY="${PQC_FAMILY:-composite}"
     PQC_PROVIDERS="${PQC_PROVIDERS:-default hybrid}"
     PQC_PROPQ="${PQC_PROPQ:-}"
+    PQC_CSV_DIR="${PQC_CSV_DIR:-}"
+    PQC_CSV_CONSUMER="${PQC_CSV_CONSUMER:-}"
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
         Darwin)               SOEXT="${SOEXT:-dylib}";;
@@ -174,6 +224,9 @@ $roundopt
   --providers "..." providers to load: "name" or "name=/path/module" each
                     (default: $PQC_PROVIDERS)
   --propquery Q     default property query, e.g. "?provider=oqsprovider"
+  --csv DIR         also write results in the corpus's compatMatrices CSV format
+  --csv-consumer N  consumer name in the CSV file names (default: last provider
+                    other than base/default)
   --outdir DIR      generate output dir       (default: <module-dir>/$PQC_OUTNAME)
   --keep            keep the temp work dir
   --strict          unreachable / empty peer / unserved algorithm is FAIL, not SKIP
@@ -195,6 +248,8 @@ pqc_parse_args() {
             --family)     PQC_FAMILY="$2"; shift 2;;
             --providers)  PQC_PROVIDERS="$2"; shift 2;;
             --propquery)  PQC_PROPQ="$2"; shift 2;;
+            --csv)        PQC_CSV_DIR="$2"; shift 2;;
+            --csv-consumer) PQC_CSV_CONSUMER="$2"; shift 2;;
             --outdir)     OUTDIR="$2"; shift 2;;
             --keep)       KEEP=1; shift;;
             --strict)     STRICT=1; shift;;
@@ -216,6 +271,16 @@ pqc_parse_args() {
     [ -n "$OPENSSL_LIBPATH" ] \
         && export LD_LIBRARY_PATH="$OPENSSL_LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export OPENSSL_MODULES="$MODULE_DIR"
+    # CSV consumer name: by default the last provider that is not base/default
+    # (the one under test), else "default". Pass the corpus dir name explicitly
+    # for a submission, e.g. --csv-consumer hybrid-provider.
+    if [ -n "$PQC_CSV_DIR" ] && [ -z "$PQC_CSV_CONSUMER" ]; then
+        local e
+        PQC_CSV_CONSUMER=default
+        for e in $PQC_PROVIDERS; do
+            case "${e%%=*}" in base|default) ;; *) PQC_CSV_CONSUMER="${e%%=*}";; esac
+        done
+    fi
 }
 pqc_bad_arg() { echo "unknown argument: $1" >&2; pqc_usage >&2; exit 2; }
 
@@ -255,17 +320,27 @@ pqc_require_module() {
 # built-in or resolved in OPENSSL_MODULES (hybrid: $MODULE_DIR/hybrid.$SOEXT);
 # name=/path names the module explicitly.
 pqc_setup() {
-    local e name mod listed
+    local e name mod listed propq="$PQC_PROPQ" drbg=0
     WORKDIR="$(mktemp -d)"
     trap '[ "$KEEP" -eq 1 ] || rm -rf "$WORKDIR"' EXIT
     HCNF="$WORKDIR/providers.cnf"
+    # Signing draws randomness (hedged ML-DSA, ...) from libcrypto's DRBG, and
+    # only default supplies one (base has none). Without default in the list,
+    # load it for the DRBG alone: the random section fetches the DRBG from it,
+    # while every other fetch excludes it, so the providers under test stay the
+    # only source of the algorithms and decoders.
+    if ! pqc_has_provider default; then
+        drbg=1; propq="provider!=default${propq:+,$propq}"
+    fi
     {
         echo "openssl_conf = c"
         echo "[c]"
         echo "providers = p"
-        [ -n "$PQC_PROPQ" ] && echo "alg_section = a"
+        [ -n "$propq" ] && echo "alg_section = a"
+        [ "$drbg" -eq 1 ] && echo "random = r"
         echo "[p]"
         for e in $PQC_PROVIDERS; do echo "${e%%=*} = s_${e%%=*}"; done
+        [ "$drbg" -eq 1 ] && echo "default = s_drbg_default"
         for e in $PQC_PROVIDERS; do
             name="${e%%=*}"; mod=""
             [ "$e" != "$name" ] && mod="${e#*=}"
@@ -274,7 +349,8 @@ pqc_setup() {
             [ -n "$mod" ] && echo "module = $mod"
             echo "activate = 1"
         done
-        [ -n "$PQC_PROPQ" ] && printf '[a]\ndefault_properties = %s\n' "$PQC_PROPQ"
+        [ "$drbg" -eq 1 ] && printf '[s_drbg_default]\nactivate = 1\n[r]\nproperties = provider=default\n'
+        [ -n "$propq" ] && printf '[a]\ndefault_properties = %s\n' "$propq"
     } > "$HCNF"
     # Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
     # (lazy, non-fatal activation: exit 0, nothing on stderr); `list -providers`
