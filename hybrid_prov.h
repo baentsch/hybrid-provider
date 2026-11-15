@@ -138,6 +138,18 @@ int hybrid_is_ceded(void *provctx, const char *name);
 #define HYBRID_COMPONENT_LIBCTX(pctx) \
     ((pctx)->comp_libctx != NULL ? (pctx)->comp_libctx : (pctx)->libctx)
 
+/*
+ * Composite component sourcing absent alg1-/alg2-propquery config: the
+ * classical half, and the PQ half of a standardized combo (seed private key),
+ * come from the default provider; an experimental combo's research PQ half from
+ * whichever loaded provider offers it (NULL query). The hybrid family has no
+ * such default: its components follow the key's generic propq (NULL unless
+ * set).
+ */
+#define COMPOSITE_DEFAULT_TRAD_PROPQ "provider=default"
+#define COMPOSITE_DEFAULT_PQ_PROPQ(experimental) \
+    ((experimental) ? NULL : COMPOSITE_DEFAULT_TRAD_PROPQ)
+
 /* Key state */
 #define HYBRID_HAVE_NOKEYS  0
 #define HYBRID_HAVE_PUBKEY  1

@@ -47,10 +47,10 @@ static void *composite_kem_key_new(void *provctx, const COMPOSITE_KEM_INFO *info
      * the composite-signature keymgmt. */
     k->alg2_propq = pc != NULL && pc->comp_propq[HYBRID_COMP_ALG2] != NULL
                       ? pc->comp_propq[HYBRID_COMP_ALG2]
-                      : (info->tier == COMPOSITE_KEM_TIER_EXPERIMENTAL
-                             ? NULL : "provider=default");
+                      : COMPOSITE_DEFAULT_PQ_PROPQ(info->tier == COMPOSITE_KEM_TIER_EXPERIMENTAL);
     k->trad_propq = pc != NULL && pc->comp_propq[HYBRID_COMP_ALG1] != NULL
-                        ? pc->comp_propq[HYBRID_COMP_ALG1] : "provider=default";
+                        ? pc->comp_propq[HYBRID_COMP_ALG1]
+                        : COMPOSITE_DEFAULT_TRAD_PROPQ;
     k->state = COMPOSITE_KEM_HAVE_NOKEYS;
     return k;
 }

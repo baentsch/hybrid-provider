@@ -168,7 +168,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — Operation misuse across every family: missing key material at init, short output buffers, malformed signatures and ciphertexts must fail cleanly (never the real secret).
 #### 42. hybrid_dispatch_test
 
-— Entry points no round-trip reaches: key dup, ctx dup (incl. mid-stream), param introspection, set_params guards. Expectations come from probing each component standalone, so a component-provider limit is asserted as such.
+— Entry points no round-trip reaches: key dup, ctx dup (incl. mid-stream), param introspection, set_params guards. A hybrid's dup must match exactly the worst of its components' own dups (probed from the same provider), so a component-provider limit is asserted precisely; composite keys must always copy faithfully.
 
 ### Benchmarks (guard-only smoke under `ctest`)
 
