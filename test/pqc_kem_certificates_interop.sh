@@ -41,6 +41,10 @@
 # -- a peer zip that cannot be fetched, and a peer with no artifacts on our arc --
 # from SKIP into FAIL. Scheduled drift checks (scripts/check-pqc-certs-drift.sh)
 # use it: there a vanished or renamed peer is drift to triage, not a clean skip.
+# --family nist-pq with --providers runs the same checks on plain ML-DSA / SLH-DSA
+# / ML-KEM from any component provider, hybrid not involved (see
+# test/pqc_corpus_common.sh). An artifact the loaded providers cannot load is a
+# SKIP (FAIL under --strict), not a wrong result.
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -61,42 +65,50 @@ pqc_setup
 
 # ---- verify: third-party decaps vectors read + checked by hybrid-provider -----
 verify_peer() {   # $1 = provider dir name
-    local peer="$1" d="$WORKDIR/$1" n=0 p=0
+    local peer="$1" d="$WORKDIR/$1" n=0 p=0 u=0
     pqc_fetch_peer "$peer" || return
-    # One shared-secret file per composite-KEM OID; standalone ML-KEM entries
-    # (OID arc 2.16.840...) do not match ARC and are ignored.
+    # One shared-secret file per KEM OID of the family; OIDs of the other family
+    # do not match ARC and are ignored. Each shipped private-key form (one
+    # _priv.der, or ML-KEM's _seed / _expandedkey / _both) is its own vector.
     while IFS= read -r ss; do
-        local base oid priv ct out why
+        local base oid priv ct out why privs
         base="${ss%_ss.bin}"
-        oid="$(echo "$base" | grep -oE "$ARC" | head -1)"; [ -z "$oid" ] && continue
-        n=$((n+1))
+        oid="$(pqc_name_oid "$base")"; [ -z "$oid" ] && continue
         pqc_report_oid kem "$peer" "$oid"
-        priv="${base}_priv.der"; ct="${base}_ciphertext.bin"
-        if [ ! -f "$priv" ] || [ ! -f "$ct" ]; then
-            no "$peer: $oid missing _priv.der / _ciphertext.bin"; continue
+        ct="${base}_ciphertext.bin"; privs="$(pqc_privs "$base")"
+        if [ -z "$privs" ] || [ ! -f "$ct" ]; then
+            n=$((n+1)); no "$peer: $oid missing _priv.der / _ciphertext.bin"; continue
         fi
-        if ! why="$(pqc_oid_check "$priv" "$oid")"; then
-            no "$peer: $why"; continue
-        fi
-        out="$WORKDIR/$(basename "$base").out"
-        if oss pkeyutl -decap -inkey "$priv" -keyform DER -in "$ct" \
-                -secret "$out" >/dev/null 2>&1 && cmp -s "$out" "$ss"; then
-            p=$((p+1)); pqc_record_ok "$peer" "$oid"
-        else
-            no "$peer: $oid ($(basename "$base")) did not decapsulate to its secret"
-        fi
+        while IFS= read -r priv; do
+            n=$((n+1))
+            if ! why="$(pqc_oid_check "$priv" "$oid")"; then
+                no "$peer: $why"; continue
+            fi
+            if ! pqc_key_loadable "$priv"; then
+                u=$((u+1)); miss "$peer: $oid ($(basename "$priv")) not loadable by: $PQC_PROVIDERS"
+                continue
+            fi
+            out="$WORKDIR/$(basename "$priv").out"
+            if oss pkeyutl -decap -inkey "$priv" -keyform DER -in "$ct" \
+                    -secret "$out" >/dev/null 2>&1 && cmp -s "$out" "$ss"; then
+                p=$((p+1)); pqc_record_ok "$peer" "$oid"
+            else
+                no "$peer: $oid ($(basename "$priv")) did not decapsulate to its secret"
+            fi
+        done <<< "$privs"
     done < <(find "$d" -type f -name '*_ss.bin' | grep -E "$ARC" | sort)
     pqc_peer_summary "$peer" "$n" "$p" "decapsulated to the peer's secret" "vectors" \
-        "no composite-KEM ($ARC) decaps vectors in $ROUND (certs-only or none)"
+        "no $PQC_FAMILY ($ARC) KEM decaps vectors in $ROUND (certs-only or none)" "$u"
 }
 
 cmd_verify() {
-    pqc_verify_all "Read/verify: pqc-certificates composite ML-KEM decaps vectors checked by hybrid-provider" \
+    pqc_verify_all "Read/verify: pqc-certificates $PQC_FAMILY KEM decaps vectors" \
         "decapsulated"
 }
 
 # ---- generate: our own artifacts in the repo's r5 flat naming ----------------
 cmd_generate() {
+    pqc_can_generate || return 0
     hdr "Generate: hybrid-provider composite ML-KEM artifacts (r5 layout) + self-verify"
     mkdir -p "$OUTDIR"
     local alg n=0 p=0

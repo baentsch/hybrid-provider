@@ -52,6 +52,10 @@
 # peer zip that cannot be fetched, no expected_plaintext.txt, or no artifacts on
 # our arc -- from SKIP into FAIL (used by scripts/check-pqc-certs-drift.sh, where
 # a vanished or renamed peer is drift to triage, not a clean skip).
+# --family nist-pq with --providers runs the same checks on plain ML-DSA / SLH-DSA
+# / ML-KEM from any component provider, hybrid not involved (see
+# test/pqc_corpus_common.sh). An artifact the loaded providers cannot load is a
+# SKIP (FAIL under --strict), not a wrong result.
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -79,7 +83,8 @@ minor="$(printf '%s' "$ver" | sed -nE 's/^OpenSSL [0-9]+\.([0-9]+)\..*/\1/p')"
 [ -n "$major" ] && { [ "$major" -ge 4 ] 2>/dev/null \
     || { [ "$major" -eq 3 ] && [ "${minor:-0}" -ge 6 ]; } 2>/dev/null; } \
     || skip_all "need OpenSSL 3.6.0+ for CMS KEMRI (have: ${ver:-unknown})"
-[ -f "$MODULE_DIR/hybrid.$SOEXT" ] || skip_all "hybrid.$SOEXT not found in $MODULE_DIR"
+pqc_has_provider hybrid && [ ! -f "$MODULE_DIR/hybrid.$SOEXT" ] \
+    && skip_all "hybrid.$SOEXT not found in $MODULE_DIR"
 
 pqc_setup
 # generate needs `x509 -new`, which misreads the provider cnf's [default] section
@@ -90,46 +95,55 @@ ossp() { local sub="$1"; shift
 
 # ---- verify: third-party EnvelopedData decrypted by hybrid-provider ----------
 verify_peer() {   # $1 = provider dir name
-    local peer="$1" d="$WORKDIR/$1" n=0 p=0 exp blob
+    local peer="$1" d="$WORKDIR/$1" n=0 p=0 u=0 exp blob
     pqc_fetch_peer "$peer" || return
     exp="$(find "$d" -type f -name expected_plaintext.txt | head -1)"
     if [ -z "$exp" ]; then
         miss "$peer: no expected_plaintext.txt in cms_$VER (cannot assert content)"; return
     fi
-    # One EnvelopedData per composite-KEM OID (HKDF-SHA256 KEMRI; exclude the
-    # authenticated and user-keying-material variants). Standalone ML-KEM entries
-    # (OID arc 2.16.840... / BC vendor arc) do not match ARC and are ignored.
+    # One EnvelopedData per KEM OID of the family (HKDF-SHA256 KEMRI; exclude the
+    # authenticated and user-keying-material variants). OIDs of the other family
+    # (or a vendor arc) do not match ARC and are ignored. Each shipped recipient
+    # key form is its own decrypt.
     while IFS= read -r blob; do
-        local base oid priv out why
+        local base oid priv out why privs
         base="${blob%_kemri_id-alg-hkdf-with-sha256.der}"
-        oid="$(echo "$base" | grep -oE "$ARC" | head -1)"; [ -z "$oid" ] && continue
-        n=$((n+1))
+        oid="$(pqc_name_oid "$base")"; [ -z "$oid" ] && continue
         pqc_report_oid cms "$peer" "$oid"
-        priv="${base}_priv.der"
-        if [ ! -f "$priv" ]; then
-            no "$peer: $oid missing _priv.der"; continue
+        privs="$(pqc_privs "$base")"
+        if [ -z "$privs" ]; then
+            n=$((n+1)); no "$peer: $oid missing _priv.der"; continue
         fi
         # The KEMRI's kem AlgorithmIdentifier and the recipient key must both
         # carry the filename OID.
-        if ! why="$(pqc_oid_check "$blob" "$oid")" \
-                || ! why="$(pqc_oid_check "$priv" "$oid")"; then
-            no "$peer: $why"; continue
+        if ! why="$(pqc_oid_check "$blob" "$oid")"; then
+            n=$((n+1)); no "$peer: $why"; continue
         fi
-        out="$WORKDIR/$(basename "$base").out"
-        if oss cms -decrypt -inform DER -in "$blob" -inkey "$priv" -keyform DER \
-                -out "$out" >/dev/null 2>&1 && cmp -s "$out" "$exp"; then
-            p=$((p+1)); pqc_record_ok "$peer" "$oid"
-        else
-            no "$peer: $oid ($(basename "$base")) did not decrypt to expected plaintext"
-        fi
+        while IFS= read -r priv; do
+            n=$((n+1))
+            if ! why="$(pqc_oid_check "$priv" "$oid")"; then
+                no "$peer: $why"; continue
+            fi
+            if ! pqc_key_loadable "$priv"; then
+                u=$((u+1)); miss "$peer: $oid ($(basename "$priv")) not loadable by: $PQC_PROVIDERS"
+                continue
+            fi
+            out="$WORKDIR/$(basename "$priv").out"
+            if oss cms -decrypt -inform DER -in "$blob" -inkey "$priv" -keyform DER \
+                    -out "$out" >/dev/null 2>&1 && cmp -s "$out" "$exp"; then
+                p=$((p+1)); pqc_record_ok "$peer" "$oid"
+            else
+                no "$peer: $oid ($(basename "$priv")) did not decrypt to expected plaintext"
+            fi
+        done <<< "$privs"
     done < <(find "$d" -type f -name '*_kemri_id-alg-hkdf-with-sha256.der' \
                 | grep -v '_kemri_auth' | grep -E "$ARC" | sort)
     pqc_peer_summary "$peer" "$n" "$p" "decrypted to the peer's plaintext" "blobs" \
-        "no composite-KEM ($ARC) KEMRI artifacts in cms_$VER"
+        "no $PQC_FAMILY ($ARC) KEMRI artifacts in cms_$VER" "$u"
 }
 
 cmd_verify() {
-    pqc_verify_all "Read/verify: pqc-certificates composite ML-KEM CMS (KEMRI) decrypted by hybrid-provider" \
+    pqc_verify_all "Read/verify: pqc-certificates $PQC_FAMILY CMS KEMRI EnvelopedData" \
         "decrypted"
 }
 
@@ -141,6 +155,7 @@ cmd_verify() {
 # hybrid KEMs have no SPKI OID and drop; experimental private-arc combos are
 # outside the standardized arc and drop too).
 cmd_generate() {
+    pqc_can_generate || return 0
     hdr "Generate: hybrid-provider composite ML-KEM CMS KEMRI artifacts (cms_v3 layout) + self-verify"
     mkdir -p "$OUTDIR"
     local ca="$WORKDIR/ca.key" cacrt="$WORKDIR/ca.crt" alg n=0 p=0

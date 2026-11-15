@@ -274,6 +274,33 @@ coverage table: which of our OIDs each peer ships. On drift the job opens a `pqc
 locally with the same `OPENSSL_BIN` / `OPENSSL_LIBPATH` / `MODULE_DIR` the
 scripts take; it exits 0 in sync, 1 on drift, and 2 on a tooling error.
 
+The same three scripts also test **plain PQ from a component provider**
+("pass-through": ML-DSA, SLH-DSA and ML-KEM, which hybrid never handles).
+`--family nist-pq` switches the matched OIDs to the FIPS 203/204/205 arc, and
+`--providers` picks what to load (each entry `name` or `name=/path/module`):
+
+| Goal | Options |
+|---|---|
+| Qualify a component provider (does it read the corpus?) | `--family nist-pq --providers default` |
+| Coexistence (co-loading hybrid changes nothing) | `--family nist-pq` (default providers `default hybrid`), diffed against the line above |
+| A third provider as the only PQ source | `--family nist-pq --providers "base NAME=/path/module"`, e.g. mldsa-native-provider (`base` supplies the decoders and store loaders; a mandatory `--propquery provider=...` would exclude those too) |
+| Prefer a provider while others stay loaded | `--propquery "?provider=NAME"` |
+
+Each shipped private-key form (`_seed`, `_expandedkey`, `_both`) is its own
+check. For KEMs it decapsulates the peer's vector. For signatures it must load
+and yield the trust anchor's public key, which exercises the provider's PKCS#8
+decoder that a cert verify never touches; the per-peer line reports `k/K key
+forms load`. A loaded key with a different public key always FAILs. A signature
+key form that does not load stays a SKIP even under `--strict`, because peers
+also ship encodings the spec does not define, such as "expanded" composite keys.
+Any other artifact the loaded providers cannot load at all (an unserved
+algorithm, such as HashML-DSA in the default provider, or a KEM key encoding) is
+a SKIP, or a FAIL under `--strict`. `PQC_RAW_BASE` points the scripts at a
+local corpus mirror (`file://` works) instead of GitHub. A filename naming two OIDs
+(`catalyst_<a>_with_<b>`, ...) is a multi-algorithm artifact and is skipped.
+`generate` stays composite-only. Peer lists default to the composite ones; widen
+them with `--peers`, since many more corpus providers ship plain PQ.
+
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).
 
