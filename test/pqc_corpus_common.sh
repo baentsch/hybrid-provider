@@ -24,6 +24,10 @@
 #                 provider alone; keep it to check co-loading hybrid breaks nothing.
 #   PQC_PROPQ     optional default property query (e.g. "?provider=oqsprovider")
 #                 to pin which loaded provider serves a contested algorithm.
+#   PQC_PROVIDER_PARAMS  extra keys for a provider's cnf section, one
+#                 "NAME:key=value" per line (option --provider-param, repeatable),
+#                 e.g. "hybrid:alg2-propquery=provider=mldsanative" to source the
+#                 composites' PQ half from mldsa-native-provider.
 #
 # The drift script only uses ARC and the pqc_* OID helpers; sourcing this file
 # has no side effects beyond defining variables and functions.
@@ -195,6 +199,7 @@ pqc_defaults() {
     PQC_PROPQ="${PQC_PROPQ:-}"
     PQC_CSV_DIR="${PQC_CSV_DIR:-}"
     PQC_CSV_CONSUMER="${PQC_CSV_CONSUMER:-}"
+    PQC_PROVIDER_PARAMS="${PQC_PROVIDER_PARAMS:-}"
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
         Darwin)               SOEXT="${SOEXT:-dylib}";;
@@ -225,6 +230,9 @@ $roundopt
                     (default: $PQC_PROVIDERS)
   --propquery Q     default property query, e.g. "?provider=oqsprovider"
   --csv DIR         also write results in the corpus's compatMatrices CSV format
+  --provider-param NAME:key=value
+                    extra key for provider NAME's cnf section (repeatable), e.g.
+                    hybrid:alg2-propquery=provider=mldsanative
   --csv-consumer N  consumer name in the CSV file names (default: last provider
                     other than base/default)
   --outdir DIR      generate output dir       (default: <module-dir>/$PQC_OUTNAME)
@@ -250,6 +258,9 @@ pqc_parse_args() {
             --propquery)  PQC_PROPQ="$2"; shift 2;;
             --csv)        PQC_CSV_DIR="$2"; shift 2;;
             --csv-consumer) PQC_CSV_CONSUMER="$2"; shift 2;;
+            --provider-param)
+                          PQC_PROVIDER_PARAMS="${PQC_PROVIDER_PARAMS:+$PQC_PROVIDER_PARAMS
+}$2"; shift 2;;
             --outdir)     OUTDIR="$2"; shift 2;;
             --keep)       KEEP=1; shift;;
             --strict)     STRICT=1; shift;;
@@ -263,6 +274,7 @@ pqc_parse_args() {
         nist-pq)   ARC="$ARC_NIST_PQ";;
         *)         echo "unknown --family: $PQC_FAMILY (composite | nist-pq)" >&2; exit 2;;
     esac
+    pqc_check_provider_params
     # Absolutize MODULE_DIR: a relative `module =` in the provider cnf is resolved
     # relative to OPENSSL_MODULES, so a relative --module-dir makes OpenSSL look
     # for <dir>/<dir>/hybrid.so and silently skip the provider. Canonicalize first.
@@ -302,6 +314,34 @@ skip_all() { echo "SKIP: $*"; exit 0; }
 pqc_has_provider() {   # $1 = name
     local e; for e in $PQC_PROVIDERS; do [ "${e%%=*}" = "$1" ] && return 0; done
     return 1
+}
+
+# --provider-param entries: "NAME:key=value", NAME one of --providers. The key
+# is the cnf key; the value is written verbatim (it may itself hold '=' or ':').
+# A malformed entry or an unknown provider is a usage error, not a silent no-op:
+# OpenSSL ignores unknown cnf keys, so a typo would otherwise go unnoticed.
+pqc_check_provider_params() {
+    local e name kv
+    while IFS= read -r e; do
+        [ -n "$e" ] || continue
+        name="${e%%:*}"; kv="${e#*:}"
+        if [ "$name" = "$e" ] || [ -z "$name" ] || [ "${kv%%=*}" = "$kv" ] \
+                || [ -z "${kv%%=*}" ] || [ -z "${kv#*=}" ]; then
+            echo "bad --provider-param '$e' (want NAME:key=value)" >&2; exit 2
+        fi
+        pqc_has_provider "$name" \
+            || { echo "--provider-param '$e': '$name' is not in --providers" >&2; exit 2; }
+    done <<< "$PQC_PROVIDER_PARAMS"
+}
+
+# The cnf lines (key = value) --provider-param adds to provider NAME's section.
+pqc_provider_params_for() {   # $1 = provider name
+    local e kv
+    while IFS= read -r e; do
+        [ -n "$e" ] && [ "${e%%:*}" = "$1" ] || continue
+        kv="${e#*:}"; echo "${kv%%=*} = ${kv#*=}"
+    done <<< "$PQC_PROVIDER_PARAMS"
+    return 0
 }
 
 # The built provider module must exist before anything else is meaningful (when
@@ -348,6 +388,7 @@ pqc_setup() {
             echo "[s_$name]"
             [ -n "$mod" ] && echo "module = $mod"
             echo "activate = 1"
+            pqc_provider_params_for "$name"
         done
         [ "$drbg" -eq 1 ] && printf '[s_drbg_default]\nactivate = 1\n[r]\nproperties = provider=default\n'
         [ -n "$propq" ] && printf '[a]\ndefault_properties = %s\n' "$propq"
@@ -408,6 +449,8 @@ pqc_verify_all() {   # $1 = header, $2 = what passing means (for the total)
     hdr "$1"
     echo "  corpus: $(pqc_zip)   openssl: $("$OPENSSL_BIN" version 2>/dev/null)"
     echo "  family: $PQC_FAMILY   providers: $PQC_PROVIDERS${PQC_PROPQ:+   propquery: $PQC_PROPQ}"
+    [ -n "$PQC_PROVIDER_PARAMS" ] \
+        && echo "  provider params: $(tr '\n' ' ' <<< "$PQC_PROVIDER_PARAMS")"
     : > "$WORKDIR/verified_oids"; : > "$WORKDIR/shipped_oids"
     local peer
     for peer in $PEERS; do verify_peer "$peer"; done

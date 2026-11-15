@@ -285,6 +285,21 @@ The same three scripts also test **plain PQ from a component provider**
 | Coexistence (co-loading hybrid changes nothing) | `--family nist-pq` (default providers `default hybrid`), diffed against the line above |
 | A third provider as the only PQ source | `--family nist-pq --providers "base NAME=/path/module"`, e.g. mldsa-native-provider (`base` supplies the decoders and store loaders; a mandatory `--propquery provider=...` would exclude those too). Without `default` in the list, default is loaded for its DRBG only (signing needs randomness, and base has none); every other fetch excludes it |
 | Prefer a provider while others stay loaded | `--propquery "?provider=NAME"` |
+| Composites from hybrid, components from chosen providers | `--providers "default NAME=/path/module hybrid" --provider-param "hybrid:alg2-propquery=provider=NAME"` (composite family; see below) |
+
+`--provider-param NAME:key=value` (repeatable) adds a key to that provider's cnf
+section, so any provider setting can be exercised, e.g. hybrid's
+`alg<N>-propquery` or `component-providers` ([USAGE.md](USAGE.md#selecting-component-providers-alg1-propquery--alg2-propquery)).
+An entry that is malformed or names a provider not in `--providers` is a usage
+error (exit 2), since OpenSSL silently ignores unknown cnf keys. With a strict
+`provider=` pin, the corpus results prove the composite's PQ half came from that
+provider: with mldsa-native-provider pinned, every composite signature verifies
+and every standard key form signs; with a provider that cannot serve the half,
+nothing is offered and every artifact is not loadable. `alg2-propquery` applies to
+every hybrid algorithm, so the same pin leaves the composite KEMs unserved unless
+that provider also serves ML-KEM. A one-word value that names a cnf section (such
+as `component-providers=default`) breaks the cnf parse: write `default,` (see
+USAGE.md).
 
 Each shipped private-key form (`_seed`, `_expandedkey`, `_both`) is its own
 check, as in the corpus's own r5 checker. For KEMs it decapsulates the peer's
