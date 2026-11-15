@@ -283,7 +283,7 @@ The same three scripts also test **plain PQ from a component provider**
 |---|---|
 | Qualify a component provider (does it read the corpus?) | `--family nist-pq --providers default` |
 | Coexistence (co-loading hybrid changes nothing) | `--family nist-pq` (default providers `default hybrid`), diffed against the line above |
-| A third provider as the only PQ source | `--family nist-pq --providers "base oqsprovider"` (`base` supplies the decoders and store loaders; a mandatory `--propquery provider=...` would exclude those too) |
+| A third provider as the only PQ source | `--family nist-pq --providers "base NAME=/path/module"`, e.g. mldsa-native-provider (`base` supplies the decoders and store loaders; a mandatory `--propquery provider=...` would exclude those too) |
 | Prefer a provider while others stay loaded | `--propquery "?provider=NAME"` |
 
 Each shipped private-key form (`_seed`, `_expandedkey`, `_both`) is its own
