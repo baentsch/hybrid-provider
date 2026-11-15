@@ -441,9 +441,10 @@ jobs:
         run: |
           set -euo pipefail
           export LD_LIBRARY_PATH="$PREFIX/lib64"
-          # -LE slow: hybrid_alloc_fail_test runs in the weekly legs only, so the
-          # coverage figure here excludes its allocation-failure unwinds.
-          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -LE 'bench|slow'
+          # `slow` (hybrid_alloc_fail_test) is included: its allocation-failure
+          # unwinds are most of the reachable error branches, and ~1 min extra is
+          # cheap on this post-merge leg.
+          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -LE bench
 
       - name: Coverage report
         run: |

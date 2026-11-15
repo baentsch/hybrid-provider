@@ -521,8 +521,8 @@ endif()
 add_test(NAME hybrid_alloc_fail_test COMMAND hybrid_alloc_fail_test)
 # LABELS "slow": one injected run per sampled allocation site of every row makes
 # this the suite's longest test (~45 s, ~100 s under ASan) and the critical path
-# of a parallel ctest, so the push/PR, sanitize and coverage legs exclude it
-# (`-LE 'bench|slow'`) and the weekly legs run it. `ctest -LE slow` skips it
+# of a parallel ctest, so the push/PR and sanitize legs exclude it
+# (`-LE 'bench|slow'`); the coverage and weekly legs run it. `ctest -LE slow` skips it
 # locally.
 set_tests_properties(hybrid_alloc_fail_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
