@@ -90,6 +90,7 @@ hybrid-provider/
     ├── hybrid_param_test.c        ← raw-param (OSSL_PARAM) round-trips
     ├── hybrid_op_neg_test.c       ← sign/verify + encaps/decaps misuse negatives (all families)
     ├── hybrid_dispatch_test.c     ← dup / ctx-dup / introspection / set_params entry points
+    ├── hybrid_alloc_fail_test.c   ← fail each provider allocation in turn: fail closed, no leak
     ├── hybrid_cms_test.c          ← CMS SignedData
     ├── hybrid_cms_kem_test.c      ← composite KEM (both tiers) as CMS KEMRI recipient (RFC 9629)
     ├── hybrid_capability_test.c   ← TLS code-point parity vs default/oqsprovider

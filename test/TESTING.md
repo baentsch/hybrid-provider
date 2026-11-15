@@ -18,10 +18,10 @@ this file is the *what-covers-what* map.
   fewest rows self-skip. Counts on 3.0–3.4 or without oqsprovider are strictly
   lower (more skips).
 - Command: `ctest -V` (full suite, 40 tests, all passed).
-- The per-algorithm counts below predate #41 `hybrid_op_neg_test` and #42
-  `hybrid_dispatch_test`. Both iterate every row of every family table, so each
-  algorithm whose components are available gains two runs on top of its listed
-  count.
+- The per-algorithm counts below predate #41 `hybrid_op_neg_test`, #42
+  `hybrid_dispatch_test` and #43 `hybrid_alloc_fail_test`. All three iterate
+  every row of every family table, so each algorithm whose components are
+  available gains three runs on top of its listed count.
 - Attribution: each algorithm's public name was matched as a whole token in the
   per-test verbose output and classified **run** (appears on at least one
   non-SKIP line) vs **skipped** (appears only on SKIP lines). Nine tests report
@@ -49,7 +49,8 @@ layered and the overlaps are complementary, not duplicative:
   (malformed input) each hit a distinct serialization/decode path;
   `hybrid_op_neg_test` (operation misuse) and `hybrid_dispatch_test` (dup /
   ctx-dup / introspection / set_params entry points) reach provider entry points
-  that no round-trip calls.
+  that no round-trip calls; `hybrid_alloc_fail_test` reaches the allocation-
+  failure unwinds of the paths the round-trips take.
 - **KAT vs self-consistency.** `*_kat_test` / `xwing_kat_test` pin behaviour to
   external draft vectors; the interop/round-trip tests only prove internal
   consistency.
@@ -62,7 +63,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 
 ## Test purposes (two lines each)
 
-### In-process functional (`ctest` #1–#30, #37–#39, #41–#42)
+### In-process functional (`ctest` #1–#30, #37–#39, #41–#43)
 
 #### 1. hybrid_interop_test
 
@@ -169,6 +170,9 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 #### 42. hybrid_dispatch_test
 
 — Entry points no round-trip reaches: key dup, ctx dup (incl. mid-stream), param introspection, set_params guards. A hybrid's dup must match exactly the worst of its components' own dups (probed from the same provider), so a component-provider limit is asserted precisely; composite keys must always copy faithfully.
+#### 43. hybrid_alloc_fail_test
+
+— Allocation-failure injection: each provider-site allocation (keygen, operation round-trip, key file, provider load) is failed in turn; the run must fail closed (no corrupted signature verifies, no wrong secret) with no provider block leaked.
 
 ### Benchmarks (guard-only smoke under `ctest`)
 

@@ -73,7 +73,11 @@ operation misuse negatives — missing key material, short buffers, malformed
 signatures/ciphertexts — over every family (`hybrid_op_neg_test`), the dispatch
 entry points no round-trip reaches — key/ctx dup, param introspection,
 set_params guards (`hybrid_dispatch_test`), malformed/oversize decoder input
-(`hybrid_decode_neg_test`),
+(`hybrid_decode_neg_test`), allocation-failure injection — each provider
+allocation failed in turn must fail closed and leak-free
+(`hybrid_alloc_fail_test`, ctest label `slow`: run weekly in CI, skip locally
+with `ctest -LE slow`; `HYBRID_ALLOC_FAIL_EXHAUSTIVE=1` fails every occurrence
+instead of a per-call-site sample),
 TLS code-point parity (`hybrid_capability_test`), provider coexistence
 (`hybrid_coexist_test`), cede-to-default withdrawal of the default provider's
 hybrids (`hybrid_cede_test`), robustness under adverse load and query/init
