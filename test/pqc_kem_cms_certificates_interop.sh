@@ -48,6 +48,10 @@
 # Everything self-skips (exit 0) when a peer zip cannot be fetched or a component
 # is unavailable; a shared OID whose EnvelopedData does NOT decrypt to the peer's
 # expected plaintext is a real FAIL.
+# --strict (or STRICT=1) turns the "nothing to compare" outcomes of a verify -- a
+# peer zip that cannot be fetched, no expected_plaintext.txt, or no artifacts on
+# our arc -- from SKIP into FAIL (used by scripts/check-pqc-certs-drift.sh, where
+# a vanished or renamed peer is drift to triage, not a clean skip).
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,6 +67,7 @@ RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/mast
 OUTDIR=""
 MODE="verify"
 KEEP=0
+STRICT="${STRICT:-0}"
 PLAINTEXT="${PLAINTEXT:-Hello, World!}"   # our generated EnvelopedData payload
 
 case "$(uname -s)" in
@@ -71,7 +76,7 @@ case "$(uname -s)" in
     *)                    SOEXT="${SOEXT:-so}";;
 esac
 
-usage() { sed -n '3,45p' "$0" | sed 's/^# \{0,1\}//'; cat <<EOF
+usage() { awk 'NR > 2 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; cat <<EOF
 
 Usage: $(basename "$0") [options] [verify|generate|all]
 
@@ -89,6 +94,7 @@ Options:
   --version V       cms corpus version (artifacts_cms_<V>.zip) (default: $VER)
   --outdir DIR      generate output dir   (default: <module-dir>/pqc-kem-cms-artifacts)
   --keep            keep the temp work dir
+  --strict          unreachable / empty peer is FAIL, not SKIP
   -h, --help        this help
 EOF
 }
@@ -102,6 +108,7 @@ while [ $# -gt 0 ]; do
         --version)    VER="$2"; shift 2;;
         --outdir)     OUTDIR="$2"; shift 2;;
         --keep)       KEEP=1; shift;;
+        --strict)     STRICT=1; shift;;
         -h|--help)    usage; exit 0;;
         verify|generate|all) MODE="$1"; shift;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
@@ -124,6 +131,8 @@ ok()   { echo "  ${C_OK}PASS${C_Z}  $*"; pass=$((pass+1)); }
 no()   { echo "  ${C_NO}FAIL${C_Z}  $*"; fail=$((fail+1)); }
 note() { echo "  ${C_SK}SKIP${C_Z}  $*"; skip=$((skip+1)); }
 hdr()  { echo; echo "== $* =="; }
+# A peer with nothing comparable: SKIP by default, FAIL under --strict.
+miss() { if [ "$STRICT" -eq 1 ]; then no "$@"; else note "$@"; fi; }
 skip_all() { echo "SKIP: $*"; exit 0; }
 
 # ---- prerequisites (clean self-skip) -----------------------------------------
@@ -158,7 +167,8 @@ module = $MODULE_DIR/hybrid.$SOEXT
 activate = 1
 EOF
 
-ARC='1\.3\.6\.1\.5\.5\.7\.6\.(5[5-9]|6[0-6])'   # LAMPS composite-KEM OID arc
+# shellcheck source=pqc_corpus_common.sh
+. "$REPO/test/pqc_corpus_common.sh"   # ARC (whole composite arc), OID coherence
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
 
 # Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
@@ -184,25 +194,32 @@ verify_peer() {   # $1 = provider dir name
     local peer="$1" zip="$WORKDIR/$1.zip" d="$WORKDIR/$1" n=0 p=0 exp blob
     if ! curl -fsSL "$RAW_BASE/$peer/artifacts_cms_$VER.zip" -o "$zip" 2>/dev/null \
             || [ ! -s "$zip" ]; then
-        note "$peer: no artifacts_cms_$VER.zip (unreachable / absent)"; return
+        miss "$peer: no artifacts_cms_$VER.zip (unreachable / absent)"; return
     fi
     mkdir -p "$d"; unzip -qo "$zip" -d "$d" 2>/dev/null
     exp="$(find "$d" -type f -name expected_plaintext.txt | head -1)"
     if [ -z "$exp" ]; then
-        note "$peer: no expected_plaintext.txt in cms_$VER (cannot assert content)"; return
+        miss "$peer: no expected_plaintext.txt in cms_$VER (cannot assert content)"; return
     fi
     : > "$WORKDIR/$peer.oids"
     # One EnvelopedData per composite-KEM OID (HKDF-SHA256 KEMRI; exclude the
     # authenticated and user-keying-material variants). Standalone ML-KEM entries
     # (OID arc 2.16.840... / BC vendor arc) do not match ARC and are ignored.
     while IFS= read -r blob; do
-        local base oid priv out
+        local base oid priv out why
         base="${blob%_kemri_id-alg-hkdf-with-sha256.der}"
         oid="$(echo "$base" | grep -oE "$ARC" | head -1)"; [ -z "$oid" ] && continue
         n=$((n+1))
+        pqc_report_oid cms "$peer" "$oid"
         priv="${base}_priv.der"
         if [ ! -f "$priv" ]; then
             no "$peer: $oid missing _priv.der"; continue
+        fi
+        # The KEMRI's kem AlgorithmIdentifier and the recipient key must both
+        # carry the filename OID.
+        if ! why="$(pqc_oid_check "$blob" "$oid")" \
+                || ! why="$(pqc_oid_check "$priv" "$oid")"; then
+            no "$peer: $why"; continue
         fi
         out="$WORKDIR/$(basename "$base").out"
         if oss cms -decrypt -inform DER -in "$blob" -inkey "$priv" -keyform DER \
@@ -215,7 +232,7 @@ verify_peer() {   # $1 = provider dir name
     done < <(find "$d" -type f -name '*_kemri_id-alg-hkdf-with-sha256.der' \
                 | grep -v '_kemri_auth' | grep -E "$ARC" | sort)
     if [ "$n" -eq 0 ]; then
-        note "$peer: no composite-KEM ($ARC) KEMRI artifacts in cms_$VER"
+        miss "$peer: no composite-KEM ($ARC) KEMRI artifacts in cms_$VER"
     else
         local dist; dist=$(sort -u "$WORKDIR/$peer.oids" | wc -l)
         local msg="$peer: $dist/12 composite-KEM OIDs decrypted to the peer's plaintext ($p/$n blobs)"

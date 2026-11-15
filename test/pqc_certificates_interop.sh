@@ -26,6 +26,10 @@
 # (OpenSSL 3.5+). Everything self-skips (exit 0) when a peer zip cannot be
 # fetched or a component is unavailable; a shared OID that fails to verify is a
 # real FAIL. Not wired into ctest (needs network + an external corpus).
+# --strict (or STRICT=1) turns the two "nothing to compare" outcomes of a verify
+# -- a peer zip that cannot be fetched, and a peer with no artifacts on our arc --
+# from SKIP into FAIL. Scheduled drift checks (scripts/check-pqc-certs-drift.sh)
+# use it: there a vanished or renamed peer is drift to triage, not a clean skip.
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,6 +49,7 @@ RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/mast
 OUTDIR=""
 KEEP=0
 MODE="verify"
+STRICT="${STRICT:-0}"
 
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
@@ -52,7 +57,7 @@ case "$(uname -s)" in
     *)                    SOEXT="${SOEXT:-so}";;
 esac
 
-usage() { sed -n '3,38p' "$0" | sed 's/^# \{0,1\}//'; cat <<EOF
+usage() { awk 'NR > 2 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; cat <<EOF
 
 Usage: $(basename "$0") [options] [verify|generate|all]
 
@@ -64,6 +69,7 @@ Options:
   --round R         artifact round            (default: $ROUND)
   --outdir DIR      generate output dir       (default: <module-dir>/pqc-artifacts)
   --keep            keep the temp work dir
+  --strict          unreachable / empty peer is FAIL, not SKIP
   -h, --help        this help
 EOF
 }
@@ -77,6 +83,7 @@ while [ $# -gt 0 ]; do
         --round)      ROUND="$2"; shift 2;;
         --outdir)     OUTDIR="$2"; shift 2;;
         --keep)       KEEP=1; shift;;
+        --strict)     STRICT=1; shift;;
         -h|--help)    usage; exit 0;;
         verify|generate|all) MODE="$1"; shift;;
         *) echo "unknown argument: $1" >&2; usage; exit 2;;
@@ -98,6 +105,8 @@ ok()   { echo "  ${C_OK}PASS${C_Z}  $*"; pass=$((pass+1)); }
 no()   { echo "  ${C_NO}FAIL${C_Z}  $*"; fail=$((fail+1)); }
 note() { echo "  ${C_SK}SKIP${C_Z}  $*"; skip=$((skip+1)); }
 hdr()  { echo; echo "== $* =="; }
+# A peer with nothing comparable: SKIP by default, FAIL under --strict.
+miss() { if [ "$STRICT" -eq 1 ]; then no "$@"; else note "$@"; fi; }
 
 if [ ! -f "$MODULE_DIR/hybrid.$SOEXT" ]; then
     echo "hybrid.$SOEXT not found in $MODULE_DIR -- build the provider first" >&2
@@ -125,7 +134,8 @@ module = $MODULE_DIR/hybrid.$SOEXT
 activate = 1
 EOF
 
-ARC='1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'          # LAMPS composite-signature OID arc
+# shellcheck source=pqc_corpus_common.sh
+. "$REPO/test/pqc_corpus_common.sh"   # ARC (composite OID arc), OID coherence
 oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
 
 # Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
@@ -146,7 +156,7 @@ verify_peer() {   # $1 = provider dir name
     local peer="$1" d="$WORKDIR/$1" zip="$WORKDIR/$1.zip" n=0 p=0
     if ! curl -fsSL "$RAW_BASE/$peer/artifacts_certs_$ROUND.zip" -o "$zip" 2>/dev/null \
             || [ ! -s "$zip" ]; then
-        note "$peer: no artifacts_certs_$ROUND.zip (unreachable / absent)"; return
+        miss "$peer: no artifacts_certs_$ROUND.zip (unreachable / absent)"; return
     fi
     mkdir -p "$d"; unzip -qo "$zip" -d "$d" 2>/dev/null
     : > "$WORKDIR/$peer.oids"
@@ -155,9 +165,16 @@ verify_peer() {   # $1 = provider dir name
     # copies), so certs (files) and distinct OIDs are counted separately — the
     # OID count is what maps to our 18 composite algorithms.
     while IFS= read -r ta; do
-        local oid pem
+        local oid pem priv why
         oid="$(echo "$ta" | grep -oE "$ARC" | head -1)"; [ -z "$oid" ] && continue
         n=$((n+1)); pem="$ta.pem"
+        pqc_report_oid sig "$peer" "$oid"
+        # The OID in the name must be the one inside: cert and key, if shipped.
+        priv="${ta%_ta.der}_priv.der"
+        if ! why="$(pqc_oid_check "$ta" "$oid")" \
+                || { [ -f "$priv" ] && ! why="$(pqc_oid_check "$priv" "$oid")"; }; then
+            no "$peer: $why"; continue
+        fi
         oss x509 -inform DER -in "$ta" -out "$pem" 2>/dev/null || pem="$ta"
         if oss verify -no_check_time -CAfile "$pem" "$pem" >/dev/null 2>&1; then
             p=$((p+1)); echo "$oid" >> "$WORKDIR/verified_oids"
@@ -167,7 +184,7 @@ verify_peer() {   # $1 = provider dir name
         fi
     done < <(find "$d" -type f -name '*_ta.der' | grep -E "$ARC" | sort)
     if [ "$n" -eq 0 ]; then
-        note "$peer: no composite ($ARC) trust-anchor certs in $ROUND"
+        miss "$peer: no composite ($ARC) trust-anchor certs in $ROUND"
     else
         local dist; dist=$(sort -u "$WORKDIR/$peer.oids" | wc -l)
         ok "$peer: $dist distinct composite OIDs verified ($p/$n certs incl. duplicates)"
