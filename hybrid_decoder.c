@@ -60,7 +60,6 @@ static int hybrid_dec_does_selection(void *provctx, int selection)
  * defensively, once the buffer would exceed HYBRID_MAX_KEY_DER, which also caps
  * memory use if the core ever hands us an unbounded stream.
  */
-#define HYBRID_MAX_KEY_DER (1024 * 1024)    /* hybrid keys are a few KB at most */
 static int read_all(HYBRID_DEC_CTX *ctx, OSSL_CORE_BIO *cin,
                     unsigned char **out, size_t *outlen)
 {

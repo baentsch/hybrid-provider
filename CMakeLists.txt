@@ -482,6 +482,52 @@ set_tests_properties(hybrid_decode_neg_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# Operation-level negatives (sign/verify, encaps/decaps misuse: missing key
+# material, short buffers, malformed signatures/ciphertexts) and the dispatch
+# entry points no round-trip reaches (key/ctx dup, param introspection,
+# set_params guards). Every family iterated from its table; composite with
+# -DHYBRID_COMPOSITE.
+foreach(_t hybrid_op_neg_test hybrid_dispatch_test)
+    add_executable(${_t} test/${_t}.c)
+    target_include_directories(${_t} PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+    target_link_libraries(${_t} PRIVATE OpenSSL::Crypto)
+    if(HYBRID_COMPOSITE)
+        target_compile_definitions(${_t} PRIVATE HYBRID_COMPOSITE)
+    endif()
+    add_test(NAME ${_t} COMMAND ${_t})
+    set_tests_properties(${_t} PROPERTIES
+        ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}")
+endforeach()
+
+# Allocation-failure injection: fails each provider-site OPENSSL_*alloc in turn
+# and requires a clean, leak-free, fail-closed outcome. A call site counts as the
+# provider's by its __FILE__ basename, matched against the provider target's own
+# sources (read from the target here, so the list is never kept twice).
+get_target_property(_hp_srcs hybrid-provider SOURCES)
+set(_hp_src_names "")
+foreach(_s ${_hp_srcs})
+    get_filename_component(_n ${_s} NAME)
+    list(APPEND _hp_src_names ${_n})
+endforeach()
+string(REPLACE ";" ":" _hp_src_names "${_hp_src_names}")
+add_executable(hybrid_alloc_fail_test test/hybrid_alloc_fail_test.c)
+target_include_directories(hybrid_alloc_fail_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_alloc_fail_test PRIVATE OpenSSL::Crypto)
+target_compile_definitions(hybrid_alloc_fail_test PRIVATE
+    HYBRID_PROVIDER_SOURCES="${_hp_src_names}")
+if(HYBRID_COMPOSITE)
+    target_compile_definitions(hybrid_alloc_fail_test PRIVATE HYBRID_COMPOSITE)
+endif()
+add_test(NAME hybrid_alloc_fail_test COMMAND hybrid_alloc_fail_test)
+# LABELS "slow": one injected run per sampled allocation site of every row makes
+# this the suite's longest test (~45 s, ~100 s under ASan) and the critical path
+# of a parallel ctest, so the push/PR, sanitize and coverage legs exclude it
+# (`-LE 'bench|slow'`) and the weekly legs run it. `ctest -LE slow` skips it
+# locally.
+set_tests_properties(hybrid_alloc_fail_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+    LABELS "slow")
+
 # CMS SignedData with hybrid signatures (in-process analog of oqsprovider's CMS
 # scripts). ML-DSA hybrids need only the default provider; Falcon/MAYO/… self-
 # skip without oqsprovider, and each algorithm self-skips if unavailable.

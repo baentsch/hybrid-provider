@@ -22,10 +22,18 @@
  *      directly to hit the UINT32 slot-1 length bound and the per-slot size
  *      checks (empty slot 1, empty slot 2, garbage components).
  *
+ *   4. A structurally valid SPKI carrying one of OUR OIDs but a malformed public
+ *      key (empty, shorter than the length prefix, prefix past the end, garbage
+ *      components) must fail cleanly in the OID-routed loaders -- for every
+ *      OID-bearing row of every family (hybrid sig/KEM, composite sig/KEM).
+ *      The PKCS#8 cases of (3) are likewise driven for every family's OIDs.
+ *
+ *   5. Input over the decoder size cap (HYBRID_MAX_KEY_DER) is refused, and a
+ *      well-formed SPKI with a FOREIGN OID is declined (not ours, no key).
+ *
  * All families share one SPKI parser (hybrid_spki_parse) and one read-all/OID
- * routing path, so driving the hybrid signature family here exercises the same
- * code the composite decoders reuse; the composite families are additionally
- * iterated when built (-DHYBRID_COMPOSITE).
+ * routing path; the composite families are additionally iterated when built
+ * (-DHYBRID_COMPOSITE).
  *
  * Driven through the public OSSL_ENCODER / OSSL_DECODER / PEM APIs by name.
  */
@@ -36,12 +44,14 @@
 #include <openssl/encoder.h>
 #include <openssl/decoder.h>
 #include <openssl/pem.h>
+#include <openssl/x509.h>
 #include <openssl/err.h>
 #include "hybrid_prov.h"
 #include "hybrid_asn1_compat.h"
 #include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"
+# include "composite_kem_prov.h"
 #endif
 
 static int tests, passed, failed, skipped;
@@ -212,6 +222,168 @@ static void check_malformed_p8(OSSL_LIB_CTX *ctx, const char *oid)
     }
 }
 
+/* A SubjectPublicKeyInfo with algorithm `oidstr` (absent parameters) and the
+ * given public-key bits, as i2d DER (caller OPENSSL_free) -- built without any
+ * key decode, so the bits can be anything. */
+static unsigned char *make_spki(const char *oidstr, const unsigned char *pub,
+                                size_t publen, size_t *outlen)
+{
+    ASN1_OBJECT *oid = OBJ_txt2obj(oidstr, 1);
+    X509_PUBKEY *xp = X509_PUBKEY_new();
+    unsigned char *bits = OPENSSL_malloc(publen > 0 ? publen : 1), *der = NULL;
+    int derlen;
+
+    if (oid == NULL || xp == NULL || bits == NULL)
+        goto err;
+    memcpy(bits, pub, publen);
+    if (!X509_PUBKEY_set0_param(xp, oid, V_ASN1_UNDEF, NULL, bits, (int)publen))
+        goto err;
+    oid = NULL; bits = NULL;             /* ownership transferred to xp */
+    if ((derlen = i2d_X509_PUBKEY(xp, &der)) < 0)
+        goto err;
+    *outlen = (size_t)derlen;
+    X509_PUBKEY_free(xp);
+    return der;
+err:
+    ASN1_OBJECT_free(oid);
+    OPENSSL_free(bits);
+    X509_PUBKEY_free(xp);
+    return NULL;
+}
+
+/* Feed one crafted SPKI to the public decoder; pass iff it fails cleanly. */
+static int reject_spki(OSSL_LIB_CTX *ctx, const char *oid, const char *what,
+                       const unsigned char *pub, size_t publen)
+{
+    unsigned char *der;
+    size_t derlen = 0;
+    EVP_PKEY *got;
+    int ok;
+
+    if ((der = make_spki(oid, pub, publen, &derlen)) == NULL) {
+        printf("FAIL: could not build SPKI (%s)\n", what);
+        ERR_print_errors_fp(stdout);
+        return 0;
+    }
+    got = decode_spki_der(ctx, der, derlen);
+    ERR_clear_error();
+    ok = (got == NULL);
+    if (!ok)
+        printf("FAIL: %s decoded to a key\n", what);
+    EVP_PKEY_free(got);
+    OPENSSL_free(der);
+    return ok;
+}
+
+/* Structurally valid SPKI, one of our OIDs, malformed public-key bits. The
+ * cases target the hybrid UINT32(len1) prefix bounds and the component loaders;
+ * for the composite layouts (fixed-length PQ part first) they are simply too
+ * short / garbage, hitting the split-length bound and the loaders. */
+static void check_malformed_spki_oid(OSSL_LIB_CTX *ctx, const char *oid)
+{
+    unsigned char blob[64];
+    int all = 1;
+
+    printf("  %-28s malformed SPKI bits -> clean fail ... ", oid);
+    fflush(stdout);
+    tests++;
+
+    memset(blob, 0xAB, sizeof(blob));
+    all &= reject_spki(ctx, oid, "empty public key", blob, 0);
+    all &= reject_spki(ctx, oid, "public key shorter than the prefix", blob, 3);
+    blob[0] = blob[1] = blob[2] = blob[3] = 0xFF;
+    all &= reject_spki(ctx, oid, "len1=0xFFFFFFFF", blob, 32);
+    blob[0] = blob[1] = blob[2] = 0x00; blob[3] = 8;   /* consistent split */
+    all &= reject_spki(ctx, oid, "garbage components", blob, sizeof(blob));
+
+    if (all) {
+        printf("PASS (no key, no crash)\n");
+        passed++;
+    } else {
+        failed++;
+    }
+}
+
+/* Input past the decoder size cap must be refused on both the SPKI and the
+ * PKCS#8 path. read_all() doubles its buffer from 4 KiB and gives up once a
+ * full buffer already exceeds HYBRID_MAX_KEY_DER, i.e. at 2 * the cap. */
+static void check_oversize(OSSL_LIB_CTX *ctx)
+{
+    const size_t n = 2 * (size_t)HYBRID_MAX_KEY_DER + 1;
+    unsigned char *big = OPENSSL_malloc(n);
+    EVP_PKEY *a = NULL, *b = NULL;
+
+    printf("  %-28s input > decoder cap -> refused ... ", "oversize");
+    fflush(stdout);
+    tests++;
+    if (big == NULL) {
+        printf("FAIL: alloc\n");
+        failed++;
+        return;
+    }
+    memset(big, 0xAB, n);
+    big[0] = 0x30;                       /* looks like the start of a SEQUENCE */
+    a = decode_spki_der(ctx, big, n);
+    b = decode_p8_der(ctx, big, n);
+    ERR_clear_error();
+    if (a == NULL && b == NULL) {
+        printf("PASS (no key, no crash)\n");
+        passed++;
+    } else {
+        printf("FAIL: oversize input decoded to a key\n");
+        failed++;
+    }
+    EVP_PKEY_free(a);
+    EVP_PKEY_free(b);
+    OPENSSL_free(big);
+}
+
+/* A well-formed SPKI with an OID none of our families claims (a real P-256
+ * key) is declined by our decoders: no hybrid key, no crash. On OpenSSL 3.0 the
+ * decoder ctx does not filter decoders by the property query, so another
+ * provider's decoder may still (correctly) return the EC key; what must not
+ * happen is a key from OUR provider. */
+static void check_foreign_oid(OSSL_LIB_CTX *ctx)
+{
+    EVP_PKEY *ec = EVP_PKEY_Q_keygen(ctx, NULL, "EC", "P-256"), *got = NULL;
+    unsigned char *spki = NULL;
+    size_t len = 0;
+
+    printf("  %-28s foreign-OID SPKI -> declined ... ", "id-ecPublicKey");
+    fflush(stdout);
+    tests++;
+    if (ec == NULL || (spki = encode(ec, EVP_PKEY_PUBLIC_KEY, "DER",
+                                     "SubjectPublicKeyInfo", NULL, &len)) == NULL) {
+        printf("FAIL: setup (EC keygen / SPKI encode)\n");
+        ERR_print_errors_fp(stdout);
+        failed++;
+        goto end;
+    }
+    got = decode_spki_der(ctx, spki, len);
+    ERR_clear_error();
+    if (got == NULL || strcmp(OSSL_PROVIDER_get0_name(
+                                  EVP_PKEY_get0_provider(got)), "hybrid") != 0) {
+        printf("PASS (not ours, declined)\n");
+        passed++;
+    } else {
+        printf("FAIL: the hybrid decoder claimed a foreign key\n");
+        failed++;
+    }
+end:
+    OPENSSL_free(spki);
+    EVP_PKEY_free(ec);
+    EVP_PKEY_free(got);
+}
+
+/* Both malformed-OID-routed checks for one OID (NULL: not key-file encodable). */
+static void check_oid(OSSL_LIB_CTX *ctx, const char *oid)
+{
+    if (oid == NULL)
+        return;
+    check_malformed_spki_oid(ctx, oid);
+    check_malformed_p8(ctx, oid);
+}
+
 /* Hybrid key as the SECOND object of a multi-object PEM, decoded via
  * the generic PEM private-key API. */
 static void check_multiobj(OSSL_LIB_CTX *ctx, const char *alg)
@@ -350,14 +522,21 @@ int main(void)
             continue;
         check_multiobj(ctx, hybrid_sig_table[i].hybrid_name);
         check_malformed(ctx, hybrid_sig_table[i].hybrid_name);
-        check_malformed_p8(ctx, hybrid_sig_table[i].oid);
+        check_oid(ctx, hybrid_sig_table[i].oid);
     }
+    for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
+        check_oid(ctx, hybrid_kem_table[i].oid);
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {
         check_multiobj(ctx, composite_sig_table[i].name);
         check_malformed(ctx, composite_sig_table[i].name);
+        check_oid(ctx, composite_sig_table[i].oid);
     }
+    for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
+        check_oid(ctx, composite_kem_table[i].oid);
 #endif
+    check_oversize(ctx);
+    check_foreign_oid(ctx);
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);

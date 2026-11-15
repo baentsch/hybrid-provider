@@ -52,7 +52,7 @@ static int composite_dec_does_selection(void *provctx, int selection)
         || (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0;
 }
 
-#define COMPOSITE_MAX_KEY_DER  (1024 * 1024)   /* 1 MiB cap on decoder input */
+#define COMPOSITE_MAX_KEY_DER  HYBRID_MAX_KEY_DER   /* one cap for every decoder */
 #define COMPOSITE_DEC_READ_CHUNK  4096          /* initial read buffer; doubles */
 #define COMPOSITE_OID_TXT_MAX  128              /* room for a dotted-decimal OID */
 static int read_all(COMPOSITE_DEC_CTX *ctx, OSSL_CORE_BIO *cin,

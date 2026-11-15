@@ -1069,8 +1069,9 @@ assert a *minimum-latency ratio* of the composed operation against the sum of it
 components (`HYBRID_BENCH_GUARD_ONLY`), so a regression in the provider's glue
 trips the guard. They carry the ctest label `bench` and are `RUN_SERIAL` (their
 timing skews under concurrent load), which makes them a poor fit for the fast PR
-gate: the regular and sanitize legs therefore run `ctest -LE bench` (functional
-only) while this leg runs `ctest -L bench` on an uninstrumented, non-hardened
+gate: the regular and sanitize legs therefore run `ctest -LE 'bench|slow'`
+(functional only; the `slow` label marks `hybrid_alloc_fail_test`, the suite's
+longest test, which runs in the weekly legs) while this leg runs `ctest -L bench` on an uninstrumented, non-hardened
 build for representative timing. Like the sanitize and tsan legs it runs
 **post-merge only** (on push to `main`): a composition-overhead regression only
 appears when *we* change code, so running on every merge both guards `main` and

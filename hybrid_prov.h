@@ -138,6 +138,18 @@ int hybrid_is_ceded(void *provctx, const char *name);
 #define HYBRID_COMPONENT_LIBCTX(pctx) \
     ((pctx)->comp_libctx != NULL ? (pctx)->comp_libctx : (pctx)->libctx)
 
+/*
+ * Composite component sourcing absent alg1-/alg2-propquery config: the
+ * classical half, and the PQ half of a standardized combo (seed private key),
+ * come from the default provider; an experimental combo's research PQ half from
+ * whichever loaded provider offers it (NULL query). The hybrid family has no
+ * such default: its components follow the key's generic propq (NULL unless
+ * set).
+ */
+#define COMPOSITE_DEFAULT_TRAD_PROPQ "provider=default"
+#define COMPOSITE_DEFAULT_PQ_PROPQ(experimental) \
+    ((experimental) ? NULL : COMPOSITE_DEFAULT_TRAD_PROPQ)
+
 /* Key state */
 #define HYBRID_HAVE_NOKEYS  0
 #define HYBRID_HAVE_PUBKEY  1
@@ -1215,6 +1227,10 @@ int hybrid_encode_priv_blob(HYBRID_KEY *key, unsigned char **out,
 /* Decoders (hybrid_decoder.c) */
 extern const OSSL_DISPATCH hybrid_spki_der_decoder_functions[];
 extern const OSSL_DISPATCH hybrid_pkcs8_der_decoder_functions[];
+
+/* Cap on the decoder input read from the core BIO: hybrid keys are a few KB at
+ * most. Shared with the tests that probe the bound (hybrid_decode_neg_test). */
+#define HYBRID_MAX_KEY_DER (1024 * 1024)
 
 /*
  * Parse a SubjectPublicKeyInfo into its algorithm OID and raw public-key bits

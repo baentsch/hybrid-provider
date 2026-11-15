@@ -209,11 +209,12 @@ jobs:
       # flake under runner contention, neither of which belongs on the fast
       # functional path. Composition-overhead regressions are caught in the dedicated
       # post-merge `bench` job (ctest -L bench); every algorithm stays functionally
-      # covered here.
+      # covered here. -LE slow likewise drops hybrid_alloc_fail_test (the suite's
+      # longest test and so its critical path); the weekly legs run it.
       - name: Test — full suite (OpenSSL >= 3.5)
         if: matrix.openssl.pre35 != 'true'
         working-directory: build
-        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -LE bench
+        run: LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -LE 'bench|slow'
 
       # Pre-3.5 the default provider has no native ML-KEM/ML-DSA (and no seed
       # API), so MLX-vs-default checks and the STANDARDIZED composite tiers
@@ -341,8 +342,9 @@ jobs:
           # -LE bench: the min-latency ratio guards are meaningless under ASan (both
           # sides of the ratio are inflated by instrumentation) and slow; the
           # memory-safety value is in the functional suite. Perf regressions are the
-          # dedicated `bench` job's responsibility.
-          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -E 'hybrid_scenarios_' -LE bench
+          # dedicated `bench` job's responsibility. -LE slow: hybrid_alloc_fail_test
+          # (~100 s under ASan) runs in the weekly legs only.
+          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -E 'hybrid_scenarios_' -LE 'bench|slow'
 
   # ---------------------------------------------------------------- coverage ---
   # Line/branch/function coverage of the provider sources (HYBRID_COVERAGE=ON,
@@ -439,7 +441,9 @@ jobs:
         run: |
           set -euo pipefail
           export LD_LIBRARY_PATH="$PREFIX/lib64"
-          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -LE bench
+          # -LE slow: hybrid_alloc_fail_test runs in the weekly legs only, so the
+          # coverage figure here excludes its allocation-failure unwinds.
+          ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" -LE 'bench|slow'
 
       - name: Coverage report
         run: |

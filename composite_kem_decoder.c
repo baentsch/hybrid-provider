@@ -47,7 +47,7 @@ static int composite_kem_dec_does_selection_pub(void *provctx, int selection)
         || (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0;
 }
 
-#define COMPOSITE_KEM_MAX_KEY_DER  (1024 * 1024)
+#define COMPOSITE_KEM_MAX_KEY_DER  HYBRID_MAX_KEY_DER   /* one cap for every decoder */
 #define COMPOSITE_KEM_DEC_READ_CHUNK  4096
 #define COMPOSITE_KEM_OID_TXT_MAX  128
 static int read_all(COMPOSITE_KEM_DEC_CTX *ctx, OSSL_CORE_BIO *cin,
