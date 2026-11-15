@@ -75,7 +75,7 @@ entry points no round-trip reaches — key/ctx dup, param introspection,
 set_params guards (`hybrid_dispatch_test`), malformed/oversize decoder input
 (`hybrid_decode_neg_test`), allocation-failure injection — each provider
 allocation failed in turn must fail closed and leak-free
-(`hybrid_alloc_fail_test`, ctest label `slow`: run weekly in CI, skip locally
+(`hybrid_alloc_fail_test`, ctest label `slow`: run in CI's coverage and weekly legs, skip locally
 with `ctest -LE slow`; `HYBRID_ALLOC_FAIL_EXHAUSTIVE=1` fails every occurrence
 instead of a per-call-site sample),
 TLS code-point parity (`hybrid_capability_test`), provider coexistence
