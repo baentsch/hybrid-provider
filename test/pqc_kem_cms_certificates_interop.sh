@@ -55,85 +55,20 @@
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
-OPENSSL_LIBPATH="${OPENSSL_LIBPATH:-}"
-MODULE_DIR="${MODULE_DIR:-$REPO/build}"
-VER="${VER:-v3}"
+PQC_KIND=cms
+PQC_OUTNAME=pqc-kem-cms-artifacts
+PQC_OPENSSL_HINT="must be 3.6.0+"
 # Two independent draft-18 impls that ship the full .55..66 KEMRI matrix. Override
 # with --peers; a peer without composite-arc KEMRI artifacts self-skips, so
 # widening the list is harmless (but an older-draft peer may FAIL on skew).
 PEERS="${PEERS:-composite-crypto bc}"
-RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/master/providers"
-OUTDIR=""
-MODE="verify"
-KEEP=0
-STRICT="${STRICT:-0}"
 PLAINTEXT="${PLAINTEXT:-Hello, World!}"   # our generated EnvelopedData payload
 
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
-    Darwin)               SOEXT="${SOEXT:-dylib}";;
-    *)                    SOEXT="${SOEXT:-so}";;
-esac
-
-usage() { awk 'NR > 2 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; cat <<EOF
-
-Usage: $(basename "$0") [options] [verify|generate|all]
-
-  verify    (default) decrypt each peer's cms_v3 EnvelopedData corpus.
-  generate  produce THIS provider's composite-KEM KEMRI EnvelopedData in the
-            cms_v3 corpus layout (+ self-verify) for a providers/hybrid-provider/
-            submission so others can decrypt us.
-  all       verify, then generate.
-
-Options:
-  --openssl PATH    openssl binary (must be 3.6.0+)   (default: $OPENSSL_BIN)
-  --libpath PATH    LD_LIBRARY_PATH for its libs      (default: none)
-  --module-dir DIR  OPENSSL_MODULES with hybrid.$SOEXT (default: $MODULE_DIR)
-  --peers "a b c"   provider dirs to verify           (default: $PEERS)
-  --version V       cms corpus version (artifacts_cms_<V>.zip) (default: $VER)
-  --outdir DIR      generate output dir   (default: <module-dir>/pqc-kem-cms-artifacts)
-  --keep            keep the temp work dir
-  --strict          unreachable / empty peer is FAIL, not SKIP
-  -h, --help        this help
-EOF
-}
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --openssl)    OPENSSL_BIN="$2"; shift 2;;
-        --libpath)    OPENSSL_LIBPATH="$2"; shift 2;;
-        --module-dir) MODULE_DIR="$2"; shift 2;;
-        --peers)      PEERS="$2"; shift 2;;
-        --version)    VER="$2"; shift 2;;
-        --outdir)     OUTDIR="$2"; shift 2;;
-        --keep)       KEEP=1; shift;;
-        --strict)     STRICT=1; shift;;
-        -h|--help)    usage; exit 0;;
-        verify|generate|all) MODE="$1"; shift;;
-        *) echo "unknown argument: $1" >&2; usage; exit 2;;
-    esac
-done
-# Absolutize MODULE_DIR: the provider cnf's `module =` value is resolved relative
-# to OPENSSL_MODULES when not absolute, so a relative --module-dir makes OpenSSL
-# look for <dir>/<dir>/hybrid.so, silently skip the provider, and then NOTHING
-# owns the composite-KEM OIDs → every decrypt "fails". Canonicalize up front.
-[ -d "$MODULE_DIR" ] && MODULE_DIR="$(cd "$MODULE_DIR" && pwd)"
-: "${OUTDIR:=$MODULE_DIR/pqc-kem-cms-artifacts}"
-
-[ -n "$OPENSSL_LIBPATH" ] && export LD_LIBRARY_PATH="$OPENSSL_LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export OPENSSL_MODULES="$MODULE_DIR"
-
-if [ -t 1 ]; then C_OK=$'\033[32m'; C_NO=$'\033[31m'; C_SK=$'\033[33m'; C_Z=$'\033[0m'
-else C_OK=""; C_NO=""; C_SK=""; C_Z=""; fi
-pass=0; fail=0; skip=0
-ok()   { echo "  ${C_OK}PASS${C_Z}  $*"; pass=$((pass+1)); }
-no()   { echo "  ${C_NO}FAIL${C_Z}  $*"; fail=$((fail+1)); }
-note() { echo "  ${C_SK}SKIP${C_Z}  $*"; skip=$((skip+1)); }
-hdr()  { echo; echo "== $* =="; }
-# A peer with nothing comparable: SKIP by default, FAIL under --strict.
-miss() { if [ "$STRICT" -eq 1 ]; then no "$@"; else note "$@"; fi; }
-skip_all() { echo "SKIP: $*"; exit 0; }
+# shellcheck source=pqc_corpus_common.sh
+. "$REPO/test/pqc_corpus_common.sh"
+pqc_defaults
+pqc_parse_args "$@"
+pqc_init_report
 
 # ---- prerequisites (clean self-skip) -----------------------------------------
 "$OPENSSL_BIN" version >/dev/null 2>&1 || skip_all "openssl ($OPENSSL_BIN) not runnable"
@@ -146,43 +81,7 @@ minor="$(printf '%s' "$ver" | sed -nE 's/^OpenSSL [0-9]+\.([0-9]+)\..*/\1/p')"
     || skip_all "need OpenSSL 3.6.0+ for CMS KEMRI (have: ${ver:-unknown})"
 [ -f "$MODULE_DIR/hybrid.$SOEXT" ] || skip_all "hybrid.$SOEXT not found in $MODULE_DIR"
 
-WORKDIR="$(mktemp -d)"
-cleanup() { [ "$KEEP" -eq 1 ] || rm -rf "$WORKDIR"; }
-trap cleanup EXIT
-
-# default + hybrid: default supplies ML-KEM / RSA / ECDH / X components, hybrid
-# supplies the composite algorithm (which owns the composite-KEM OIDs).
-HCNF="$WORKDIR/hybrid.cnf"
-cat > "$HCNF" <<EOF
-openssl_conf = c
-[c]
-providers = p
-[p]
-default = d
-hybrid = x
-[d]
-activate = 1
-[x]
-module = $MODULE_DIR/hybrid.$SOEXT
-activate = 1
-EOF
-
-# shellcheck source=pqc_corpus_common.sh
-. "$REPO/test/pqc_corpus_common.sh"   # ARC (whole composite arc), OID coherence
-oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
-
-# Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
-# (lazy, non-fatal activation — exit 0, nothing on stderr). Without the hybrid
-# provider active, NOTHING owns the composite-KEM OIDs and every decrypt just
-# "fails" with no hint why. The hybrid.$SOEXT file was already found above, so a
-# load failure here is a real fault (bad ABI, missing component dep, ...), not a
-# clean self-skip: fail loudly with the one diagnostic OpenSSL won't give us.
-if ! oss list -providers 2>/dev/null | grep -q 'name: hybrid-provider'; then
-    echo "ERROR: hybrid provider present at $MODULE_DIR/hybrid.$SOEXT but did not" >&2
-    echo "       activate under $OPENSSL_BIN ($ver). Likely an ABI/libcrypto" >&2
-    echo "       mismatch or a missing component dependency." >&2
-    exit 1
-fi
+pqc_setup
 # generate needs `x509 -new`, which misreads the provider cnf's [default] section
 # as cert extensions; drive those commands with a null cnf + explicit -provider
 # flags instead (same workaround as pqc_kem_cms_interop.sh).
@@ -191,17 +90,12 @@ ossp() { local sub="$1"; shift
 
 # ---- verify: third-party EnvelopedData decrypted by hybrid-provider ----------
 verify_peer() {   # $1 = provider dir name
-    local peer="$1" zip="$WORKDIR/$1.zip" d="$WORKDIR/$1" n=0 p=0 exp blob
-    if ! curl -fsSL "$RAW_BASE/$peer/artifacts_cms_$VER.zip" -o "$zip" 2>/dev/null \
-            || [ ! -s "$zip" ]; then
-        miss "$peer: no artifacts_cms_$VER.zip (unreachable / absent)"; return
-    fi
-    mkdir -p "$d"; unzip -qo "$zip" -d "$d" 2>/dev/null
+    local peer="$1" d="$WORKDIR/$1" n=0 p=0 exp blob
+    pqc_fetch_peer "$peer" || return
     exp="$(find "$d" -type f -name expected_plaintext.txt | head -1)"
     if [ -z "$exp" ]; then
         miss "$peer: no expected_plaintext.txt in cms_$VER (cannot assert content)"; return
     fi
-    : > "$WORKDIR/$peer.oids"
     # One EnvelopedData per composite-KEM OID (HKDF-SHA256 KEMRI; exclude the
     # authenticated and user-keying-material variants). Standalone ML-KEM entries
     # (OID arc 2.16.840... / BC vendor arc) do not match ARC and are ignored.
@@ -224,35 +118,19 @@ verify_peer() {   # $1 = provider dir name
         out="$WORKDIR/$(basename "$base").out"
         if oss cms -decrypt -inform DER -in "$blob" -inkey "$priv" -keyform DER \
                 -out "$out" >/dev/null 2>&1 && cmp -s "$out" "$exp"; then
-            p=$((p+1)); echo "$oid" >> "$WORKDIR/$peer.oids"
-            echo "$oid" >> "$WORKDIR/verified_oids"
+            p=$((p+1)); pqc_record_ok "$peer" "$oid"
         else
             no "$peer: $oid ($(basename "$base")) did not decrypt to expected plaintext"
         fi
     done < <(find "$d" -type f -name '*_kemri_id-alg-hkdf-with-sha256.der' \
                 | grep -v '_kemri_auth' | grep -E "$ARC" | sort)
-    if [ "$n" -eq 0 ]; then
-        miss "$peer: no composite-KEM ($ARC) KEMRI artifacts in cms_$VER"
-    else
-        local dist; dist=$(sort -u "$WORKDIR/$peer.oids" | wc -l)
-        local msg="$peer: $dist/12 composite-KEM OIDs decrypted to the peer's plaintext ($p/$n blobs)"
-        # Each failed blob already raised its own FAIL; the peer-summary line is a
-        # PASS only when every found blob decrypted (p==n), else it would mask a
-        # total failure behind a green "0/12 ... PASS".
-        if [ "$p" -eq "$n" ]; then ok "$msg"; else no "$msg"; fi
-    fi
+    pqc_peer_summary "$peer" "$n" "$p" "decrypted to the peer's plaintext" "blobs" \
+        "no composite-KEM ($ARC) KEMRI artifacts in cms_$VER"
 }
 
 cmd_verify() {
-    hdr "Read/verify: pqc-certificates composite ML-KEM CMS (KEMRI) decrypted by hybrid-provider"
-    echo "  corpus: cms_$VER   openssl: $ver"
-    : > "$WORKDIR/verified_oids"
-    local peer
-    for peer in $PEERS; do verify_peer "$peer"; done
-    if [ -s "$WORKDIR/verified_oids" ]; then
-        echo "  distinct composite-KEM OIDs decrypted from >=1 peer: \
-$(sort -u "$WORKDIR/verified_oids" | wc -l)/12"
-    fi
+    pqc_verify_all "Read/verify: pqc-certificates composite ML-KEM CMS (KEMRI) decrypted by hybrid-provider" \
+        "decrypted"
 }
 
 # ---- generate: THIS provider's cms_v3 KEMRI artifacts (+ self-verify) --------
@@ -311,12 +189,4 @@ cmd_generate() {
     fi
 }
 
-case "$MODE" in
-    verify)   cmd_verify;;
-    generate) cmd_generate;;
-    all)      cmd_verify; cmd_generate;;
-esac
-
-hdr "Summary ($MODE)"
-echo "  passed: $pass   failed: $fail   skipped: $skip"
-[ "$fail" -eq 0 ]
+pqc_main

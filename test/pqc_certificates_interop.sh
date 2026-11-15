@@ -33,10 +33,8 @@
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
-OPENSSL_LIBPATH="${OPENSSL_LIBPATH:-}"
-MODULE_DIR="${MODULE_DIR:-$REPO/build}"
-ROUND="${ROUND:-r5}"
+PQC_KIND=certs
+PQC_OUTNAME=pqc-artifacts
 # Default peers = every provider that publishes draft-19 composite-signature
 # artifacts in the r5 round, as listed by the repo's own results matrix
 # (docs/pqc_hackathon_results_certs_r5.md — the rows on the 1.3.6.1.5.5.7.6.*
@@ -45,125 +43,23 @@ ROUND="${ROUND:-r5}"
 PEERS="${PEERS:-bc carl-redhound cht composite-crypto composite-sigs-ref-impl \
 crypto4a cryptonext entrust entrust-pkihub leancrypto \
 openssl-composite-preliminary-impl safelogic}"
-RAW_BASE="https://raw.githubusercontent.com/IETF-Hackathon/pqc-certificates/master/providers"
-OUTDIR=""
-KEEP=0
-MODE="verify"
-STRICT="${STRICT:-0}"
-
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) SOEXT="${SOEXT:-dll}";;
-    Darwin)               SOEXT="${SOEXT:-dylib}";;
-    *)                    SOEXT="${SOEXT:-so}";;
-esac
-
-usage() { awk 'NR > 2 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; cat <<EOF
-
-Usage: $(basename "$0") [options] [verify|generate|all]
-
-Options:
-  --openssl PATH    openssl binary            (default: $OPENSSL_BIN)
-  --libpath PATH    LD_LIBRARY_PATH for libs  (default: none)
-  --module-dir DIR  OPENSSL_MODULES with hybrid.$SOEXT (default: $MODULE_DIR)
-  --peers "a b c"   provider dirs to verify   (default: $PEERS)
-  --round R         artifact round            (default: $ROUND)
-  --outdir DIR      generate output dir       (default: <module-dir>/pqc-artifacts)
-  --keep            keep the temp work dir
-  --strict          unreachable / empty peer is FAIL, not SKIP
-  -h, --help        this help
-EOF
-}
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --openssl)    OPENSSL_BIN="$2"; shift 2;;
-        --libpath)    OPENSSL_LIBPATH="$2"; shift 2;;
-        --module-dir) MODULE_DIR="$2"; shift 2;;
-        --peers)      PEERS="$2"; shift 2;;
-        --round)      ROUND="$2"; shift 2;;
-        --outdir)     OUTDIR="$2"; shift 2;;
-        --keep)       KEEP=1; shift;;
-        --strict)     STRICT=1; shift;;
-        -h|--help)    usage; exit 0;;
-        verify|generate|all) MODE="$1"; shift;;
-        *) echo "unknown argument: $1" >&2; usage; exit 2;;
-    esac
-done
-: "${OUTDIR:=$MODULE_DIR/pqc-artifacts}"
-
-# Absolutize MODULE_DIR: a relative `module =` in the provider cnf is resolved
-# relative to OPENSSL_MODULES, so a relative --module-dir makes OpenSSL look for
-# <dir>/<dir>/hybrid.so and silently skip the provider. Canonicalize up front.
-[ -d "$MODULE_DIR" ] && MODULE_DIR="$(cd "$MODULE_DIR" && pwd)"
-[ -n "$OPENSSL_LIBPATH" ] && export LD_LIBRARY_PATH="$OPENSSL_LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export OPENSSL_MODULES="$MODULE_DIR"
-
-if [ -t 1 ]; then C_OK=$'\033[32m'; C_NO=$'\033[31m'; C_SK=$'\033[33m'; C_Z=$'\033[0m'
-else C_OK=""; C_NO=""; C_SK=""; C_Z=""; fi
-pass=0; fail=0; skip=0
-ok()   { echo "  ${C_OK}PASS${C_Z}  $*"; pass=$((pass+1)); }
-no()   { echo "  ${C_NO}FAIL${C_Z}  $*"; fail=$((fail+1)); }
-note() { echo "  ${C_SK}SKIP${C_Z}  $*"; skip=$((skip+1)); }
-hdr()  { echo; echo "== $* =="; }
-# A peer with nothing comparable: SKIP by default, FAIL under --strict.
-miss() { if [ "$STRICT" -eq 1 ]; then no "$@"; else note "$@"; fi; }
-
-if [ ! -f "$MODULE_DIR/hybrid.$SOEXT" ]; then
-    echo "hybrid.$SOEXT not found in $MODULE_DIR -- build the provider first" >&2
-    exit 1
-fi
-
-WORKDIR="$(mktemp -d)"
-cleanup() { [ "$KEEP" -eq 1 ] || rm -rf "$WORKDIR"; }
-trap cleanup EXIT
-
-# default + hybrid: default supplies the ML-DSA / RSA / ECDSA / EdDSA components,
-# hybrid supplies the composite algorithm (which owns the composite OIDs).
-HCNF="$WORKDIR/hybrid.cnf"
-cat > "$HCNF" <<EOF
-openssl_conf = c
-[c]
-providers = p
-[p]
-default = d
-hybrid = x
-[d]
-activate = 1
-[x]
-module = $MODULE_DIR/hybrid.$SOEXT
-activate = 1
-EOF
 
 # shellcheck source=pqc_corpus_common.sh
-. "$REPO/test/pqc_corpus_common.sh"   # ARC (composite OID arc), OID coherence
-oss() { OPENSSL_CONF="$HCNF" "$OPENSSL_BIN" "$@"; }
-
-# Guard: OpenSSL silently drops a cnf-referenced provider that fails to load
-# (lazy, non-fatal activation — exit 0, nothing on stderr). Without the hybrid
-# provider active NOTHING owns the composite OIDs and every verify just "fails"
-# with no hint why. The hybrid.$SOEXT file was already found above, so a load
-# failure here is a real fault (bad ABI, missing component dep, ...): fail loudly
-# with the one diagnostic OpenSSL won't give us.
-if ! oss list -providers 2>/dev/null | grep -q 'name: hybrid-provider'; then
-    echo "ERROR: hybrid provider present at $MODULE_DIR/hybrid.$SOEXT but did not" >&2
-    echo "       activate under $OPENSSL_BIN ($("$OPENSSL_BIN" version 2>/dev/null))." >&2
-    echo "       Likely an ABI/libcrypto mismatch or a missing component dependency." >&2
-    exit 1
-fi
+. "$REPO/test/pqc_corpus_common.sh"
+pqc_defaults
+pqc_parse_args "$@"
+pqc_init_report
+pqc_require_module
+pqc_setup
 
 # ---- verify: third-party artifacts read + verified by hybrid-provider --------
 verify_peer() {   # $1 = provider dir name
-    local peer="$1" d="$WORKDIR/$1" zip="$WORKDIR/$1.zip" n=0 p=0
-    if ! curl -fsSL "$RAW_BASE/$peer/artifacts_certs_$ROUND.zip" -o "$zip" 2>/dev/null \
-            || [ ! -s "$zip" ]; then
-        miss "$peer: no artifacts_certs_$ROUND.zip (unreachable / absent)"; return
-    fi
-    mkdir -p "$d"; unzip -qo "$zip" -d "$d" 2>/dev/null
-    : > "$WORKDIR/$peer.oids"
+    local peer="$1" d="$WORKDIR/$1" n=0 p=0
+    pqc_fetch_peer "$peer" || return
     # Composite trust-anchor certs, matched by the arc OID in the filename. A
     # provider may ship several files for the same OID (duplicate / renamed
     # copies), so certs (files) and distinct OIDs are counted separately — the
-    # OID count is what maps to our 18 composite algorithms.
+    # OID count is what maps to our composite algorithms.
     while IFS= read -r ta; do
         local oid pem priv why
         oid="$(echo "$ta" | grep -oE "$ARC" | head -1)"; [ -z "$oid" ] && continue
@@ -177,30 +73,18 @@ verify_peer() {   # $1 = provider dir name
         fi
         oss x509 -inform DER -in "$ta" -out "$pem" 2>/dev/null || pem="$ta"
         if oss verify -no_check_time -CAfile "$pem" "$pem" >/dev/null 2>&1; then
-            p=$((p+1)); echo "$oid" >> "$WORKDIR/verified_oids"
-            echo "$oid" >> "$WORKDIR/$peer.oids"
+            p=$((p+1)); pqc_record_ok "$peer" "$oid"
         else
             no "$peer: $oid ($(basename "$ta")) not verified by hybrid-provider"
         fi
     done < <(find "$d" -type f -name '*_ta.der' | grep -E "$ARC" | sort)
-    if [ "$n" -eq 0 ]; then
-        miss "$peer: no composite ($ARC) trust-anchor certs in $ROUND"
-    else
-        local dist; dist=$(sort -u "$WORKDIR/$peer.oids" | wc -l)
-        ok "$peer: $dist distinct composite OIDs verified ($p/$n certs incl. duplicates)"
-    fi
+    pqc_peer_summary "$peer" "$n" "$p" "verified" "certs incl. duplicates" \
+        "no composite ($ARC) trust-anchor certs in $ROUND"
 }
 
 cmd_verify() {
-    hdr "Read/verify: pqc-certificates composite certs verified by hybrid-provider"
-    echo "  round: $ROUND   openssl: $("$OPENSSL_BIN" version 2>/dev/null)"
-    : > "$WORKDIR/verified_oids"
-    local peer
-    for peer in $PEERS; do verify_peer "$peer"; done
-    if [ -s "$WORKDIR/verified_oids" ]; then
-        echo "  distinct composite OIDs verified from >=1 peer: \
-$(sort -u "$WORKDIR/verified_oids" | wc -l)/18"
-    fi
+    pqc_verify_all "Read/verify: pqc-certificates composite certs verified by hybrid-provider" \
+        "verified"
 }
 
 # ---- generate: our own artifacts in the repo's r5 flat naming ----------------
@@ -244,12 +128,4 @@ cmd_generate() {
     fi
 }
 
-case "$MODE" in
-    verify)   cmd_verify;;
-    generate) cmd_generate;;
-    all)      cmd_verify; cmd_generate;;
-esac
-
-hdr "Summary ($MODE)"
-echo "  passed: $pass   failed: $fail   skipped: $skip"
-[ "$fail" -eq 0 ]
+pqc_main
