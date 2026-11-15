@@ -274,6 +274,26 @@ coverage table: which of our OIDs each peer ships. On drift the job opens a `pqc
 locally with the same `OPENSSL_BIN` / `OPENSSL_LIBPATH` / `MODULE_DIR` the
 scripts take; it exits 0 in sync, 1 on drift, and 2 on a tooling error.
 
+The same three scripts also test **plain PQ from a component provider**
+("pass-through": ML-DSA, SLH-DSA and ML-KEM, which hybrid never handles).
+`--family nist-pq` switches the matched OIDs to the FIPS 203/204/205 arc, and
+`--providers` picks what to load (each entry `name` or `name=/path/module`):
+
+| Goal | Options |
+|---|---|
+| Qualify a component provider (does it read the corpus?) | `--family nist-pq --providers default` |
+| Coexistence (co-loading hybrid changes nothing) | `--family nist-pq` (default providers `default hybrid`), diffed against the line above |
+| A third provider as the only PQ source | `--family nist-pq --providers "base oqsprovider"` (`base` supplies the decoders and store loaders; a mandatory `--propquery provider=...` would exclude those too) |
+| Prefer a provider while others stay loaded | `--propquery "?provider=NAME"` |
+
+Each shipped private-key form (`_seed`, `_expandedkey`, `_both`) is its own
+check. An artifact the loaded providers cannot load at all (an unserved
+algorithm, such as HashML-DSA in the default provider, or an unsupported key
+encoding) is a SKIP, or a FAIL under `--strict`. A filename naming two OIDs
+(`catalyst_<a>_with_<b>`, ...) is a multi-algorithm artifact and is skipped.
+`generate` stays composite-only. Peer lists default to the composite ones; widen
+them with `--peers`, since many more corpus providers ship plain PQ.
+
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).
 
