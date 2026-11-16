@@ -94,6 +94,21 @@ hybrid-provider/
     ├── hybrid_cms_test.c          ← CMS SignedData
     ├── hybrid_cms_kem_test.c      ← composite KEM (both tiers) as CMS KEMRI recipient (RFC 9629)
     ├── hybrid_capability_test.c   ← TLS code-point parity vs default/oqsprovider
+    ├── hybrid_coverage_test.c     ← name coverage: every origin (oqs/default) hybrid is in our tables
+    ├── hybrid_count_test.c        ← README "Algorithms served:" headline == table counts
+    ├── hybrid_sizes_test.c        ← component-size tables vs live components (verify/generate)
+    ├── hybrid_cede_test.c         ← cede-to-default: withdraw what the default provider serves
+    ├── hybrid_log_test.c          ← HYBRID_LOG diagnostics for dropped (inoperable) groups
+    ├── hybrid_adverse_test.c      ← load/coexistence/init-ordering robustness
+    ├── hybrid_methodology_test.c  ← unpinned (store) resolution + explicit activation paths
+    ├── hybrid_leakcheck_test.c    ← reach every path under LSan (leak detection with teeth)
+    ├── hybrid_oqs_test.c          ← KEM interop vs oqsprovider for OQS-legacy ML-KEM hybrids
+    ├── hybrid_extract_test.c      ← component extraction/composition as standalone EVP_PKEYs
+    ├── hybrid_text_test.c         ← `pkey -text` encoder output for all families
+    ├── hybrid_decode_neg_test.c   ← decoder robustness: multi-object PEM, malformed DER
+    ├── hybrid_decode_fuzz.c       ← OSSL_DECODER fuzz harness (SPKI/PKCS8 import surface)
+    ├── corpus/                    ← decoder fuzz seed corpus (gen_decode_corpus.sh)
+    ├── xwing_kat_test.c           ← X-Wing KEM KAT vs draft-connolly-cfrg-xwing-kem
     ├── hybrid_config_test.c       ← cnf-driven component selection
     ├── hybrid_compctx_test.c      ← private component context (Frodo/BIKE/HQC)
     ├── hybrid_coexist_test.c      ← provider coexistence
@@ -101,11 +116,24 @@ hybrid-provider/
     ├── hybrid_matrix_test.c       ← full cross-version matrix vs oqsprovider
     ├── hybrid_replace_test.c      ← drop-in replacement over PQ-only oqsprovider (OQS_CEDE_HYBRIDS)
     ├── patches/                   ← in-repo oqsprovider patches (cede-hybrids lever)
-    ├── composite_*_test.c         ← composite combiner/provider/draft-19 KAT
+    ├── composite_test.c           ← composite sig provider via EVP: keygen/sign/verify/tamper
+    ├── composite_sig_test.c       ← composite sig combiner self-consistency (no provider)
+    ├── composite_kat_test.c       ← composite sig KAT vs draft-ietf-lamps-pq-composite-sigs
+    ├── composite_kem_test.c       ← composite KEM combiner KAT + encaps/decaps self-consistency
+    ├── composite_kem_kat_test.c   ← composite KEM KAT vs draft-ietf-lamps-pq-composite-kem
     ├── composite_cms_test.c       ← composite signatures as CMS SignedData (attr + -noattr)
     ├── composite_sig_bench.c      ← composite cert size + cert-gen/verify benchmark
 │   ├── composite_kem_bench.c      ← composite KEM keygen/encaps/decaps + pk/ct/sk sizes
     ├── hybrid_bench.c             ← keygen/encaps/decaps benchmark vs default provider
+    ├── bench_util.c               ← shared benchmark/perf-guard helpers (min single-op latency)
+    ├── provider_matrix.c          ← cross-provider interop + perf matrix (wolf/mldsa-native/oqs)
+    ├── probe_oqs_hybrid.c         ← probe oqsprovider hybrid KEM raw/wire layout
+    ├── pqc_corpus_common.sh       ← shared helpers for the pqc-certificates corpus scripts
+    ├── pqc_certificates_interop.sh        ← sig certs vs IETF Hackathon pqc-certificates corpus
+    ├── pqc_kem_certificates_interop.sh    ← composite KEM decaps vs the same corpus
+    ├── pqc_kem_cms_certificates_interop.sh ← composite KEM CMS (KEMRI) vs the same corpus
+    ├── pqc_kem_cms_interop.sh     ← both-way composite KEM CMS interop vs kemri_toy
+    ├── setup_oqs_interop.sh       ← (re)build the from-source liboqs + oqsprovider interop peer
     └── hybrid_scenarios.sh        ← CLI (s_server/s_client) TLS interop harness
 └── integrations/          ← downstream integration demos (Docker; not built by CMake)
     └── curl-nginx-3alg/   ← curl↔nginx TLS 1.3 over a 3-provider hybrid KEM
