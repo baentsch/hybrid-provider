@@ -125,7 +125,7 @@ even for native ML-DSA) and self-skips below that, probed at runtime.
 This family *can* take part in the IETF Hackathon
 [`pqc-certificates`](https://github.com/IETF-Hackathon/pqc-certificates)
 multi-vendor interop in both roles via
-[`test/pqc_certificates_interop.sh`](test/pqc_certificates_interop.sh) (see
+[`test/pqc_certificates_interop.py`](test/pqc_certificates_interop.py) (see
 [docs/pqc-certificates-interop.md](docs/pqc-certificates-interop.md)): it
 reads/validates peers' composite-signature certs and can `generate` ours in the
 `providers/hybrid-provider/` submission layout. No artifacts have been submitted
@@ -156,9 +156,9 @@ PKI/CMS only — **no** TLS key-exchange code point. **Normative.**
 This family *can* take part in the IETF Hackathon
 [`pqc-certificates`](https://github.com/IETF-Hackathon/pqc-certificates)
 multi-vendor interop in both roles:
-[`test/pqc_kem_certificates_interop.sh`](test/pqc_kem_certificates_interop.sh)
+[`test/pqc_kem_certificates_interop.py`](test/pqc_kem_certificates_interop.py)
 (raw decaps vectors) and
-[`test/pqc_kem_cms_certificates_interop.sh`](test/pqc_kem_cms_certificates_interop.sh)
+[`test/pqc_kem_cms_certificates_interop.py`](test/pqc_kem_cms_certificates_interop.py)
 (CMS `cms_v3` `EnvelopedData`) each read/validate peers' artifacts and can
 `generate` ours in the `providers/hybrid-provider/` submission layout (see
 [docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)). No

@@ -24,3 +24,7 @@ liboqs/
 
 # Generated local preview of test/TESTING.md (see the "view rendered" tooling)
 test/TESTING.preview.html
+
+# Python bytecode cache from the test/pqc_*.py corpus scripts
+__pycache__/
+*.pyc

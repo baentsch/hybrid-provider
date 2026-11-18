@@ -3,7 +3,7 @@
 Status of interoperability between this provider and the multi-vendor artifact
 repository [IETF-Hackathon/pqc-certificates](https://github.com/IETF-Hackathon/pqc-certificates)
 for the **KEM** overlap, driven by
-[`test/pqc_kem_certificates_interop.sh`](../test/pqc_kem_certificates_interop.sh).
+[`test/pqc_kem_certificates_interop.py`](../test/pqc_kem_certificates_interop.py).
 This is the KEM companion to [`pqc-certificates-interop.md`](pqc-certificates-interop.md)
 (composite ML-DSA signatures, issue #31).
 
@@ -40,7 +40,7 @@ the SHA3-256 combiner end-to-end against bytes this provider did not produce.
 
 ## How this is tested
 
-`test/pqc_kem_certificates_interop.sh` has three modes, run under a
+`test/pqc_kem_certificates_interop.py` has three modes, run under a
 `default + hybrid` OpenSSL config:
 
 - **`verify`** (read direction — *reference generates, we read*): download
@@ -95,7 +95,7 @@ artifacts.
 ## Reproduce
 
 ```sh
-test/pqc_kem_certificates_interop.sh \
+python3 test/pqc_kem_certificates_interop.py \
     --openssl /path/to/openssl-3.5+/bin/openssl \
     --libpath /path/to/openssl-3.5+/lib64 \
     --module-dir build \
@@ -107,7 +107,7 @@ test/pqc_kem_certificates_interop.sh \
 The decaps vectors above exercise the raw composite KEM. The same corpus also
 carries, per provider, a CMS `EnvelopedData` whose single recipient is a
 `KEMRecipientInfo` (RFC 9629) — the composite ML-KEM used as a CMS key-transport
-recipient (issue #108). [`test/pqc_kem_cms_certificates_interop.sh`](../test/pqc_kem_cms_certificates_interop.sh)
+recipient (issue #108). [`test/pqc_kem_cms_certificates_interop.py`](../test/pqc_kem_cms_certificates_interop.py)
 downloads each peer's `artifacts_cms_v3.zip` and, for every composite-KEM OID that
 ships a `..._kemri_id-alg-hkdf-with-sha256.der` (HKDF-SHA256, the draft-18
 default) plus a `..._priv.der`, decrypts it with hybrid-provider and checks the
@@ -130,7 +130,7 @@ recovered plaintext equals the peer's `expected_plaintext.txt`.
 
 ```sh
 # verify peers (default) — or `generate` ours / `all`
-test/pqc_kem_cms_certificates_interop.sh \
+python3 test/pqc_kem_cms_certificates_interop.py \
     --openssl /path/to/openssl-3.6+/bin/openssl \
     --libpath /path/to/openssl-3.6+/lib \
     --module-dir build \

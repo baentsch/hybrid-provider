@@ -2,7 +2,7 @@
 
 Status of interoperability between this provider and the multi-vendor artifact
 repository [IETF-Hackathon/pqc-certificates](https://github.com/IETF-Hackathon/pqc-certificates),
-driven by [`test/pqc_certificates_interop.sh`](../test/pqc_certificates_interop.sh).
+driven by [`test/pqc_certificates_interop.py`](../test/pqc_certificates_interop.py).
 
 - **Environment:** OpenSSL 4.1.0-dev; artifact round **r5**.
 - **Overlap:** LAMPS **composite ML-DSA signatures**
@@ -23,7 +23,7 @@ corpus, exactly the model this provider's composite family targets.
 
 ## How this is tested
 
-`test/pqc_certificates_interop.sh` has three modes:
+`test/pqc_certificates_interop.py` has three modes:
 
 - **`verify`** (read direction — *they generate, we read*): download each peer's
   `artifacts_certs_r5.zip`, and for every composite trust-anchor cert (matched by
@@ -40,10 +40,10 @@ corpus, exactly the model this provider's composite family targets.
 - **`all`** — both.
 
 ```sh
-./test/pqc_certificates_interop.sh --openssl <ossl> --libpath <libdir> \
+python3 ./test/pqc_certificates_interop.py --openssl <ossl> --libpath <libdir> \
     --module-dir <build> all
 # customise peers / round / output dir:
-./test/pqc_certificates_interop.sh --peers "bc composite-sigs-ref-impl" --round r5 \
+python3 ./test/pqc_certificates_interop.py --peers "bc composite-sigs-ref-impl" --round r5 \
     --outdir ./hp-artifacts generate
 ```
 

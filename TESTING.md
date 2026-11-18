@@ -245,7 +245,7 @@ absent, and FAILs only on a real mismatch:
   errors on the combo — `*` if its `--help` advertises the combo yet it still
   errored, so the discrepancy stays visible). Representative run: 7 OK, 1 SKEW
   (`.56`), 4 SKIP (`.61`/`.64` absent; `.58`/`.65` advertised-but-errored), 0 FAIL.
-- **`test/pqc_kem_cms_certificates_interop.sh`** — multi-peer read of the IETF
+- **`test/pqc_kem_cms_certificates_interop.py`** — multi-peer read of the IETF
   Hackathon pqc-certificates **`cms_v3`** EnvelopedData corpus: per peer it
   downloads `artifacts_cms_v3.zip` and, for every composite-KEM OID shipping a
   KEMRI blob (HKDF-SHA256, draft-18, arc `.55..66`), decrypts it with
@@ -256,19 +256,19 @@ absent, and FAILs only on a real mismatch:
   `bc`), 0 FAIL. Like the decaps companion it also has a `generate` mode that
   emits our own `cms_v3` artifacts (+ self-verify) for a potential
   `providers/hybrid-provider/` submission (none made yet).
-- **`test/pqc_kem_certificates_interop.sh`** — the KEM-decapsulation companion to
+- **`test/pqc_kem_certificates_interop.py`** — the KEM-decapsulation companion to
   the two above: reads the corpus's raw composite-KEM decaps vectors
   (`_ciphertext.bin` + `_ss.bin`) instead of CMS (3.5+; details in
   [docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)).
 
-The three corpus scripts (`pqc_certificates_interop.sh` for composite
+The three corpus scripts (`pqc_certificates_interop.py` for composite
 signatures, plus the two KEM ones above) also run weekly in
 `.github/workflows/pqc-certs-interop.yml`, via `scripts/check-pqc-certs-drift.sh`.
 That script also diffs the composite OIDs our encoder emits against the corpus's
 canonical `docs/oid_mapping.md`, and flags a newer artifact round. There the
 scripts run with `--strict`, which turns an unreachable or empty peer from SKIP
 into FAIL. Every read artifact must also embed the OID its filename names
-(`test/pqc_corpus_common.sh`), so a mislabelled peer file FAILs instead of being
+(`test/pqc_corpus_common.py`), so a mislabelled peer file FAILs instead of being
 counted under the wrong OID. The report ends with an informational per-peer
 coverage table: which of our OIDs each peer ships. On drift the job opens a `pqc-certs-drift` tracking issue. Run it
 locally with the same `OPENSSL_BIN` / `OPENSSL_LIBPATH` / `MODULE_DIR` the
