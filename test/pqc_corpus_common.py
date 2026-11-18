@@ -8,6 +8,7 @@
 """Shared helpers for PQC certificate corpus interop scripts."""
 
 import argparse
+import filecmp
 import os
 import re
 import shutil
@@ -25,6 +26,14 @@ import tempfile
 # composite OID in the corpus is tried (and FAILs) instead of being silently
 # ignored.
 ARC = r'1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'
+
+# Size of the standardized LAMPS composite arc: 18 signature OIDs (.37..54) and
+# 12 KEM OIDs (.55..66).  These are the denominators of the "distinct OIDs
+# verified" coverage lines.  Frozen by draft-ietf-lamps-pq-composite-sigs /
+# -composite-kem; a new OID in the corpus beyond these counts means the drafts
+# grew and the numbers (and COMPOSITE_*_LIST) want revisiting.
+N_COMPOSITE_SIG_OIDS = 18
+N_COMPOSITE_KEM_OIDS = 12
 
 RAW_BASE = ('https://raw.githubusercontent.com/'
             'IETF-Hackathon/pqc-certificates/master/providers')
@@ -76,6 +85,18 @@ def report_oid(family, peer, oid):
             f.write(f'{family} {peer} {oid}\n')
 
 
+def files_equal(a, b):
+    """Return True if files *a* and *b* have byte-identical contents.
+
+    Used by the KEM scripts to compare a recovered shared secret / decrypted
+    plaintext against the peer's reference file.
+    """
+    try:
+        return filecmp.cmp(a, b, shallow=False)
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Platform helpers
 # ---------------------------------------------------------------------------
@@ -91,7 +112,7 @@ def _soext():
 
 
 # ---------------------------------------------------------------------------
-# PqcCorpus -- shared scaffolding for the three interop scripts
+# PqcCorpus -- shared scaffolding for the corpus interop scripts
 # ---------------------------------------------------------------------------
 
 class PqcCorpus:
@@ -375,7 +396,8 @@ activate = 1
         if os.path.getsize(voids) > 0:
             with open(voids) as f:
                 n = len(set(f.read().split()))
-            denom = '18' if self.kind == 'certs' else '12'
+            denom = (N_COMPOSITE_SIG_OIDS if self.kind == 'certs'
+                     else N_COMPOSITE_KEM_OIDS)
             noun = ('composite' if self.kind == 'certs'
                     else 'composite-KEM')
             print(f'  distinct {noun} OIDs verified from >=1 peer: {n}/{denom}')

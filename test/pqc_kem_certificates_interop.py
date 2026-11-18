@@ -32,7 +32,6 @@
 # --strict (or STRICT=1) turns the two "nothing to compare" outcomes from SKIP
 # into FAIL.
 
-import filecmp
 import glob
 import os
 import re
@@ -41,19 +40,12 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from pqc_corpus_common import ARC, PqcCorpus, embedded_oids, oid_check, report_oid
+from pqc_corpus_common import (ARC, N_COMPOSITE_KEM_OIDS, PqcCorpus,
+                               embedded_oids, files_equal, oid_check, report_oid)
 
 # composite-kem-ref-impl (LAMPS reference) first, then third-party providers
 # that publish composite-KEM decaps vectors in the r5 round.
 KEM_PEERS = 'composite-kem-ref-impl bc cht crypto4a cryptonext entrust'
-
-
-def _files_equal(a, b):
-    """Return True if files *a* and *b* have identical contents."""
-    try:
-        return filecmp.cmp(a, b, shallow=False)
-    except OSError:
-        return False
 
 
 def verify_peer(corpus, peer):
@@ -96,7 +88,7 @@ def verify_peer(corpus, peer):
                            os.path.basename(base) + '.out')
         ok = corpus.oss_ok('pkeyutl', '-decap', '-inkey', priv,
                            '-keyform', 'DER', '-in', ct, '-secret', out)
-        if ok and _files_equal(out, ss):
+        if ok and files_equal(out, ss):
             p += 1
             with open(peer_oids_file, 'a') as f:
                 f.write(oid + '\n')
@@ -112,7 +104,8 @@ def verify_peer(corpus, peer):
     else:
         with open(peer_oids_file) as f:
             dist = len(set(f.read().split()))
-        corpus.ok(f'{peer}: {dist}/12 composite-KEM OIDs decapsulated '
+        corpus.ok(f'{peer}: {dist}/{N_COMPOSITE_KEM_OIDS} composite-KEM OIDs '
+                  f'decapsulated '
                   f'to the peer\'s secret ({p}/{n} vectors)')
 
 
@@ -167,7 +160,7 @@ def cmd_generate(corpus):
         ok = corpus.oss_ok('pkeyutl', '-decap',
                            '-inkey', f'{base}_priv.der', '-keyform', 'DER',
                            '-in', f'{base}_ciphertext.bin', '-secret', chk)
-        if ok and _files_equal(chk, f'{base}_ss.bin'):
+        if ok and files_equal(chk, f'{base}_ss.bin'):
             p += 1
         else:
             corpus.no(f'{alg} ({oid}) self-decapsulation of generated '

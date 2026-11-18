@@ -31,7 +31,6 @@
 # --strict (or STRICT=1) turns the "nothing to compare" outcomes from SKIP
 # into FAIL.
 
-import filecmp
 import glob
 import os
 import re
@@ -39,20 +38,14 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from pqc_corpus_common import ARC, PqcCorpus, oid_check, report_oid, skip_all
+from pqc_corpus_common import (ARC, N_COMPOSITE_KEM_OIDS, PqcCorpus,
+                               files_equal, oid_check, report_oid, skip_all)
 
 # Two independent draft-18 impls that ship the full .55..66 KEMRI matrix.
 CMS_PEERS = 'composite-crypto bc'
 
 # Our generated EnvelopedData payload.
 PLAINTEXT = os.environ.get('PLAINTEXT', 'Hello, World!')
-
-
-def _files_equal(a, b):
-    try:
-        return filecmp.cmp(a, b, shallow=False)
-    except OSError:
-        return False
 
 
 def _version_gate(corpus):
@@ -130,7 +123,7 @@ def verify_peer(corpus, peer):
         ok = corpus.oss_ok('cms', '-decrypt', '-inform', 'DER',
                            '-in', blob, '-inkey', priv, '-keyform', 'DER',
                            '-out', out)
-        if ok and _files_equal(out, exp):
+        if ok and files_equal(out, exp):
             p += 1
             with open(peer_oids_file, 'a') as f:
                 f.write(oid + '\n')
@@ -146,8 +139,8 @@ def verify_peer(corpus, peer):
     else:
         with open(peer_oids_file) as f:
             dist = len(set(f.read().split()))
-        msg = (f'{peer}: {dist}/12 composite-KEM OIDs decrypted to the '
-               f'peer\'s plaintext ({p}/{n} blobs)')
+        msg = (f'{peer}: {dist}/{N_COMPOSITE_KEM_OIDS} composite-KEM OIDs '
+               f'decrypted to the peer\'s plaintext ({p}/{n} blobs)')
         # Each failed blob already raised its own FAIL; the peer-summary line
         # is a PASS only when every found blob decrypted (p==n).
         if p == n:

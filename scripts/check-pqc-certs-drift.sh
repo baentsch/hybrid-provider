@@ -45,8 +45,10 @@ TREE_API="https://api.github.com/repos/$CORPUS/git/trees/master?recursive=1"
 ROUND="${ROUND:-r5}"
 VER="${VER:-v3}"
 export ROUND VER
-# The whole LAMPS composite OID arc (sigs .37..54, KEMs .55..66).
-ARC='1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'
+# The LAMPS composite OID arc (sigs .37..54, KEMs .55..66), single-sourced from
+# the Python corpus module so the regex lives in exactly one place.
+ARC="$(python3 -c "import sys; sys.path.insert(0, '$REPO_ROOT/test'); import pqc_corpus_common as c; print(c.ARC)")" \
+    || { echo "error: cannot read ARC from test/pqc_corpus_common.py" >&2; exit 2; }
 # Check OUR implementations: if the default provider ever serves a composite, the
 # cede-to-default lever would otherwise withdraw ours and we would test theirs.
 export HYBRID_CEDE_TO_DEFAULT=0
