@@ -31,17 +31,20 @@
 # decapsulate to the reference secret is a real FAIL.
 # --strict (or STRICT=1) turns the two "nothing to compare" outcomes from SKIP
 # into FAIL.
+# --family nist-pq with --providers runs the same checks on plain ML-DSA /
+# SLH-DSA / ML-KEM from any component provider, hybrid not involved (see
+# test/pqc_corpus_common.py).  An artifact the loaded providers cannot load is a
+# SKIP (FAIL under --strict), not a wrong result.
 
 import glob
 import os
 import re
 import shutil
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from pqc_corpus_common import (ARC, N_COMPOSITE_KEM_OIDS, PqcCorpus,
-                               embedded_oids, files_equal, oid_check, report_oid)
+from pqc_corpus_common import (PqcCorpus, embedded_oids, files_equal, name_oid,
+                               oid_check, privs)
 
 # composite-kem-ref-impl (LAMPS reference) first, then third-party providers
 # that publish composite-KEM decaps vectors in the r5 round.
@@ -49,78 +52,73 @@ KEM_PEERS = 'composite-kem-ref-impl bc cht crypto4a cryptonext entrust'
 
 
 def verify_peer(corpus, peer):
-    """Download and verify a single peer's composite-KEM decaps vectors."""
+    """Verify one peer's family KEM decaps vectors across all key forms."""
     if not corpus.fetch_peer(peer):
         corpus.miss(f'{peer}: no artifacts_certs_{corpus.round}.zip '
                     f'(unreachable / absent)')
         return
     d = os.path.join(corpus.workdir, peer)
-    peer_oids_file = os.path.join(corpus.workdir, f'{peer}.oids')
-    open(peer_oids_file, 'w').close()
-    arc_re = re.compile(ARC)
+    arc_re = re.compile(corpus.arc)
 
-    # One shared-secret file per composite-KEM OID.
+    # One shared-secret file per KEM OID of the family; each shipped private-key
+    # form (one _priv.der, or ML-KEM's _seed / _expandedkey / _both) is its own
+    # vector against the same ciphertext.
     ss_files = sorted(f for f in glob.glob(os.path.join(d, '**', '*_ss.bin'),
                                            recursive=True)
                       if arc_re.search(f))
-    n = 0
-    p = 0
+    n = p = u = 0
     for ss in ss_files:
-        base = re.sub(r'_ss\.bin$', '', ss)
-        m = arc_re.search(base)
-        if not m:
+        base = ss[:-len('_ss.bin')]
+        oid = name_oid(base, corpus.arc)
+        if not oid:
             continue
-        oid = m.group()
-        n += 1
-        report_oid('kem', peer, oid)
+        corpus.report_oid('kem', peer, oid)
 
-        priv = f'{base}_priv.der'
         ct = f'{base}_ciphertext.bin'
-        if not os.path.isfile(priv) or not os.path.isfile(ct):
+        key_forms = privs(base)
+        if not key_forms or not os.path.isfile(ct):
+            n += 1
             corpus.no(f'{peer}: {oid} missing _priv.der / _ciphertext.bin')
             continue
-        why = oid_check(priv, oid, openssl_bin=corpus.openssl_bin)
-        if why:
-            corpus.no(f'{peer}: {why}')
-            continue
+        for priv in key_forms:
+            n += 1
+            why = oid_check(priv, oid, corpus.arc, corpus.openssl_bin)
+            if why:
+                corpus.no(f'{peer}: {why}')
+                continue
+            if not corpus.key_loadable(priv):
+                u += 1
+                corpus.miss(f'{peer}: {oid} ({os.path.basename(priv)}) '
+                            f'not loadable by: {corpus.providers}')
+                continue
+            out = os.path.join(corpus.workdir, os.path.basename(priv) + '.out')
+            ok = corpus.oss_ok('pkeyutl', '-decap', '-inkey', priv,
+                               '-keyform', 'DER', '-in', ct, '-secret', out)
+            if ok and files_equal(out, ss):
+                p += 1
+                corpus.record_ok(peer, oid)
+            else:
+                corpus.no(f'{peer}: {oid} ({os.path.basename(priv)}) '
+                          f'did not decapsulate to its secret')
 
-        out = os.path.join(corpus.workdir,
-                           os.path.basename(base) + '.out')
-        ok = corpus.oss_ok('pkeyutl', '-decap', '-inkey', priv,
-                           '-keyform', 'DER', '-in', ct, '-secret', out)
-        if ok and files_equal(out, ss):
-            p += 1
-            with open(peer_oids_file, 'a') as f:
-                f.write(oid + '\n')
-            with open(os.path.join(corpus.workdir, 'verified_oids'), 'a') as f:
-                f.write(oid + '\n')
-        else:
-            corpus.no(f'{peer}: {oid} ({os.path.basename(base)}) '
-                      f'did not decapsulate to its secret')
-
-    if n == 0:
-        corpus.miss(f'{peer}: no composite-KEM ({ARC}) decaps vectors '
-                    f'in {corpus.round} (certs-only or none)')
-    else:
-        with open(peer_oids_file) as f:
-            dist = len(set(f.read().split()))
-        corpus.ok(f'{peer}: {dist}/{N_COMPOSITE_KEM_OIDS} composite-KEM OIDs '
-                  f'decapsulated '
-                  f'to the peer\'s secret ({p}/{n} vectors)')
+    corpus.peer_summary(
+        peer, n, p, "decapsulated to the peer's secret", 'vectors',
+        f'no {corpus.family} ({corpus.arc}) KEM decaps vectors in '
+        f'{corpus.round} (certs-only or none)', u)
 
 
 def cmd_verify(corpus):
     corpus.verify_all(
-        'Read/verify: pqc-certificates composite ML-KEM decaps vectors '
-        'checked by hybrid-provider',
-        verify_peer)
+        f'Read/verify: pqc-certificates {corpus.family} KEM decaps vectors',
+        'decapsulated', verify_peer)
 
 
 def cmd_generate(corpus):
+    if not corpus.can_generate():
+        return
     corpus.hdr('Generate: hybrid-provider composite ML-KEM artifacts '
                '(r5 layout) + self-verify')
     os.makedirs(corpus.outdir, exist_ok=True)
-    arc_re = re.compile(ARC)
 
     # List KEM algorithms from the hybrid provider
     out = corpus.oss_output('list', '-kem-algorithms')
@@ -141,7 +139,7 @@ def cmd_generate(corpus):
                              '-outform', 'DER', '-out', pub):
             continue
         # Get OID from the public key
-        oids = embedded_oids(pub, ARC, corpus.openssl_bin)
+        oids = embedded_oids(pub, corpus.arc, corpus.openssl_bin)
         if not oids:
             continue
         oid = oids[0]
