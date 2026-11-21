@@ -20,7 +20,7 @@
 #                       peer's sig certs, KEM decaps vectors and CMS KEMRI blobs
 #                       must be read by us; an unreachable or empty peer FAILs, and
 #                       so does an artifact whose embedded OID is not the one in
-#                       its filename (test/pqc_corpus_common.sh).
+#                       its filename (test/pqc_corpus_common.py).
 #   4. ROUND         -- a newer artifact round (certs rN / cms vN) than the one the
 #                       scripts read is a prompt to evaluate a bump.
 #   COVERAGE (informational, never drift) -- per peer and family, how many of our
@@ -30,7 +30,7 @@
 #
 # Exit status: 0 = in sync, 1 = drift (report on stdout), 2 = tooling error.
 #
-# Env (passed through to the test/pqc_*certificates_interop.sh scripts):
+# Env (passed through to the test/pqc_*certificates_interop.py scripts):
 #   OPENSSL_BIN, OPENSSL_LIBPATH, MODULE_DIR   as for those scripts
 #   ROUND (certs, default r5), VER (cms, default v3)
 #   GH_TOKEN   optional; authenticates the one GitHub API call (round listing)
@@ -45,8 +45,10 @@ TREE_API="https://api.github.com/repos/$CORPUS/git/trees/master?recursive=1"
 ROUND="${ROUND:-r5}"
 VER="${VER:-v3}"
 export ROUND VER
-# shellcheck source=../test/pqc_corpus_common.sh
-. "$REPO_ROOT/test/pqc_corpus_common.sh"   # ARC (composite OID arc), pqc_report_oid
+# The LAMPS composite OID arc (sigs .37..54, KEMs .55..66), single-sourced from
+# the Python corpus module so the regex lives in exactly one place.
+ARC="$(python3 -c "import sys; sys.path.insert(0, '$REPO_ROOT/test'); import pqc_corpus_common as c; print(c.ARC)")" \
+    || { echo "error: cannot read ARC from test/pqc_corpus_common.py" >&2; exit 2; }
 # Check OUR implementations: if the default provider ever serves a composite, the
 # cede-to-default lever would otherwise withdraw ours and we would test theirs.
 export HYBRID_CEDE_TO_DEFAULT=0
@@ -61,10 +63,10 @@ drift=0
 # ---- 1. OIDs our encoder emits ------------------------------------------------
 for fam in sig kem; do
     case "$fam" in
-        sig) script=pqc_certificates_interop.sh;;
-        kem) script=pqc_kem_certificates_interop.sh;;
+        sig) script=pqc_certificates_interop.py;;
+        kem) script=pqc_kem_certificates_interop.py;;
     esac
-    if ! "$REPO_ROOT/test/$script" generate --outdir "$tmp/gen-$fam" \
+    if ! python3 "$REPO_ROOT/test/$script" generate --outdir "$tmp/gen-$fam" \
             > "$tmp/gen-$fam.log" 2>&1; then
         # Our own artifacts failing self-verify is a regression, not drift --
         # but it makes every later check meaningless, so stop here.
@@ -96,9 +98,9 @@ comm -13 "$tmp/table" "$tmp/ours" > "$tmp/unlisted"
 # ---- 3. read the corpus, strictly --------------------------------------------
 export PQC_OID_REPORT="$tmp/peer-oids"   # "<family> <peer> <oid>" per shipped OID
 : > "$PQC_OID_REPORT"
-for script in pqc_certificates_interop.sh pqc_kem_certificates_interop.sh \
-              pqc_kem_cms_certificates_interop.sh; do
-    "$REPO_ROOT/test/$script" --strict verify > "$tmp/$script.log" 2>&1
+for script in pqc_certificates_interop.py pqc_kem_certificates_interop.py \
+              pqc_kem_cms_certificates_interop.py; do
+    python3 "$REPO_ROOT/test/$script" --strict verify > "$tmp/$script.log" 2>&1
     echo "$?" > "$tmp/$script.rc"
     cat "$tmp/$script.log" >&2          # full log to the run, not the report
     # A whole-script SKIP is an environment gap (e.g. OpenSSL < 3.6 for CMS).
@@ -142,8 +144,8 @@ if [ -s "$tmp/unlisted" ]; then
     echo "## OIDs we emit that oid_mapping.md no longer lists (withdrawn or renumbered):"
     sed 's/^/  - /' "$tmp/unlisted"; echo
 fi
-for script in pqc_certificates_interop.sh pqc_kem_certificates_interop.sh \
-              pqc_kem_cms_certificates_interop.sh; do
+for script in pqc_certificates_interop.py pqc_kem_certificates_interop.py \
+              pqc_kem_cms_certificates_interop.py; do
     if [ "$(cat "$tmp/$script.rc")" != 0 ]; then
         drift=1
         echo "## test/$script --strict verify FAILED:"

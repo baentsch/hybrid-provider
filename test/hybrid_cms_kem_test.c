@@ -65,7 +65,7 @@
  *
  * In-process self-interop only. Cross-implementation interop lives in two opt-in
  * harnesses: test/pqc_kem_cms_interop.sh (both ways against kemri_toy) and
- * test/pqc_kem_cms_certificates_interop.sh (one-way read of the IETF Hackathon
+ * test/pqc_kem_cms_certificates_interop.py (one-way read of the IETF Hackathon
  * pqc-certificates cms_v3 EnvelopedData corpus).
  */
 #define _POSIX_C_SOURCE 200809L

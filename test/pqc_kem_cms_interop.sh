@@ -179,7 +179,7 @@ kt_advertises() {   # $1 = our alg name, e.g. mlkem1024_bp384
 #   SKEW  kemri_toy processed the combo but disagreed, while our own output is
 #         self-valid — a draft-12 vs -18 difference, not a fault (draft-18
 #         correctness is asserted by hybrid_cms_kem_test +
-#         pqc_kem_cms_certificates_interop.sh against the pqc-certificates corpus).
+#         pqc_kem_cms_certificates_interop.py against the pqc-certificates corpus).
 #   SKIP  kemri_toy errors on the combo (cannot process it); confirmed absent from
 #         its --help --kem list. If it IS advertised yet errored, the row is marked
 #         SKIP* so the discrepancy stays visible rather than hidden.
