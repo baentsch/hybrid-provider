@@ -171,14 +171,9 @@ def cmd_generate(corpus):
                              '-subj', f'/CN=hybrid-provider {alg}',
                              '-days', '3650', '-out', crt):
             continue
-        # Get OID from the generated cert
-        r = corpus.oss('x509', '-in', crt, '-outform', 'DER',
-                       check=False, capture=True)
-        if r.returncode != 0:
-            continue
-        # Write DER to temp, parse it
+        # Convert the cert to DER in a file (never captured as text: DER is
+        # binary and would not UTF-8 decode) and read its OID from the bytes.
         der_tmp = os.path.join(corpus.workdir, f'{alg}.crt.der')
-        # Need binary output -- use a different approach
         try:
             subprocess.run(
                 [corpus.openssl_bin, 'x509', '-in', crt, '-outform', 'DER',
