@@ -30,6 +30,10 @@
 #     default provider (3.5+); the composite OIDs come from hybrid-provider.
 # --strict (or STRICT=1) turns the "nothing to compare" outcomes from SKIP
 # into FAIL.
+# --family nist-pq with --providers runs the same checks on plain ML-DSA /
+# SLH-DSA / ML-KEM from any component provider, hybrid not involved (see
+# test/pqc_corpus_common.py).  An artifact the loaded providers cannot load is a
+# SKIP (FAIL under --strict), not a wrong result.
 
 import glob
 import os
@@ -38,8 +42,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from pqc_corpus_common import (ARC, N_COMPOSITE_KEM_OIDS, PqcCorpus,
-                               files_equal, oid_check, report_oid, skip_all)
+from pqc_corpus_common import (PqcCorpus, embedded_oids, files_equal, name_oid,
+                               oid_check, privs, skip_all)
 
 # Two independent draft-18 impls that ship the full .55..66 KEMRI matrix.
 CMS_PEERS = 'composite-crypto bc'
@@ -66,13 +70,13 @@ def _version_gate(corpus):
 
 
 def verify_peer(corpus, peer):
-    """Download and verify a single peer's composite-KEM CMS KEMRI blobs."""
+    """Verify one peer's family KEM CMS KEMRI blobs across recipient key forms."""
     if not corpus.fetch_peer(peer):
         corpus.miss(f'{peer}: no artifacts_cms_{corpus.round}.zip '
                     f'(unreachable / absent)')
         return
     d = os.path.join(corpus.workdir, peer)
-    arc_re = re.compile(ARC)
+    arc_re = re.compile(corpus.arc)
 
     # Find expected_plaintext.txt
     exp_files = glob.glob(os.path.join(d, '**', 'expected_plaintext.txt'),
@@ -83,84 +87,74 @@ def verify_peer(corpus, peer):
         return
     exp = exp_files[0]
 
-    peer_oids_file = os.path.join(corpus.workdir, f'{peer}.oids')
-    open(peer_oids_file, 'w').close()
-
-    # One EnvelopedData per composite-KEM OID (HKDF-SHA256 KEMRI; exclude the
-    # authenticated and user-keying-material variants).
+    # One EnvelopedData per KEM OID of the family (HKDF-SHA256 KEMRI; exclude the
+    # authenticated and user-keying-material variants). Each shipped recipient
+    # key form is its own decrypt.
     blob_files = sorted(
         f for f in glob.glob(
             os.path.join(d, '**', '*_kemri_id-alg-hkdf-with-sha256.der'),
             recursive=True)
         if arc_re.search(f) and '_kemri_auth' not in f)
 
-    n = 0
-    p = 0
+    n = p = u = 0
     for blob in blob_files:
-        base = re.sub(r'_kemri_id-alg-hkdf-with-sha256\.der$', '', blob)
-        m = arc_re.search(base)
-        if not m:
+        base = blob[:-len('_kemri_id-alg-hkdf-with-sha256.der')]
+        oid = name_oid(base, corpus.arc)
+        if not oid:
             continue
-        oid = m.group()
-        n += 1
-        report_oid('cms', peer, oid)
+        corpus.report_oid('cms', peer, oid)
 
-        priv = f'{base}_priv.der'
-        if not os.path.isfile(priv):
+        key_forms = privs(base)
+        if not key_forms:
+            n += 1
             corpus.no(f'{peer}: {oid} missing _priv.der')
             continue
-        # The KEMRI's AlgorithmIdentifier and recipient key must both carry
-        # the filename OID.
-        why = oid_check(blob, oid, openssl_bin=corpus.openssl_bin)
-        if not why:
-            why = oid_check(priv, oid, openssl_bin=corpus.openssl_bin)
+        # The KEMRI's AlgorithmIdentifier must carry the filename OID.
+        why = oid_check(blob, oid, corpus.arc, corpus.openssl_bin)
         if why:
+            n += 1
             corpus.no(f'{peer}: {why}')
             continue
+        for priv in key_forms:
+            n += 1
+            why = oid_check(priv, oid, corpus.arc, corpus.openssl_bin)
+            if why:
+                corpus.no(f'{peer}: {why}')
+                continue
+            if not corpus.key_loadable(priv):
+                u += 1
+                corpus.miss(f'{peer}: {oid} ({os.path.basename(priv)}) '
+                            f'not loadable by: {corpus.providers}')
+                continue
+            out = os.path.join(corpus.workdir, os.path.basename(priv) + '.out')
+            ok = corpus.oss_ok('cms', '-decrypt', '-inform', 'DER',
+                               '-in', blob, '-inkey', priv, '-keyform', 'DER',
+                               '-out', out)
+            if ok and files_equal(out, exp):
+                p += 1
+                corpus.record_ok(peer, oid)
+            else:
+                corpus.no(f'{peer}: {oid} ({os.path.basename(priv)}) '
+                          f'did not decrypt to expected plaintext')
 
-        out = os.path.join(corpus.workdir,
-                           os.path.basename(base) + '.out')
-        ok = corpus.oss_ok('cms', '-decrypt', '-inform', 'DER',
-                           '-in', blob, '-inkey', priv, '-keyform', 'DER',
-                           '-out', out)
-        if ok and files_equal(out, exp):
-            p += 1
-            with open(peer_oids_file, 'a') as f:
-                f.write(oid + '\n')
-            with open(os.path.join(corpus.workdir, 'verified_oids'), 'a') as f:
-                f.write(oid + '\n')
-        else:
-            corpus.no(f'{peer}: {oid} ({os.path.basename(base)}) '
-                      f'did not decrypt to expected plaintext')
-
-    if n == 0:
-        corpus.miss(f'{peer}: no composite-KEM ({ARC}) KEMRI artifacts '
-                    f'in cms_{corpus.round}')
-    else:
-        with open(peer_oids_file) as f:
-            dist = len(set(f.read().split()))
-        msg = (f'{peer}: {dist}/{N_COMPOSITE_KEM_OIDS} composite-KEM OIDs '
-               f'decrypted to the peer\'s plaintext ({p}/{n} blobs)')
-        # Each failed blob already raised its own FAIL; the peer-summary line
-        # is a PASS only when every found blob decrypted (p==n).
-        if p == n:
-            corpus.ok(msg)
-        else:
-            corpus.no(msg)
+    corpus.peer_summary(
+        peer, n, p, "decrypted to the peer's plaintext", 'blobs',
+        f'no {corpus.family} ({corpus.arc}) KEMRI artifacts in '
+        f'cms_{corpus.round}', u)
 
 
 def cmd_verify(corpus):
     corpus.verify_all(
-        'Read/verify: pqc-certificates composite ML-KEM CMS (KEMRI) '
-        'decrypted by hybrid-provider',
-        verify_peer)
+        f'Read/verify: pqc-certificates {corpus.family} CMS KEMRI EnvelopedData',
+        'decrypted', verify_peer)
 
 
 def cmd_generate(corpus):
+    if not corpus.can_generate():
+        return
     corpus.hdr('Generate: hybrid-provider composite ML-KEM CMS KEMRI '
                'artifacts (cms_v3 layout) + self-verify')
     os.makedirs(corpus.outdir, exist_ok=True)
-    arc_re = re.compile(ARC)
 
     # Ed25519 CA to sign the EE certs (a KEM key cannot self-sign).
     ca_key = os.path.join(corpus.workdir, 'ca.key')
@@ -194,16 +188,8 @@ def cmd_generate(corpus):
         if not corpus.ossp_ok('pkey', '-in', key, '-pubout',
                               '-outform', 'DER', '-out', pub):
             continue
-        # asn1parse with null cnf to get the OID
-        try:
-            r2 = subprocess.run(
-                [corpus.openssl_bin, 'asn1parse', '-inform', 'DER', '-in', pub],
-                capture_output=True, text=True,
-                env={**os.environ, 'OPENSSL_CONF': os.devnull})
-            oids = sorted(set(re.findall(
-                r'OBJECT\s*:\s*(' + ARC + r')$', r2.stdout, re.MULTILINE)))
-        except OSError:
-            continue
+        # OID from the public key (null-cnf asn1parse, byte-decoded)
+        oids = embedded_oids(pub, corpus.arc, corpus.openssl_bin)
         if not oids:
             continue
         oid = oids[0]
