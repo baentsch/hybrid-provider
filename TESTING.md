@@ -245,34 +245,40 @@ absent, and FAILs only on a real mismatch:
   errors on the combo — `*` if its `--help` advertises the combo yet it still
   errored, so the discrepancy stays visible). Representative run: 7 OK, 1 SKEW
   (`.56`), 4 SKIP (`.61`/`.64` absent; `.58`/`.65` advertised-but-errored), 0 FAIL.
-- **`test/pqc_kem_cms_certificates_interop.py`** — multi-peer read of the IETF
-  Hackathon pqc-certificates **`cms_v3`** EnvelopedData corpus: per peer it
-  downloads `artifacts_cms_v3.zip` and, for every composite-KEM OID shipping a
-  KEMRI blob (HKDF-SHA256, draft-18, arc `.55..66`), decrypts it with
-  hybrid-provider and checks the recovered plaintext equals the peer's
-  `expected_plaintext.txt` — "third party generated, we read", including the
-  brainpool combos (`.61`/`.64`) kemri_toy cannot produce. Representative run:
-  **12/12 from each of two independent draft-18 impls** (`composite-crypto`,
-  `bc`), 0 FAIL. Like the decaps companion it also has a `generate` mode that
-  emits our own `cms_v3` artifacts (+ self-verify) for a potential
-  `providers/hybrid-provider/` submission (none made yet).
-- **`test/pqc_kem_certificates_interop.py`** — the KEM-decapsulation companion to
-  the two above: reads the corpus's raw composite-KEM decaps vectors
-  (`_ciphertext.bin` + `_ss.bin`) instead of CMS (3.5+; details in
-  [docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)).
+- **`test/pqc_corpus_interop.py`** — one **capability-driven** read of the IETF
+  Hackathon pqc-certificates corpus covering all three overlaps in a single walk:
+  composite-signature trust-anchor certs (`sig`, `verify`), raw composite-KEM
+  decaps vectors (`kem`, `_ciphertext.bin` + `_ss.bin`, 3.5+), and composite-KEM
+  CMS **`cms_v3`** KEMRI `EnvelopedData` (`cms`, 3.6+). Rather than filter the
+  corpus to a curated OID arc, it asks per artifact *can anything loaded handle
+  this?* and partitions each OID into **ours** (hybrid serves it → must
+  verify/decaps/decrypt, else FAIL — the composite arc is must-pass even before
+  `COMPOSITE_*_LIST` grows), **qualified** (a loaded component handles it — so
+  loading e.g. `oqsprovider` qualifies its plain-PQ algs against the corpus for
+  free), or **not-served** (nothing loaded can — informational). "Served" means
+  the operation completed to the right answer, not that the key merely parsed, so
+  an unsupported-but-parseable algorithm is correctly not a false FAIL.
+  Representative run, 0 failures: `sig` **18/18** OIDs from 12 draft-19 providers,
+  `kem` **12/12** from six impls, `cms` **12/12** from two draft-18 impls; plain
+  ML-DSA/ML-KEM/SLH-DSA come out *qualified* (default provider). `--providers`
+  chooses what to load, `--csv` writes the per-OID table, `--strict` makes an
+  unreachable peer or an unreadable composite OID a FAIL; a `generate` mode emits
+  our own `sig`/`kem`/`cms` artifacts (+ self-verify) for a
+  `providers/hybrid-provider/` submission (none made yet). See
+  [docs/pqc-corpus-interop.md](docs/pqc-corpus-interop.md).
 
-The three corpus scripts (`pqc_certificates_interop.py` for composite
-signatures, plus the two KEM ones above) also run weekly in
+`test/pqc_corpus_interop.py` also runs weekly in
 `.github/workflows/pqc-certs-interop.yml`, via `scripts/check-pqc-certs-drift.sh`.
-That script also diffs the composite OIDs our encoder emits against the corpus's
-canonical `docs/oid_mapping.md`, and flags a newer artifact round. There the
-scripts run with `--strict`, which turns an unreachable or empty peer from SKIP
-into FAIL. Every read artifact must also embed the OID its filename names
-(`test/pqc_corpus_common.py`), so a mislabelled peer file FAILs instead of being
-counted under the wrong OID. The report ends with an informational per-peer
-coverage table: which of our OIDs each peer ships. On drift the job opens a `pqc-certs-drift` tracking issue. Run it
-locally with the same `OPENSSL_BIN` / `OPENSSL_LIBPATH` / `MODULE_DIR` the
-scripts take; it exits 0 in sync, 1 on drift, and 2 on a tooling error.
+That script drives its `generate` (for the composite OIDs our encoder emits) and
+`--strict verify`, diffs those OIDs against the corpus's canonical
+`docs/oid_mapping.md`, and flags a newer artifact round. Under `--strict` an
+unreachable peer, or a composite OID we cannot read, is a FAIL; a must-pass
+artifact whose embedded OID is not the one its filename names
+(`test/pqc_corpus_common.py`) also FAILs instead of being counted under the wrong
+OID. The report ends with an informational per-peer coverage table: which of our
+OIDs each peer ships. On drift the job opens a `pqc-certs-drift` tracking issue.
+Run it locally with the same `OPENSSL_BIN` / `OPENSSL_LIBPATH` / `MODULE_DIR` the
+tool takes; it exits 0 in sync, 1 on drift, and 2 on a tooling error.
 
 All composite tests run only when built with the composite family
 (`-DHYBRID_COMPOSITE`).

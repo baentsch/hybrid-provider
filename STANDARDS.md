@@ -125,9 +125,9 @@ even for native ML-DSA) and self-skips below that, probed at runtime.
 This family *can* take part in the IETF Hackathon
 [`pqc-certificates`](https://github.com/IETF-Hackathon/pqc-certificates)
 multi-vendor interop in both roles via
-[`test/pqc_certificates_interop.py`](test/pqc_certificates_interop.py) (see
-[docs/pqc-certificates-interop.md](docs/pqc-certificates-interop.md)): it
-reads/validates peers' composite-signature certs and can `generate` ours in the
+[`test/pqc_corpus_interop.py`](test/pqc_corpus_interop.py) (see
+[docs/pqc-corpus-interop.md](docs/pqc-corpus-interop.md)): it reads/validates
+peers' composite-signature certs and can `generate` ours in the
 `providers/hybrid-provider/` submission layout. No artifacts have been submitted
 to the corpus yet — the capability is in place, participation would be opt-in.
 
@@ -155,16 +155,15 @@ PKI/CMS only — **no** TLS key-exchange code point. **Normative.**
 
 This family *can* take part in the IETF Hackathon
 [`pqc-certificates`](https://github.com/IETF-Hackathon/pqc-certificates)
-multi-vendor interop in both roles:
-[`test/pqc_kem_certificates_interop.py`](test/pqc_kem_certificates_interop.py)
-(raw decaps vectors) and
-[`test/pqc_kem_cms_certificates_interop.py`](test/pqc_kem_cms_certificates_interop.py)
-(CMS `cms_v3` `EnvelopedData`) each read/validate peers' artifacts and can
-`generate` ours in the `providers/hybrid-provider/` submission layout (see
-[docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)). No
-artifacts have been submitted to the corpus yet — the capability is in place,
-participation would be opt-in. Beyond the static corpus, the CMS KEMRI wire format
-is also checked **live, both ways** against the independent
+multi-vendor interop in both roles via
+[`test/pqc_corpus_interop.py`](test/pqc_corpus_interop.py), which reads/validates
+peers' artifacts both as X.509 recipients (raw composite-KEM decaps vectors) and
+as CMS `cms_v3` `EnvelopedData` / KEMRI recipients, and can `generate` ours in the
+`providers/hybrid-provider/` submission layout (see
+[docs/pqc-corpus-interop.md](docs/pqc-corpus-interop.md)). No artifacts have been
+submitted to the corpus yet — the capability is in place, participation would be
+opt-in. Beyond the static corpus, the CMS KEMRI wire format is also checked
+**live, both ways** against the independent
 [kemri_toy](https://github.com/carl-wallace/kemri_toy) implementation by
 [`test/pqc_kem_cms_interop.sh`](test/pqc_kem_cms_interop.sh).
 
