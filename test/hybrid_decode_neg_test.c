@@ -324,8 +324,9 @@ static void check_malformed_spki_oid(OSSL_LIB_CTX *ctx, const char *oid)
 }
 
 /* Input past the decoder size cap must be refused on both the SPKI and the
- * PKCS#8 path. read_all() doubles its buffer from 4 KiB and gives up once a
- * full buffer already exceeds HYBRID_MAX_KEY_DER, i.e. at 2 * the cap. */
+ * PKCS#8 path. hybrid_dec_read_all() doubles its buffer from 4 KiB and gives
+ * up once a full buffer already exceeds HYBRID_MAX_KEY_DER, i.e. at 2 * the
+ * cap. */
 static void check_oversize(OSSL_LIB_CTX *ctx)
 {
     const size_t n = 2 * (size_t)HYBRID_MAX_KEY_DER + 1;
