@@ -59,14 +59,19 @@ static int hybrid_dec_does_selection(void *provctx, int selection)
  * (bio_read_ex returns 0, or a short/zero read) — key files are finite — or,
  * defensively, once the buffer would exceed HYBRID_MAX_KEY_DER, which also caps
  * memory use if the core ever hands us an unbounded stream.
+ *
+ * The input may be a PKCS#8 private key, so no copy is left behind: growth uses
+ * OPENSSL_clear_realloc and every error path wipes. Caller releases *out with
+ * OPENSSL_clear_free(*out, *outlen). Shared by every decoder (hybrid_prov.h).
  */
-static int read_all(HYBRID_DEC_CTX *ctx, OSSL_CORE_BIO *cin,
-                    unsigned char **out, size_t *outlen)
+int hybrid_dec_read_all(OSSL_FUNC_BIO_read_ex_fn *bio_read_ex,
+                        OSSL_CORE_BIO *cin, unsigned char **out,
+                        size_t *outlen)
 {
-    size_t cap = 4096, len = 0, n = 0;
+    size_t cap = HYBRID_DEC_READ_CHUNK, len = 0, n = 0;
     unsigned char *buf = OPENSSL_malloc(cap), *tmp;
 
-    if (buf == NULL || ctx->bio_read_ex == NULL) {
+    if (buf == NULL || bio_read_ex == NULL) {
         OPENSSL_free(buf);
         return 0;
     }
@@ -74,19 +79,19 @@ static int read_all(HYBRID_DEC_CTX *ctx, OSSL_CORE_BIO *cin,
         if (len == cap) {
             if (cap > HYBRID_MAX_KEY_DER) {
                 ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
-                               "hybrid decode: input exceeds %d bytes",
+                               "decode: input exceeds %d bytes",
                                HYBRID_MAX_KEY_DER);
-                OPENSSL_free(buf);
+                OPENSSL_clear_free(buf, len);
                 return 0;
             }
-            if ((tmp = OPENSSL_realloc(buf, cap * 2)) == NULL) {
-                OPENSSL_free(buf);
+            if ((tmp = OPENSSL_clear_realloc(buf, len, cap * 2)) == NULL) {
+                OPENSSL_clear_free(buf, len);
                 return 0;
             }
             buf = tmp;
             cap *= 2;
         }
-        if (!ctx->bio_read_ex(cin, buf + len, cap - len, &n) || n == 0)
+        if (!bio_read_ex(cin, buf + len, cap - len, &n) || n == 0)
             break;
         len += n;
     }
@@ -223,7 +228,8 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     uint32_t clen;
     size_t pqlen, off;
 
-    if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
+    if (!hybrid_dec_read_all(ctx->bio_read_ex, cin, &der, &derlen)
+        || derlen == 0)
         goto end;
 
     if ((spki = hybrid_spki_parse(der, derlen, &alg_oid, &pk, &pklen)) == NULL)
@@ -291,7 +297,7 @@ end:
     if (key != NULL)
         hybrid_keymgmt_free(key);
     hybrid_spki_free(spki);
-    OPENSSL_free(der);
+    OPENSSL_clear_free(der, derlen);
     return ret;
 }
 
@@ -315,7 +321,8 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
     unsigned n, w, i, pqc = 0;
     int have_classical = 0, have_pq = 0;
 
-    if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
+    if (!hybrid_dec_read_all(ctx->bio_read_ex, cin, &der, &derlen)
+        || derlen == 0)
         goto end;
     p = der;
     if ((p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, (long)derlen)) == NULL) {
@@ -433,9 +440,9 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
 end:
     if (key != NULL)
         hybrid_keymgmt_free(key);
-    ASN1_OCTET_STRING_free(oct);
+    ASN1_STRING_clear_free(oct);           /* holds the raw private blob */
     PKCS8_PRIV_KEY_INFO_free(p8);
-    OPENSSL_free(der);
+    OPENSSL_clear_free(der, derlen);
     return ret;
 }
 

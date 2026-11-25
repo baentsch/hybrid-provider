@@ -372,7 +372,7 @@ static PKCS8_PRIV_KEY_INFO *hybrid_key_to_p8info(HYBRID_KEY *key)
     ASN1_OBJECT *oid = NULL;
     unsigned char *blob = NULL, *inner = NULL;
     size_t bloblen = 0;
-    int innerlen;
+    int innerlen = 0;
     const char *oidstr = hybrid_key_oid(key);
 
     if (oidstr == NULL || (oid = OBJ_txt2obj(oidstr, 1)) == NULL
@@ -387,13 +387,13 @@ static PKCS8_PRIV_KEY_INFO *hybrid_key_to_p8info(HYBRID_KEY *key)
     if (!PKCS8_pkey_set0(p8, oid, 0, V_ASN1_UNDEF, NULL, inner, innerlen))
         goto err;
     OPENSSL_clear_free(blob, bloblen);
-    ASN1_OCTET_STRING_free(oct);
+    ASN1_STRING_clear_free(oct);            /* copy of the private blob */
     return p8;
 err:
     ASN1_OBJECT_free(oid);
-    OPENSSL_free(inner);
+    OPENSSL_clear_free(inner, innerlen > 0 ? (size_t)innerlen : 0);
     OPENSSL_clear_free(blob, bloblen);
-    ASN1_OCTET_STRING_free(oct);
+    ASN1_STRING_clear_free(oct);
     PKCS8_PRIV_KEY_INFO_free(p8);
     return NULL;
 }

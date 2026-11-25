@@ -1231,6 +1231,14 @@ extern const OSSL_DISPATCH hybrid_pkcs8_der_decoder_functions[];
 /* Cap on the decoder input read from the core BIO: hybrid keys are a few KB at
  * most. Shared with the tests that probe the bound (hybrid_decode_neg_test). */
 #define HYBRID_MAX_KEY_DER (1024 * 1024)
+#define HYBRID_DEC_READ_CHUNK 4096     /* initial decoder read size; doubles */
+
+/* Read a whole core BIO (capped at HYBRID_MAX_KEY_DER), wiping on growth and on
+ * error; release *out with OPENSSL_clear_free(*out, *outlen). Shared by every
+ * decoder (hybrid_decoder.c). */
+int hybrid_dec_read_all(OSSL_FUNC_BIO_read_ex_fn *bio_read_ex,
+                        OSSL_CORE_BIO *cin, unsigned char **out,
+                        size_t *outlen);
 
 /*
  * Parse a SubjectPublicKeyInfo into its algorithm OID and raw public-key bits

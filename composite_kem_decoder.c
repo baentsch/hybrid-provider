@@ -47,41 +47,7 @@ static int composite_kem_dec_does_selection_pub(void *provctx, int selection)
         || (selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0;
 }
 
-#define COMPOSITE_KEM_MAX_KEY_DER  HYBRID_MAX_KEY_DER   /* one cap for every decoder */
-#define COMPOSITE_KEM_DEC_READ_CHUNK  4096
 #define COMPOSITE_KEM_OID_TXT_MAX  128
-static int read_all(COMPOSITE_KEM_DEC_CTX *ctx, OSSL_CORE_BIO *cin,
-                    unsigned char **out, size_t *outlen)
-{
-    size_t cap = COMPOSITE_KEM_DEC_READ_CHUNK, len = 0, n = 0;
-    unsigned char *buf = OPENSSL_malloc(cap), *tmp;
-
-    if (buf == NULL || ctx->bio_read_ex == NULL) {
-        OPENSSL_free(buf);
-        return 0;
-    }
-    for (;;) {
-        if (len == cap) {
-            if (cap > COMPOSITE_KEM_MAX_KEY_DER) {
-                OPENSSL_free(buf);
-                return 0;
-            }
-            if ((tmp = OPENSSL_realloc(buf, cap * 2)) == NULL) {
-                OPENSSL_free(buf);
-                return 0;
-            }
-            buf = tmp;
-            cap *= 2;
-        }
-        if (!ctx->bio_read_ex(cin, buf + len, cap - len, &n) || n == 0)
-            break;
-        len += n;
-    }
-    *out = buf;
-    *outlen = len;
-    return 1;
-}
-
 /* Table index whose OID matches, or -1. */
 static int index_for_oid(const char *oid)
 {
@@ -160,7 +126,8 @@ static int composite_kem_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     char oidbuf[COMPOSITE_KEM_OID_TXT_MAX];
     COMPOSITE_KEM_KEY *key = NULL;
 
-    if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
+    if (!hybrid_dec_read_all(ctx->bio_read_ex, cin, &der, &derlen)
+        || derlen == 0)
         goto end;
     if ((spki = hybrid_spki_parse(der, derlen, &alg_oid, &pk, &pklen)) == NULL)
         goto end;
@@ -196,7 +163,7 @@ end:
     if (key != NULL)
         composite_kem_keymgmt_free(key);
     hybrid_spki_free(spki);
-    OPENSSL_free(der);
+    OPENSSL_clear_free(der, derlen);
     return ret;
 }
 
@@ -231,7 +198,8 @@ static int composite_kem_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection
     char oidbuf[COMPOSITE_KEM_OID_TXT_MAX];
     COMPOSITE_KEM_KEY *key = NULL;
 
-    if (!read_all(ctx, cin, &der, &derlen) || derlen == 0)
+    if (!hybrid_dec_read_all(ctx->bio_read_ex, cin, &der, &derlen)
+        || derlen == 0)
         goto end;
     p = der;
     if ((p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, (long)derlen)) == NULL) {
@@ -268,7 +236,7 @@ end:
     if (key != NULL)
         composite_kem_keymgmt_free(key);
     PKCS8_PRIV_KEY_INFO_free(p8);
-    OPENSSL_free(der);
+    OPENSSL_clear_free(der, derlen);
     return ret;
 }
 
