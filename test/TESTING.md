@@ -115,7 +115,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — `pkey -text` coverage: every key type prints a named, two-component, non-truncated text form (hybrid + composite families).
 #### 17. hybrid_decode_neg_test
 
-— Decoder robustness: multi-object PEM (target not first), malformed/truncated/garbage SPKI, and per-OID crafted SPKI/PKCS#8 (every family) must fail cleanly; oversize input and foreign OIDs are refused (ASan).
+— Decoder robustness: multi-object PEM (target not first), malformed/truncated/garbage SPKI, and per-OID crafted SPKI/PKCS#8 (every family) must fail cleanly; oversize input and foreign OIDs are refused; a genuine key with its DER classical component swapped for the wrong curve/RSA size is refused (ASan).
 #### 18. hybrid_cms_test
 
 — CMS SignedData with hybrid signatures (signed-attr and `-noattr`); `OQS_CEDE_HYBRIDS` so our names aren't shadowed; per-alg self-skip.

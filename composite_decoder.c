@@ -172,7 +172,7 @@ static int composite_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
         goto end;
     }
     pqn = discover_pq_pub_len(key);
-    if (pqn == 0 || pqn >= (size_t)pklen) { /* need both components present */
+    if (pklen <= 0 || pqn == 0 || pqn >= (size_t)pklen) { /* need both components present */
         ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
                        "composite decode: malformed %s public key", oidbuf);
         ret = 0;
@@ -265,7 +265,7 @@ static int composite_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
      * COMPOSITE_PQ_CARRIES_PUB); the pq segment then spans priv + pub. */
     if (pqn != 0 && COMPOSITE_PQ_CARRIES_PUB(key->info))
         pqn += discover_pq_pub_len(key);
-    if (pqn == 0 || pqn >= (size_t)privlen) {
+    if (privlen <= 0 || pqn == 0 || pqn >= (size_t)privlen) {
         ret = 0;
         goto end;
     }

@@ -157,6 +157,22 @@ end:
 }
 
 /*
+ * The component must produce exactly the sizes the row's constant size table
+ * lays out on the wire (the lengths passed in). A shorter output would leave
+ * unwritten bytes inside the concatenated ciphertext/secret; a different
+ * component version (e.g. resized research KEM) must fail, not misframe.
+ */
+static int comp_len_ok(const char *what, size_t got, size_t want)
+{
+    if (got == want)
+        return 1;
+    ERR_raise_data(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR,
+                   "hybrid KEM component %s is %zu bytes, expected %zu",
+                   what, got, want);
+    return 0;
+}
+
+/*
  * Encapsulate for a native KEM component (ML-KEM).
  */
 static int
@@ -167,12 +183,15 @@ encap_kem(OSSL_LIB_CTX *libctx, const char *propq,
           const OSSL_PROVIDER **prov)
 {
     EVP_PKEY_CTX *ctx;
+    size_t want_ct = *ctlen, want_ss = *sslen;
     int ret = 0;
 
     ctx = EVP_PKEY_CTX_new_from_pkey(libctx, pub_key, propq);
     if (ctx == NULL
         || EVP_PKEY_encapsulate_init(ctx, NULL) <= 0
-        || EVP_PKEY_encapsulate(ctx, ctext, ctlen, shsec, sslen) <= 0)
+        || EVP_PKEY_encapsulate(ctx, ctext, ctlen, shsec, sslen) <= 0
+        || !comp_len_ok("ciphertext", *ctlen, want_ct)
+        || !comp_len_ok("shared secret", *sslen, want_ss))
         goto end;
     *prov = EVP_PKEY_CTX_get0_provider(ctx);
     ret = 1;
@@ -192,12 +211,14 @@ decap_kem(OSSL_LIB_CTX *libctx, const char *propq,
           const OSSL_PROVIDER **prov)
 {
     EVP_PKEY_CTX *ctx;
+    size_t want_ss = *sslen;
     int ret = 0;
 
     ctx = EVP_PKEY_CTX_new_from_pkey(libctx, prv_key, propq);
     if (ctx == NULL
         || EVP_PKEY_decapsulate_init(ctx, NULL) <= 0
-        || EVP_PKEY_decapsulate(ctx, shsec, sslen, ctext, ctlen) <= 0)
+        || EVP_PKEY_decapsulate(ctx, shsec, sslen, ctext, ctlen) <= 0
+        || !comp_len_ok("shared secret", *sslen, want_ss))
         goto end;
     *prov = EVP_PKEY_CTX_get0_provider(ctx);
     ret = 1;

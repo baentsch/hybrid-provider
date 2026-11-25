@@ -192,6 +192,14 @@ err:
 
 /* --- Decoder support: build a public key from oqs blob components --- */
 
+/* Expected modulus size of RSA component i (0 if not RSA): the size table
+ * records an RSA component's private size as its modulus width. */
+static int comp_rsa_bits(const HYBRID_KEY *key, unsigned i)
+{
+    return strcmp(hybrid_key_comp_name(key, i), "RSA") == 0
+        ? (int)(8 * hybrid_key_comp_prv_bytes(key, i)) : 0;
+}
+
 /* Free a hybrid key (public wrapper over the static free, for decoders). */
 void hybrid_keymgmt_free(void *vkey)
 {
@@ -221,9 +229,10 @@ int hybrid_key_load_pub_components(HYBRID_KEY *key,
 
     if (strcmp(HYBRID_KEY_ALG1_NAME(key), "RSA") == 0) {
         /* RSA public key is i2d_PublicKey (RSAPublicKey) DER, not an octet. */
-        const unsigned char *p = classic;
-
-        HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) = d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)clen);
+        HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) =
+            hybrid_component_d2i_rsa_pub(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
+                                         classic, clen,
+                                         comp_rsa_bits(key, HYBRID_COMP_ALG1));
         if (HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) == NULL)
             return 0;
     } else if (!load_component(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
@@ -260,11 +269,11 @@ int hybrid_key_load_prv_components(HYBRID_KEY *key,
                                             HYBRID_KEY_ALG1_PROPQ(key),
                                             cder, cderlen);
     } else {
-        const unsigned char *p = cder;
-
         HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) =
-            d2i_AutoPrivateKey_ex(NULL, &p, (long)cderlen, key->libctx,
-                                  HYBRID_KEY_ALG1_PROPQ(key));
+            hybrid_component_d2i_priv(key->libctx, HYBRID_KEY_ALG1_PROPQ(key),
+                                      cder, cderlen, a1,
+                                      HYBRID_KEY_ALG1_GROUP(key),
+                                      comp_rsa_bits(key, HYBRID_COMP_ALG1));
     }
     if (HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) == NULL)
         return 0;
@@ -317,9 +326,10 @@ static int load_prv_bykind(HYBRID_KEY *key, int which,
             *out = EVP_PKEY_new_raw_private_key_ex(key->libctx, alg, propq,
                                                    data, len);
         } else {
-            const unsigned char *p = data;
-
-            *out = d2i_AutoPrivateKey_ex(NULL, &p, (long)len, key->libctx, propq);
+            *out = hybrid_component_d2i_priv(key->libctx, propq, data, len,
+                                             alg, group,
+                                             comp_rsa_bits(key,
+                                                           (unsigned)(which - 1)));
         }
         return *out != NULL;
     } else {
@@ -427,10 +437,10 @@ load_keys(HYBRID_KEY *key,
             /* RSA public key is i2d_PublicKey DER (no PUB_KEY octet); parse the
              * classical slot the same way the decoder does. Symmetric with
              * extract_component_pub()'s i2d_PublicKey export. */
-            const unsigned char *p = data;
-
             HYBRID_KEY_COMP(key, i) =
-                d2i_PublicKey(EVP_PKEY_RSA, NULL, &p, (long)len[i]);
+                hybrid_component_d2i_rsa_pub(key->libctx,
+                                             hybrid_key_comp_propq(key, i),
+                                             data, len[i], comp_rsa_bits(key, i));
             if (HYBRID_KEY_COMP(key, i) == NULL)
                 goto err;
         } else if (!load_component(key->libctx, hybrid_key_comp_propq(key, i),

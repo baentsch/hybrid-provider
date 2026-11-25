@@ -229,7 +229,11 @@ static int trad_decaps(const COMPOSITE_KEM_INFO *info, EVP_PKEY *trad_priv,
 
     if (!trad_classify(info, &is_dh))
         return 0;
-    if (!is_dh) {                          /* RSA-OAEP */
+    if (!is_dh) {
+        /* RSA-OAEP. A padding failure is returned as an error on purpose:
+         * the draft requires explicit rejection (-18 §3.5, "MUST be explicitly
+         * rejecting whenever one of its components is"), so no implicit-
+         * rejection fallback. OAEP's own check is constant-time in OpenSSL. */
         EVP_PKEY_CTX *c = rsa_oaep_ctx(libctx, propq, trad_priv, 0);
         unsigned char *out = NULL;
         size_t outlen = 0;
