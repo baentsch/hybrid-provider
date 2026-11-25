@@ -96,6 +96,7 @@ class Corpus:
         self.outname = 'pqc-corpus-artifacts'
         self.keep = False
         self.workdir_opt = ''
+        self.verbose = False
         self.strict = False
         self.mode = 'verify'
         self.soext = soext()
@@ -147,6 +148,9 @@ class Corpus:
         p.add_argument('--outdir', default='',
                        help='generate output dir (default: <module-dir>/%s)'
                             % self.outname)
+        p.add_argument('-v', '--verbose', action='store_true',
+                       help='log every artifact of every peer as it is probed '
+                            '(the per-artifact trail behind the summary)')
         p.add_argument('--keep', action='store_true', help='keep the temp work dir')
         p.add_argument('--workdir', default=os.environ.get('WORKDIR', ''),
                        help='scratch dir to use instead of a fresh temp dir '
@@ -172,6 +176,7 @@ class Corpus:
         self.outdir = a.outdir
         self.keep = a.keep
         self.workdir_opt = a.workdir
+        self.verbose = a.verbose
         self.strict = a.strict
         self.mode = a.mode
 
@@ -482,10 +487,18 @@ class Corpus:
             self._classify(fam, peer, oid, art, served, detail)
             if served and oid in self.ours:
                 ours += 1
+                verdict = 'ours (hybrid)'
             elif served:
                 qual += 1
-            elif not self.must_pass(oid):
+                verdict = 'qualified (a loaded component)'
+            elif self.must_pass(oid):
+                verdict = f'FAIL ({detail})'
+            else:
                 unserved += 1
+                verdict = f'not-served ({detail})' if detail else 'not-served'
+            if self.verbose:
+                print(f'    {peer} [{fam}] {oid} {os.path.basename(art)}'
+                      f'  ->  {verdict}')
         return n, ours, qual, unserved
 
     # Artifact kinds: name, zip prefix, tag source, glob, probe, default peers,
