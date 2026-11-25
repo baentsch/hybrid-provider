@@ -92,6 +92,8 @@ class Corpus:
         self.propq = ''
         self.provider_params = []   # "name:key=value"
         self.csv_path = ''
+        self.compat_dir = ''
+        self.csv_consumer = ''
         self.outdir = ''
         self.outname = 'pqc-corpus-artifacts'
         self.keep = False
@@ -113,6 +115,7 @@ class Corpus:
         #   oid -> {'fam','ship':set(peers),'served':set(peers),'wrong':bool}
         self._oidstat = {}
         self._fetch_cache = {}
+        self._compat_files = {}     # csv path -> set of rows already written
 
     # ---- CLI ---------------------------------------------------------------
 
@@ -145,6 +148,15 @@ class Corpus:
                             'oqsprovider:Groups=... ')
         p.add_argument('--csv', dest='csv_path', default=os.environ.get('PQC_CSV', ''),
                        help='write the per-OID coverage table to this CSV path')
+        p.add_argument('--compat-csv', dest='compat_dir',
+                       default=os.environ.get('PQC_COMPAT_CSV', ''),
+                       help="also write the corpus's compatMatrices submission "
+                            'CSVs (<peer>_<consumer>.csv) under this dir')
+        p.add_argument('--csv-consumer', dest='csv_consumer',
+                       default=os.environ.get('PQC_CSV_CONSUMER', ''),
+                       help='consumer name in the compatMatrices file names '
+                            '(default: last --providers entry other than '
+                            'base/default)')
         p.add_argument('--outdir', default='',
                        help='generate output dir (default: <module-dir>/%s)'
                             % self.outname)
@@ -173,6 +185,8 @@ class Corpus:
         self.propq = a.propq
         self.provider_params = a.provider_param
         self.csv_path = a.csv_path
+        self.compat_dir = a.compat_dir
+        self.csv_consumer = a.csv_consumer
         self.outdir = a.outdir
         self.keep = a.keep
         self.workdir_opt = a.workdir
@@ -253,6 +267,36 @@ class Corpus:
                          f"{self.openssl_bin} ({self._openssl_version()}). "
                          f"Wrong module path, ABI/libcrypto mismatch, or a "
                          f"missing component dependency.")
+
+        # compatMatrices consumer defaults to the last loaded provider that is
+        # not base/default (the distinguishing one, e.g. hybrid or oqsprovider).
+        if self.compat_dir and not self.csv_consumer:
+            names = [e.split('=', 1)[0] for e in self.providers.split()]
+            cand = [n for n in names if n not in ('base', 'default')]
+            self.csv_consumer = (cand or names or ['hybrid'])[-1]
+
+    def _compat_row(self, peer, fam, zip_tag, oid, typ, ok):
+        """Append one corpus compatMatrices row (deduped), creating the file.
+
+        <compat-dir>/artifacts_<zip_tag>/<peer>_<consumer>.csv; certs carry a
+        type column (cert/priv/seed/expandedkey/both/consistent), cms does not.
+        """
+        f = os.path.join(self.compat_dir, f'artifacts_{zip_tag}',
+                         f'{peer}_{self.csv_consumer}.csv')
+        yn = 'Y' if ok else 'N'
+        row = f'{oid},{yn}' if fam == 'cms' else f'{oid},{typ},{yn}'
+        seen = self._compat_files.get(f)
+        if seen is None:
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            header = ('key_algorithm_oid,test_result' if fam == 'cms'
+                      else 'key_algorithm_oid,type,test_result')
+            with open(f, 'w') as fh:
+                fh.write(header + '\n')
+            seen = self._compat_files[f] = set()
+        if row not in seen:
+            seen.add(row)
+            with open(f, 'a') as fh:
+                fh.write(row + '\n')
 
     def cms_enabled(self):
         """CMS KEMRI needs OpenSSL 3.6.0+ (KEMRI landed in 3.6, PR 27681)."""
@@ -392,48 +436,110 @@ class Corpus:
         return oid in self.ours or (self.strict and bool(_ARC_RE.fullmatch(oid)))
 
     # ---- per-artifact probes ----------------------------------------------
-    # Each returns (served: bool, detail: str).  "served" means the operation
-    # actually completed to the right answer -- not merely that the key parsed.
+    # Each returns (served, detail, rows).  "served" is the primary verdict: the
+    # operation completed to the right answer (not merely that a key parsed) --
+    # it drives ours/qualified/not-served.  rows is the per-key-form detail, a
+    # list of (type, ok): ok True/False, or None when a shipped key form does not
+    # load (a SKIP -- peers also ship encodings the spec does not define).  It
+    # feeds the compatMatrices CSV and the key-form checks (see _walk_kind).
+
+    @staticmethod
+    def _key_form(priv):
+        """Name a private-key form from its filename (corpus convention)."""
+        b = os.path.basename(priv)
+        for tag, name in (('_seed', 'seed'), ('_expandedkey', 'expandedkey'),
+                          ('_both', 'both')):
+            if b.endswith(tag + SUF_PRIV):
+                return name
+        return 'priv'
+
+    def _sign_check(self, priv, pub_pem):
+        """Sign a fixed message with PRIV (DER) and verify it under PUB_PEM.
+
+        A key form can derive the right public key yet carry a broken expanded
+        secret, so this is the corpus's own per-form test (issue #169).
+        """
+        msg = os.path.join(self.workdir, 'sign-check.msg')
+        sig = os.path.join(self.workdir, 'sign-check.sig')
+        if not os.path.isfile(msg):
+            with open(msg, 'w') as f:
+                f.write('pqc-certificates key-form sign check\n')
+        return (self.oss_ok('pkeyutl', '-sign', '-inkey', priv, '-keyform',
+                            'DER', '-rawin', '-in', msg, '-out', sig)
+                and self.oss_ok('pkeyutl', '-verify', '-pubin', '-inkey',
+                                pub_pem, '-rawin', '-in', msg, '-sigfile', sig))
 
     def probe_sig(self, ta):
         pem = ta + '.pem'
         if not self.oss_ok('x509', '-inform', 'DER', '-in', ta, '-out', pem):
             pem = ta
-        if self.oss_ok('verify', '-no_check_time', '-CAfile', pem, pem):
-            return True, ''
-        return False, 'not verified'
+        served = self.oss_ok('verify', '-no_check_time', '-CAfile', pem, pem)
+        rows = [('cert', served)]
+        # Key forms: each shipped private key must load, yield the trust anchor's
+        # public key ("consistent") and sign a message that verifies under it --
+        # exercising the PKCS#8 decoder + signer the cert verify never touches.
+        pub = self.oss_output('x509', '-in', pem, '-noout', '-pubkey')
+        pub_pem = os.path.join(self.workdir, 'ta-pub.pem')
+        with open(pub_pem, 'w') as f:
+            f.write(pub)
+        consistent = None
+        for priv in privs(ta[:-len(SUF_TA)]):
+            form = self._key_form(priv)
+            if not self.oss_ok('pkey', '-in', priv, '-inform', 'DER', '-noout'):
+                rows.append((form, None))
+                continue
+            kpub = self.oss_output('pkey', '-in', priv, '-inform', 'DER', '-pubout')
+            pub_ok = bool(kpub) and kpub == pub
+            consistent = pub_ok if consistent is None else (consistent and pub_ok)
+            rows.append((form, self._sign_check(priv, pub_pem)))
+        if consistent is not None:
+            rows.append(('consistent', consistent))
+        return served, ('' if served else 'not verified'), rows
 
     def probe_kem(self, ss):
         base = ss[:-len(SUF_SS)]
         ct = base + SUF_CT
         forms = privs(base)
         if not forms or not os.path.isfile(ct):
-            return False, f'missing {SUF_PRIV} / {SUF_CT}'
-        any_ran = False
+            return False, f'missing {SUF_PRIV} / {SUF_CT}', []
+        served = False
+        rows = []
+        consistent = None
         for priv in forms:
+            form = self._key_form(priv)
+            if not self.oss_ok('pkey', '-in', priv, '-inform', 'DER', '-noout'):
+                rows.append((form, None))
+                continue
             out = os.path.join(self.workdir, os.path.basename(priv) + '.out')
-            if self.oss_ok('pkeyutl', '-decap', '-inkey', priv, '-keyform',
-                           'DER', '-in', ct, '-secret', out):
-                any_ran = True
-                if not files_equal(out, ss):
-                    return False, f'{os.path.basename(priv)}: wrong shared secret'
-        if not any_ran:
-            return False, 'no key form decapsulated'
-        return True, ''
+            ok = (self.oss_ok('pkeyutl', '-decap', '-inkey', priv, '-keyform',
+                              'DER', '-in', ct, '-secret', out)
+                  and files_equal(out, ss))
+            rows.append((form, ok))
+            consistent = ok if consistent is None else (consistent and ok)
+            served = served or ok
+        if consistent is not None:
+            rows.append(('consistent', consistent))
+        return served, ('' if served else 'no key form decapsulated'), rows
 
     def probe_cms(self, blob, expected):
         base = blob[:-len(SUF_KEMRI)]
         forms = privs(base)
         if not forms or not expected:
-            return False, f'missing {SUF_PRIV} / {PLAINTEXT_FILE}'
+            return False, f'missing {SUF_PRIV} / {PLAINTEXT_FILE}', []
+        served = False
+        rows = []
         for priv in forms:
+            form = self._key_form(priv)
+            if not self.oss_ok('pkey', '-in', priv, '-inform', 'DER', '-noout'):
+                rows.append((form, None))
+                continue
             out = os.path.join(self.workdir, os.path.basename(priv) + '.pt')
-            if self.oss_ok('cms', '-decrypt', '-inform', 'DER', '-in', blob,
-                           '-inkey', priv, '-keyform', 'DER', '-out', out):
-                if not files_equal(out, expected):
-                    return False, f'{os.path.basename(priv)}: wrong plaintext'
-                return True, ''
-        return False, 'no key form decrypted'
+            ok = (self.oss_ok('cms', '-decrypt', '-inform', 'DER', '-in', blob,
+                             '-inkey', priv, '-keyform', 'DER', '-out', out)
+                  and files_equal(out, expected))
+            rows.append((form, ok))
+            served = served or ok
+        return served, ('' if served else 'no key form decrypted'), rows
 
     # ---- verify ------------------------------------------------------------
 
@@ -453,7 +559,7 @@ class Corpus:
             self.no(f'{peer}: {oid} ({base}) {detail} '
                     f'[served by hybrid: must read]')
 
-    def _walk_kind(self, peer, d, fam, pattern, probe, expected=None):
+    def _walk_kind(self, peer, d, fam, zip_tag, pattern, probe, expected=None):
         """Probe every artifact of one kind under a peer dir.  Returns counts."""
         n = ours = qual = unserved = 0
         for art in sorted(glob.glob(os.path.join(d, '**', pattern),
@@ -482,9 +588,10 @@ class Corpus:
                     self.no(f'{peer}: {why}')
                     report_oid(fam, peer, oid)
                     continue
-            served, detail = (probe(art, expected) if expected is not None
-                              else probe(art))
+            served, detail, rows = (probe(art, expected) if expected is not None
+                                    else probe(art))
             self._classify(fam, peer, oid, art, served, detail)
+            self._key_forms(peer, fam, zip_tag, oid, served, rows)
             if served and oid in self.ours:
                 ours += 1
                 verdict = 'ours (hybrid)'
@@ -500,6 +607,30 @@ class Corpus:
                 print(f'    {peer} [{fam}] {oid} {os.path.basename(art)}'
                       f'  ->  {verdict}')
         return n, ours, qual, unserved
+
+    def _key_forms(self, peer, fam, zip_tag, oid, served, rows):
+        """Apply per-key-form results: compatMatrices CSV + FAIL/SKIP policy.
+
+        A loadable key form that fails its check (wrong public key, failed
+        signature, wrong secret/plaintext) is a FAIL for an artifact we must read
+        and otherwise informational (the component's business, shown only with
+        -v).  A form that does not load (ok is None) is always a SKIP: peers ship
+        encodings the spec does not define.
+        """
+        for typ, ok in rows:
+            if self.compat_dir and ok is not None:
+                self._compat_row(peer, fam, zip_tag, oid, typ, ok)
+            if typ == 'cert' or ok:          # primary handled by _classify
+                continue
+            label = f'{peer}: {oid} key form {typ}' if typ != 'consistent' \
+                else f'{peer}: {oid} key forms inconsistent with trust anchor'
+            if ok is None:
+                if self.verbose:
+                    self.note(f'{peer}: {oid} key form {typ} not loadable')
+            elif self.must_pass(oid):
+                self.no(label + ' failed its check')
+            elif self.verbose:
+                self.note(label + ' not handled by a component')
 
     # Artifact kinds: name, zip prefix, tag source, glob, probe, default peers,
     # minimum OpenSSL.  sig + kem share the 'certs' zip; cms is its own.
@@ -538,11 +669,11 @@ class Corpus:
                 if name == 'cms':
                     expected = self._cms_expected(d)
                     if not expected:
-                        self.miss(f'{peer} [cms]: no expected_plaintext.txt '
+                        self.miss(f'{peer} [cms]: no {PLAINTEXT_FILE} '
                                   f'(cannot assert content)')
                         continue
-                n, o, q, u = self._walk_kind(peer, d, name, pattern, probe,
-                                             expected)
+                n, o, q, u = self._walk_kind(peer, d, name, f'{prefix}_{tag}',
+                                             pattern, probe, expected)
                 if n == 0:
                     self.miss(f'{peer} [{name}]: ships no {name} artifacts '
                               f'in {prefix}_{tag}')
@@ -604,6 +735,9 @@ class Corpus:
                 for fam, oid, io, ns, nv, status in rows:
                     f.write(f'{fam},{oid},{int(io)},{ns},{nv},{status}\n')
             print(f'  wrote per-OID CSV: {self.csv_path}')
+        if self._compat_files:
+            print(f'  wrote {len(self._compat_files)} compatMatrices CSV(s) '
+                  f'(consumer={self.csv_consumer}) under {self.compat_dir}')
 
     # ---- generate ----------------------------------------------------------
 

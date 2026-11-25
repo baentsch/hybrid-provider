@@ -71,9 +71,20 @@ python3 ./test/pqc_corpus_interop.py --openssl <ossl> --libpath <libdir> \
   submission, after which the corpus CI verifies *us*.
 - **`all`** — both.
 
+Beyond verifying the cert / decapsulating / decrypting, the tool also checks
+**every shipped private-key form** (`_priv`, and ML-DSA/ML-KEM's `_seed` /
+`_expandedkey` / `_both`): each must load, yield the artifact's public key
+("consistent"), and — for signatures — sign a message that verifies under it.
+This exercises the PKCS#8 decoder and signer the cert verify never touches; a
+form that does not load is a SKIP (peers ship encodings the spec does not
+define), a loadable form that fails is a FAIL for an OID we must read.
+
 Useful flags: `--providers "name[=/path] …"` (what to load), `--propquery` (pin a
 contested algorithm to a provider), `--provider-param NAME:KEY=VAL`, `--csv PATH`
-(per-OID coverage table), `--round` / `--cms-version`.
+(flat per-OID coverage table), `--compat-csv DIR` / `--csv-consumer NAME` (write
+the corpus's own `compatMatrices` submission CSVs, `<peer>_<consumer>.csv`),
+`-v/--verbose` (per-artifact trail behind the summary), `--workdir` / `--keep`,
+`--round` / `--cms-version`.
 
 ## Results
 
