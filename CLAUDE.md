@@ -128,10 +128,8 @@ hybrid-provider/
     ├── bench_util.c               ← shared benchmark/perf-guard helpers (min single-op latency)
     ├── provider_matrix.c          ← cross-provider interop + perf matrix (wolf/mldsa-native/oqs)
     ├── probe_oqs_hybrid.c         ← probe oqsprovider hybrid KEM raw/wire layout
-    ├── pqc_corpus_common.py       ← shared helpers for the pqc-certificates corpus scripts
-    ├── pqc_certificates_interop.py        ← sig certs vs IETF Hackathon pqc-certificates corpus
-    ├── pqc_kem_certificates_interop.py    ← composite KEM decaps vs the same corpus
-    ├── pqc_kem_cms_certificates_interop.py ← composite KEM CMS (KEMRI) vs the same corpus
+    ├── pqc_corpus_interop.py      ← one capability-driven tool vs the IETF Hackathon pqc-certificates corpus: sig certs + composite KEM decaps + composite KEM CMS/KEMRI, verify/generate (see docs/pqc-corpus-interop.md)
+    ├── pqc_corpus_common.py       ← shared OID/helper funcs for the corpus tool + check-pqc-certs-drift.sh
     ├── pqc_kem_cms_interop.sh     ← both-way composite KEM CMS interop vs kemri_toy
     ├── setup_oqs_interop.sh       ← (re)build the from-source liboqs + oqsprovider interop peer
     └── hybrid_scenarios.sh        ← CLI (s_server/s_client) TLS interop harness

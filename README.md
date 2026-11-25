@@ -257,7 +257,7 @@ The **full [draft-18](STANDARDS.md#references) standardized matrix** (12 combos,
 … `.66`) is implemented, verified against the draft's reference test vectors
 (`composite_kem_kat_test`) and interop-tested end-to-end against the LAMPS
 composite-KEM reference implementation (see
-[docs/pqc-kem-certificates-interop.md](docs/pqc-kem-certificates-interop.md)):
+[docs/pqc-corpus-interop.md](docs/pqc-corpus-interop.md)):
 
 | ML-KEM level | Algorithms |
 |---|---|

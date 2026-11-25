@@ -10,16 +10,17 @@
 #
 # Four checks, each against the corpus's live `master`, plus a coverage report:
 #   1. OUR OIDs      -- the composite-arc OIDs our encoder actually emits, taken
-#                       from the generate mode of the sig + KEM corpus scripts (a
-#                       real SPKI per algorithm, so no OID list is duplicated here
-#                       and the provider's tables stay the single source).
+#                       from the generate mode of the unified corpus tool (a real
+#                       SPKI/cert/KEMRI per algorithm, so no OID list is
+#                       duplicated here and the provider's tables stay the single
+#                       source).
 #   2. OID TABLE     -- that set vs the corpus's canonical docs/oid_mapping.md, both
 #                       ways: an arc OID the table lists that we do not emit, or one
 #                       we emit that the table no longer lists (renumbering).
-#   3. CORPUS READ   -- the three verify scripts in --strict mode: every default
+#   3. CORPUS READ   -- the unified corpus tool in --strict verify: every default
 #                       peer's sig certs, KEM decaps vectors and CMS KEMRI blobs
-#                       must be read by us; an unreachable or empty peer FAILs, and
-#                       so does an artifact whose embedded OID is not the one in
+#                       must be read by us; an unreachable peer FAILs, and so does
+#                       a composite artifact whose embedded OID is not the one in
 #                       its filename (test/pqc_corpus_common.py).
 #   4. ROUND         -- a newer artifact round (certs rN / cms vN) than the one the
 #                       scripts read is a prompt to evaluate a bump.
@@ -30,8 +31,8 @@
 #
 # Exit status: 0 = in sync, 1 = drift (report on stdout), 2 = tooling error.
 #
-# Env (passed through to the test/pqc_*certificates_interop.py scripts):
-#   OPENSSL_BIN, OPENSSL_LIBPATH, MODULE_DIR   as for those scripts
+# Env (passed through to test/pqc_corpus_interop.py):
+#   OPENSSL_BIN, OPENSSL_LIBPATH, MODULE_DIR   as for that tool
 #   ROUND (certs, default r5), VER (cms, default v3)
 #   GH_TOKEN   optional; authenticates the one GitHub API call (round listing)
 #   OID_MAPPING_SRC  local oid_mapping.md to use instead of fetching (testing)
@@ -39,6 +40,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TOOL="pqc_corpus_interop.py"
 CORPUS="IETF-Hackathon/pqc-certificates"
 RAW="https://raw.githubusercontent.com/$CORPUS/master"
 TREE_API="https://api.github.com/repos/$CORPUS/git/trees/master?recursive=1"
@@ -61,23 +63,20 @@ die() { echo "error: $*" >&2; exit 2; }
 drift=0
 
 # ---- 1. OIDs our encoder emits ------------------------------------------------
-for fam in sig kem; do
-    case "$fam" in
-        sig) script=pqc_certificates_interop.py;;
-        kem) script=pqc_kem_certificates_interop.py;;
-    esac
-    if ! python3 "$REPO_ROOT/test/$script" generate --outdir "$tmp/gen-$fam" \
-            > "$tmp/gen-$fam.log" 2>&1; then
-        # Our own artifacts failing self-verify is a regression, not drift --
-        # but it makes every later check meaningless, so stop here.
-        cat "$tmp/gen-$fam.log" >&2
-        die "$script generate failed (provider not built/loadable, or self-verify broke)"
-    fi
-done
-for fam in sig kem; do
-    find "$tmp/gen-$fam" -type f 2>/dev/null | grep -oE "$ARC" | sort -u > "$tmp/ours-$fam"
-done
-cp "$tmp/ours-kem" "$tmp/ours-cms"   # KEMRI blobs carry the composite-KEM OIDs
+# One generate pass writes a real SPKI/cert/KEMRI per algorithm, so no OID list
+# is duplicated here and the provider's tables stay the single source.  Our own
+# artifacts failing self-verify is a regression, not drift -- but it makes every
+# later check meaningless, so stop here.
+if ! python3 "$REPO_ROOT/test/$TOOL" generate --outdir "$tmp/gen" \
+        > "$tmp/gen.log" 2>&1; then
+    cat "$tmp/gen.log" >&2
+    die "$TOOL generate failed (provider not built/loadable, or self-verify broke)"
+fi
+# Split the emitted OIDs by kind from the artifact filenames: *_ta.der = sig,
+# *_ss.bin = KEM; KEMRI blobs carry the composite-KEM OIDs, so cms = kem.
+find "$tmp/gen" -name '*_ta.der' 2>/dev/null | grep -oE "$ARC" | sort -u > "$tmp/ours-sig"
+find "$tmp/gen" -name '*_ss.bin' 2>/dev/null | grep -oE "$ARC" | sort -u > "$tmp/ours-kem"
+cp "$tmp/ours-kem" "$tmp/ours-cms"
 sort -u "$tmp/ours-sig" "$tmp/ours-kem" > "$tmp/ours"
 [ -s "$tmp/ours" ] || die "provider emitted no composite-arc OIDs (built without HYBRID_COMPOSITE, or OpenSSL < 3.5?)"
 
@@ -96,17 +95,14 @@ comm -23 "$tmp/table" "$tmp/ours" > "$tmp/missing"
 comm -13 "$tmp/table" "$tmp/ours" > "$tmp/unlisted"
 
 # ---- 3. read the corpus, strictly --------------------------------------------
+# One --strict pass reads every default peer's sig certs, KEM decaps vectors and
+# (on OpenSSL 3.6+) CMS KEMRI blobs.  Below 3.6 the CMS kind self-skips per-kind
+# (sig + KEM still checked) rather than aborting the run.
 export PQC_OID_REPORT="$tmp/peer-oids"   # "<family> <peer> <oid>" per shipped OID
 : > "$PQC_OID_REPORT"
-for script in pqc_certificates_interop.py pqc_kem_certificates_interop.py \
-              pqc_kem_cms_certificates_interop.py; do
-    python3 "$REPO_ROOT/test/$script" --strict verify > "$tmp/$script.log" 2>&1
-    echo "$?" > "$tmp/$script.rc"
-    cat "$tmp/$script.log" >&2          # full log to the run, not the report
-    # A whole-script SKIP is an environment gap (e.g. OpenSSL < 3.6 for CMS).
-    grep -q '^SKIP:' "$tmp/$script.log" \
-        && die "$script skipped: $(grep '^SKIP:' "$tmp/$script.log")"
-done
+python3 "$REPO_ROOT/test/$TOOL" --strict verify > "$tmp/verify.log" 2>&1
+verify_rc=$?
+cat "$tmp/verify.log" >&2               # full log to the run, not the report
 
 # ---- 4. newer artifact round -------------------------------------------------
 auth=()
@@ -144,15 +140,12 @@ if [ -s "$tmp/unlisted" ]; then
     echo "## OIDs we emit that oid_mapping.md no longer lists (withdrawn or renumbered):"
     sed 's/^/  - /' "$tmp/unlisted"; echo
 fi
-for script in pqc_certificates_interop.py pqc_kem_certificates_interop.py \
-              pqc_kem_cms_certificates_interop.py; do
-    if [ "$(cat "$tmp/$script.rc")" != 0 ]; then
-        drift=1
-        echo "## test/$script --strict verify FAILED:"
-        grep -E '^ *FAIL' "$tmp/$script.log" | sed -E 's/^ *FAIL +/  - /'
-        echo
-    fi
-done
+if [ "$verify_rc" != 0 ]; then
+    drift=1
+    echo "## test/$TOOL --strict verify FAILED:"
+    grep -E '^ *FAIL' "$tmp/verify.log" | sed -E 's/^ *FAIL +/  - /'
+    echo
+fi
 if [ -n "$newer" ]; then
     drift=1
     echo "## Newer artifact round in the corpus:"
