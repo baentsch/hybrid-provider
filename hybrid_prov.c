@@ -95,6 +95,31 @@ int hybrid_component_raw_pub(EVP_PKEY *comp, unsigned char **out, size_t *outlen
     return 1;
 }
 
+/* A public-only copy of component |comp| (caller frees), re-imported as its own
+ * keytype in |libctx| / |propq| from a PUBLIC_KEY export: a selection-honouring
+ * dup through public EVP (EVP_PKEY_dup always copies the private key too). */
+EVP_PKEY *hybrid_component_dup_public(OSSL_LIB_CTX *libctx, const char *propq,
+                                      EVP_PKEY *comp)
+{
+    OSSL_PARAM *params = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *out = NULL;
+
+    if (EVP_PKEY_todata(comp, EVP_PKEY_PUBLIC_KEY, &params) <= 0
+            || (pctx = EVP_PKEY_CTX_new_from_pkey(libctx, comp, propq)) == NULL
+            || EVP_PKEY_fromdata_init(pctx) <= 0
+            || EVP_PKEY_fromdata(pctx, &out, EVP_PKEY_PUBLIC_KEY,
+                                 params) <= 0) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_OPERATION_FAIL,
+                       "cannot make a public-only copy of component %s",
+                       EVP_PKEY_get0_type_name(comp));
+        out = NULL;
+    }
+    OSSL_PARAM_free(params);
+    EVP_PKEY_CTX_free(pctx);
+    return out;
+}
+
 /* Reconstruct a component keypair into *out (caller frees) from raw private
  * (|priv|,|privlen|) + raw public (|pub|,|publen|), fetched as |alg_name| in
  * |libctx| with property query |propq|. The public is supplied because research

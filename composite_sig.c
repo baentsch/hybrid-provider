@@ -328,6 +328,8 @@ static int composite_sig_sign_init(void *vctx, const char *mdname, void *vkey,
     COMPOSITE_SIGCTX *c = vctx;
     COMPOSITE_KEY *k = vkey;
 
+    if (!hybrid_sig_no_explicit_digest(mdname, "composite"))
+        return 0;
     if (k == NULL || k->state < COMPOSITE_HAVE_PRVKEY) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PRIVATE_KEY,
                        "composite signing requires a private key");
@@ -343,6 +345,8 @@ static int composite_sig_verify_init(void *vctx, const char *mdname, void *vkey,
     COMPOSITE_SIGCTX *c = vctx;
     COMPOSITE_KEY *k = vkey;
 
+    if (!hybrid_sig_no_explicit_digest(mdname, "composite"))
+        return 0;
     if (k == NULL || k->state < COMPOSITE_HAVE_PUBKEY) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PUBLIC_KEY,
                        "composite verification requires a public key");

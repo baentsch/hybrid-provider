@@ -13,6 +13,7 @@
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/err.h>
+#include <openssl/proverr.h>
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
 #include <openssl/param_build.h>
@@ -1359,6 +1360,24 @@ int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
 /* Raw-concat component primitives shared by the hybrid slots and the composite
  * families (hybrid_prov.c; see design.md "Precondition"). */
 int hybrid_component_raw_pub(EVP_PKEY *comp, unsigned char **out, size_t *outlen);
+EVP_PKEY *hybrid_component_dup_public(OSSL_LIB_CTX *libctx, const char *propq,
+                                      EVP_PKEY *comp);
+/* Signature inits take no caller digest: each component's digest is fixed by
+ * the algorithm. As ML-DSA/SLH-DSA/EdDSA do, refuse one rather than silently
+ * override it (the keys advertise an empty MANDATORY_DIGEST, so libcrypto
+ * passes none unless the application insists). Inline: composite_sig.c is
+ * also linked standalone (composite_sig_test). */
+static inline int hybrid_sig_no_explicit_digest(const char *mdname,
+                                                const char *family)
+{
+    if (mdname != NULL && mdname[0] != '\0') {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DIGEST,
+                       "explicit digest not supported for %s signatures",
+                       family);
+        return 0;
+    }
+    return 1;
+}
 int hybrid_component_load_privpub(OSSL_LIB_CTX *libctx, const char *propq,
                                   const char *alg_name,
                                   const unsigned char *priv, size_t privlen,
