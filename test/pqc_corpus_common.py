@@ -59,15 +59,15 @@ SUF_CT = '_ciphertext.bin'       # KEM ciphertext (raw bytes)
 SUF_EE = '_ee.der'               # end-entity cert (our generate direction)
 PLAINTEXT_FILE = 'expected_plaintext.txt'   # per-peer CMS reference plaintext
 
-# CMS KEMRI blobs are named <base>_kemri_<kdf>.der.  RFC 9629 and the LAMPS
-# composite-KEM drafts default the KEM-recipient KDF to HKDF-SHA256, whose OID is
-# registered as id-alg-hkdf-with-sha256 -- that is the single variant the corpus
-# ships as the default and the one we read and generate.  It is not a CLI
-# parameter because the corpus fixes it; the authenticated (_kemri_auth) and
-# user-keying-material variants are deliberately out of scope.
+# CMS KEMRI blobs are named <base>_kemri_<variant>.der.  The corpus ships three
+# recipient variants: plain HKDF-SHA256 (id-alg-hkdf-with-sha256, the RFC 9629 /
+# LAMPS default), authenticated-KEM (_kemri_auth) and user-keying-material
+# (_kemri_ukm).  We READ all of them -- OpenSSL + the composite key decrypt each
+# with a plain `cms -decrypt` (verified against bc / composite-crypto), so there
+# is no reason to skip any -- and GENERATE the HKDF-SHA256 default.
 KEMRI_KDF = 'id-alg-hkdf-with-sha256'
-SUF_KEMRI = f'_kemri_{KEMRI_KDF}.der'
-KEMRI_AUTH_MARK = '_kemri_auth'
+SUF_KEMRI = f'_kemri_{KEMRI_KDF}.der'   # the variant we generate
+KEMRI_GLOB = '*_kemri_*.der'            # every recipient variant we read
 
 # ---------------------------------------------------------------------------
 # OID helpers

@@ -56,7 +56,7 @@ import tempfile
 # silences flake8's "module import not at top of file" for exactly that reason.
 sys.path.insert(0, os.path.dirname(__file__))
 from pqc_corpus_common import (  # noqa: E402  (import must follow sys.path setup)
-    ARC, KEMRI_AUTH_MARK, N_COMPOSITE_KEM_OIDS, N_COMPOSITE_SIG_OIDS,
+    ARC, KEMRI_GLOB, N_COMPOSITE_KEM_OIDS, N_COMPOSITE_SIG_OIDS,
     PLAINTEXT_FILE, RAW_BASE, SUF_CT, SUF_EE, SUF_KEMRI, SUF_PRIV, SUF_PUB,
     SUF_SS, SUF_TA, SUF_TA_PEM, _objects, file_oid, files_equal, oid_check,
     privs, report_oid, soext)
@@ -522,7 +522,7 @@ class Corpus:
         return served, ('' if served else 'no key form decapsulated'), rows
 
     def probe_cms(self, blob, expected):
-        base = blob[:-len(SUF_KEMRI)]
+        base = blob.split('_kemri_', 1)[0]   # strip any recipient variant suffix
         forms = privs(base)
         if not forms or not expected:
             return False, f'missing {SUF_PRIV} / {PLAINTEXT_FILE}', []
@@ -564,12 +564,6 @@ class Corpus:
         n = ours = qual = unserved = 0
         for art in sorted(glob.glob(os.path.join(d, '**', pattern),
                                     recursive=True)):
-            # The corpus ships, beside the plain HKDF-SHA256 KEMRI blob, an
-            # authenticated-KEM variant (_kemri_auth*); that uses a different
-            # recipient algorithm we do not implement, so skip it rather than
-            # record a spurious not-served/FAIL for an OID we already read.
-            if fam == 'cms' and KEMRI_AUTH_MARK in art:
-                continue
             oid = file_oid(art)
             if not oid:
                 continue
@@ -640,7 +634,7 @@ class Corpus:
              self.probe_sig, SIG_PEERS, (0, 0)),
             ('kem', 'certs', self.round, '*' + SUF_SS,
              self.probe_kem, KEM_PEERS, (0, 0)),
-            ('cms', 'cms', self.cms_ver, '*' + SUF_KEMRI,
+            ('cms', 'cms', self.cms_ver, KEMRI_GLOB,
              self.probe_cms, CMS_PEERS, (3, 6)),
         )
 

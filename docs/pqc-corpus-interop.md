@@ -43,7 +43,7 @@ One walk covers all three overlaps the corpus and this provider share:
 |---|---|---|---|
 | `sig` | `…_ta.der` trust-anchor cert | `openssl verify` the self-signed cert | 3.5+ |
 | `kem` | `…_ciphertext.bin` + `…_ss.bin` + `…_priv.der` | decapsulate → match the shipped shared secret | 3.5+ |
-| `cms` | `…_kemri_id-alg-hkdf-with-sha256.der` (RFC 9629) | `cms -decrypt` → match `expected_plaintext.txt` | 3.6+ |
+| `cms` | `…_kemri_*.der` — all RFC 9629 recipient variants (plain HKDF-SHA256, authenticated `_kemri_auth`, user-keying-material `_kemri_ukm`) | `cms -decrypt` → match `expected_plaintext.txt` | 3.6+ |
 
 Composite components (ML-DSA/ML-KEM + RSA/ECDSA/EdDSA/ECDH/X25519/X448) come from
 the default provider (OpenSSL 3.5+; the composite OIDs from hybrid-provider). CMS
@@ -99,7 +99,8 @@ Representative run — every default peer, 0 failures:
   `.55`–`.66`, 12 combos): **12/12** decapsulated from each of six independent
   impls (`composite-kem-ref-impl`, `bc`, `cht`, `crypto4a`, `cryptonext`,
   `entrust`) — the full matrix incl. brainpool `.61`/`.64`.
-- **`cms` — composite ML-KEM KEMRI** (RFC 9629, 3.6+): **12/12** decrypted from
+- **`cms` — composite ML-KEM KEMRI** (RFC 9629, 3.6+, all recipient variants incl.
+  authenticated and UKM): **12/12** OIDs decrypted from
   each of two independent draft-18 impls (`composite-crypto`, `bc`).
 
 Pure ML-DSA/ML-KEM/SLH-DSA artifacts from the same corpus come out as
