@@ -22,8 +22,13 @@
 #               handles it -> interop with that component confirmed.  Loading
 #               oqsprovider thus qualifies its plain-PQ algs against the corpus
 #               for free -- no arc to curate.
-#   not-served  nothing loaded can complete the operation -> informational (the
-#               corpus ships ~30 families; e.g. McEliece with no such provider).
+#   not-served  none of the providers WE loaded can complete the operation.  The
+#               artifact is of course valid -- the peer that produced it ran some
+#               provider we have not loaded (or one that assigns the algorithm a
+#               different OID, e.g. a research-KEM OID oqsprovider cannot
+#               (de)serialize); so this is informational, not a fault -- load that
+#               provider and the OID becomes "qualified".  (The corpus ships ~30
+#               families; e.g. McEliece when no such provider is loaded.)
 #
 # Modes:
 #   verify    (default) read every peer's artifacts and classify (above).
@@ -46,10 +51,15 @@ import subprocess
 import sys
 import tempfile
 
+# The sibling helper module is found by prepending this file's directory to
+# sys.path first, so the import deliberately follows a statement; "noqa: E402"
+# silences flake8's "module import not at top of file" for exactly that reason.
 sys.path.insert(0, os.path.dirname(__file__))
-from pqc_corpus_common import (  # noqa: E402
-    ARC, N_COMPOSITE_SIG_OIDS, N_COMPOSITE_KEM_OIDS, RAW_BASE, _objects,
-    file_oid, files_equal, oid_check, privs, report_oid, soext)
+from pqc_corpus_common import (  # noqa: E402  (import must follow sys.path setup)
+    ARC, KEMRI_AUTH_MARK, N_COMPOSITE_KEM_OIDS, N_COMPOSITE_SIG_OIDS,
+    PLAINTEXT_FILE, RAW_BASE, SUF_CT, SUF_EE, SUF_KEMRI, SUF_PRIV, SUF_PUB,
+    SUF_SS, SUF_TA, SUF_TA_PEM, _objects, file_oid, files_equal, oid_check,
+    privs, report_oid, soext)
 
 # Peers that publish each artifact kind.  Classification is arc-free/capability-
 # driven, but *which peers* ship a given kind is curated: it mirrors the corpus
@@ -85,6 +95,7 @@ class Corpus:
         self.outdir = ''
         self.outname = 'pqc-corpus-artifacts'
         self.keep = False
+        self.workdir_opt = ''
         self.strict = False
         self.mode = 'verify'
         self.soext = soext()
@@ -137,6 +148,10 @@ class Corpus:
                        help='generate output dir (default: <module-dir>/%s)'
                             % self.outname)
         p.add_argument('--keep', action='store_true', help='keep the temp work dir')
+        p.add_argument('--workdir', default=os.environ.get('WORKDIR', ''),
+                       help='scratch dir to use instead of a fresh temp dir '
+                            '(created if absent, and never auto-removed); the '
+                            'default is mkdtemp under $TMPDIR')
         p.add_argument('--strict', action='store_true',
                        default=os.environ.get('STRICT', '0') == '1',
                        help='unreachable peer, or an OID we serve / a composite '
@@ -156,6 +171,7 @@ class Corpus:
         self.csv_path = a.csv_path
         self.outdir = a.outdir
         self.keep = a.keep
+        self.workdir_opt = a.workdir
         self.strict = a.strict
         self.mode = a.mode
 
@@ -212,7 +228,12 @@ class Corpus:
             sys.exit(f'hybrid.{self.soext} not found in {self.module_dir} '
                      f'-- build the provider first')
 
-        self.workdir = tempfile.mkdtemp()
+        if self.workdir_opt:
+            self.workdir = os.path.abspath(self.workdir_opt)
+            os.makedirs(self.workdir, exist_ok=True)
+            self.keep = True            # never auto-remove a user-named dir
+        else:
+            self.workdir = tempfile.mkdtemp()   # honours $TMPDIR
         self.cnf = os.path.join(self.workdir, 'providers.cnf')
         self._write_cnf(hybrid_path)
 
@@ -378,11 +399,11 @@ class Corpus:
         return False, 'not verified'
 
     def probe_kem(self, ss):
-        base = ss[:-len('_ss.bin')]
-        ct = f'{base}_ciphertext.bin'
+        base = ss[:-len(SUF_SS)]
+        ct = base + SUF_CT
         forms = privs(base)
         if not forms or not os.path.isfile(ct):
-            return False, 'missing _priv.der / _ciphertext.bin'
+            return False, f'missing {SUF_PRIV} / {SUF_CT}'
         any_ran = False
         for priv in forms:
             out = os.path.join(self.workdir, os.path.basename(priv) + '.out')
@@ -396,10 +417,10 @@ class Corpus:
         return True, ''
 
     def probe_cms(self, blob, expected):
-        base = blob[:-len('_kemri_id-alg-hkdf-with-sha256.der')]
+        base = blob[:-len(SUF_KEMRI)]
         forms = privs(base)
         if not forms or not expected:
-            return False, 'missing _priv.der / expected_plaintext.txt'
+            return False, f'missing {SUF_PRIV} / {PLAINTEXT_FILE}'
         for priv in forms:
             out = os.path.join(self.workdir, os.path.basename(priv) + '.pt')
             if self.oss_ok('cms', '-decrypt', '-inform', 'DER', '-in', blob,
@@ -432,7 +453,11 @@ class Corpus:
         n = ours = qual = unserved = 0
         for art in sorted(glob.glob(os.path.join(d, '**', pattern),
                                     recursive=True)):
-            if fam == 'cms' and '_kemri_auth' in art:
+            # The corpus ships, beside the plain HKDF-SHA256 KEMRI blob, an
+            # authenticated-KEM variant (_kemri_auth*); that uses a different
+            # recipient algorithm we do not implement, so skip it rather than
+            # record a spurious not-served/FAIL for an OID we already read.
+            if fam == 'cms' and KEMRI_AUTH_MARK in art:
                 continue
             oid = file_oid(art)
             if not oid:
@@ -467,11 +492,11 @@ class Corpus:
     # minimum OpenSSL.  sig + kem share the 'certs' zip; cms is its own.
     def _kinds(self):
         return (
-            ('sig', 'certs', self.round, '*_ta.der',
+            ('sig', 'certs', self.round, '*' + SUF_TA,
              self.probe_sig, SIG_PEERS, (0, 0)),
-            ('kem', 'certs', self.round, '*_ss.bin',
+            ('kem', 'certs', self.round, '*' + SUF_SS,
              self.probe_kem, KEM_PEERS, (0, 0)),
-            ('cms', 'cms', self.cms_ver, '*_kemri_id-alg-hkdf-with-sha256.der',
+            ('cms', 'cms', self.cms_ver, '*' + SUF_KEMRI,
              self.probe_cms, CMS_PEERS, (3, 6)),
         )
 
@@ -518,12 +543,12 @@ class Corpus:
     def _coherence_files(fam, art):
         """The DER file(s) that must embed the artifact's filename OID."""
         if fam == 'kem':                       # _ss.bin itself carries no OID
-            return privs(art[:-len('_ss.bin')])
+            return privs(art[:-len(SUF_SS)])
         return [art]                           # sig cert / cms KEMRI blob
 
     @staticmethod
     def _cms_expected(d):
-        f = glob.glob(os.path.join(d, '**', 'expected_plaintext.txt'),
+        f = glob.glob(os.path.join(d, '**', PLAINTEXT_FILE),
                       recursive=True)
         return f[0] if f else ''
 
@@ -619,12 +644,12 @@ class Corpus:
             n += 1
             base = os.path.join(self.outdir, f'id-{alg}-{oid}')
             self.oss_ok('x509', '-in', crt, '-outform', 'DER',
-                        '-out', f'{base}_ta.der')
-            shutil.copy2(crt, f'{base}_ta.pem')
+                        '-out', base + SUF_TA)
+            shutil.copy2(crt, base + SUF_TA_PEM)
             self.oss_ok('pkey', '-in', key, '-outform', 'DER',
-                        '-out', f'{base}_priv.der')
+                        '-out', base + SUF_PRIV)
             if self.oss_ok('verify', '-no_check_time', '-CAfile',
-                           f'{base}_ta.pem', f'{base}_ta.pem'):
+                           base + SUF_TA_PEM, base + SUF_TA_PEM):
                 p += 1
             else:
                 self.no(f'{alg} ({oid}) self-verify of generated trust anchor')
@@ -646,15 +671,15 @@ class Corpus:
             n += 1
             base = os.path.join(self.outdir, f'id-{alg}-{oid}')
             self.oss_ok('pkey', '-in', key, '-outform', 'DER',
-                        '-out', f'{base}_priv.der')
-            shutil.copy2(pub, f'{base}_pub.der')
+                        '-out', base + SUF_PRIV)
+            shutil.copy2(pub, base + SUF_PUB)
             self.oss_ok('pkeyutl', '-encap', '-inkey', pub, '-pubin', '-keyform',
-                        'DER', '-out', f'{base}_ciphertext.bin',
-                        '-secret', f'{base}_ss.bin')
+                        'DER', '-out', base + SUF_CT,
+                        '-secret', base + SUF_SS)
             chk = os.path.join(self.workdir, f'{alg}.chk')
-            if self.oss_ok('pkeyutl', '-decap', '-inkey', f'{base}_priv.der',
-                           '-keyform', 'DER', '-in', f'{base}_ciphertext.bin',
-                           '-secret', chk) and files_equal(chk, f'{base}_ss.bin'):
+            if self.oss_ok('pkeyutl', '-decap', '-inkey', base + SUF_PRIV,
+                           '-keyform', 'DER', '-in', base + SUF_CT,
+                           '-secret', chk) and files_equal(chk, base + SUF_SS):
                 p += 1
             else:
                 self.no(f'{alg} ({oid}) self-decapsulation of generated ciphertext')
@@ -669,7 +694,7 @@ class Corpus:
                                     '-out', ca_crt):
             self.note('cms generate: cannot create Ed25519 CA cert')
             return
-        pt = os.path.join(self.outdir, 'expected_plaintext.txt')
+        pt = os.path.join(self.outdir, PLAINTEXT_FILE)
         with open(pt, 'w') as f:
             f.write(PLAINTEXT)
         n = p = 0
@@ -687,9 +712,9 @@ class Corpus:
             n += 1
             base = os.path.join(self.outdir, f'id-{alg}-{oid}')
             self.ossp_ok('pkey', '-in', key, '-outform', 'DER',
-                         '-out', f'{base}_priv.der')
-            ee = f'{base}_ee.der'
-            kemri = f'{base}_kemri_id-alg-hkdf-with-sha256.der'
+                         '-out', base + SUF_PRIV)
+            ee = base + SUF_EE
+            kemri = base + SUF_KEMRI
             if not self.ossp_ok('x509', '-new', '-force_pubkey', pub, '-CA',
                                 ca_crt, '-CAkey', ca_key, '-subj', f'/CN=ee-{oid}',
                                 '-days', '365', '-out', ee, '-outform', 'DER') \
@@ -699,7 +724,7 @@ class Corpus:
                 self.no(f'{alg} ({oid}) could not produce EE cert / EnvelopedData')
                 continue
             r = self.ossp('cms', '-decrypt', '-inform', 'DER', '-in', kemri,
-                          '-inkey', f'{base}_priv.der', '-keyform', 'DER')
+                          '-inkey', base + SUF_PRIV, '-keyform', 'DER')
             if r.returncode == 0 and r.stdout == PLAINTEXT:
                 p += 1
             else:

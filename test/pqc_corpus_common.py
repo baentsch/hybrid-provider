@@ -32,15 +32,42 @@ import subprocess
 ARC = r'1\.3\.6\.1\.5\.5\.7\.6\.[0-9]+'
 
 # Size of the standardized LAMPS composite arc: 18 signature OIDs (.37..54) and
-# 12 KEM OIDs (.55..66).  Denominators of the composite coverage lines; frozen
-# by draft-ietf-lamps-pq-composite-sigs / -composite-kem.  A composite OID in
-# the corpus beyond these means the drafts grew and COMPOSITE_*_LIST wants a
-# revisit.
+# 12 KEM OIDs (.55..66).  These are the denominators of the "distinct composite
+# OIDs verified: N/M" coverage lines, so they must be a fixed, named figure.
+# They are deliberately NOT derived at run time: not from our provider's live
+# algorithm list (whose count is what we want to *check*, not trust) nor from the
+# corpus (which ships a varying subset per peer) -- the point is to compare
+# against the standard's own fixed matrix size.  They change only when
+# draft-ietf-lamps-pq-composite-sigs / -composite-kem add combos; the weekly
+# drift check surfaces exactly that (a composite OID in the corpus beyond the
+# arc, i.e. COMPOSITE_*_LIST wants a revisit).
 N_COMPOSITE_SIG_OIDS = 18
 N_COMPOSITE_KEM_OIDS = 12
 
 RAW_BASE = ('https://raw.githubusercontent.com/'
             'IETF-Hackathon/pqc-certificates/master/providers')
+
+# Corpus artifact naming -- fixed by the pqc-certificates layout, not by us, so
+# every peer names files id-<combo>-<OID><suffix>.  Single-sourced here (used by
+# privs() below and by the tool) rather than scattered as string literals.
+SUF_TA = '_ta.der'               # self-signed trust-anchor cert (DER)
+SUF_TA_PEM = '_ta.pem'           # same trust anchor, PEM (our generate direction)
+SUF_PRIV = '_priv.der'           # PKCS#8 private key (DER)
+SUF_PUB = '_pub.der'             # SubjectPublicKeyInfo (DER)
+SUF_SS = '_ss.bin'               # KEM reference shared secret (raw bytes)
+SUF_CT = '_ciphertext.bin'       # KEM ciphertext (raw bytes)
+SUF_EE = '_ee.der'               # end-entity cert (our generate direction)
+PLAINTEXT_FILE = 'expected_plaintext.txt'   # per-peer CMS reference plaintext
+
+# CMS KEMRI blobs are named <base>_kemri_<kdf>.der.  RFC 9629 and the LAMPS
+# composite-KEM drafts default the KEM-recipient KDF to HKDF-SHA256, whose OID is
+# registered as id-alg-hkdf-with-sha256 -- that is the single variant the corpus
+# ships as the default and the one we read and generate.  It is not a CLI
+# parameter because the corpus fixes it; the authenticated (_kemri_auth) and
+# user-keying-material variants are deliberately out of scope.
+KEMRI_KDF = 'id-alg-hkdf-with-sha256'
+SUF_KEMRI = f'_kemri_{KEMRI_KDF}.der'
+KEMRI_AUTH_MARK = '_kemri_auth'
 
 # ---------------------------------------------------------------------------
 # OID helpers
@@ -139,8 +166,8 @@ def privs(base):
     ``<base>_priv.der`` plus the per-form variants (``_seed_priv.der``,
     ``_expandedkey_priv.der``, ``_both_priv.der`` for ML-DSA / ML-KEM).
     """
-    out = [p for p in [base + '_priv.der'] if os.path.isfile(p)]
-    out += sorted(f for f in glob.glob(base + '_*_priv.der')
+    out = [p for p in [base + SUF_PRIV] if os.path.isfile(p)]
+    out += sorted(f for f in glob.glob(base + '_*' + SUF_PRIV)
                   if os.path.isfile(f))
     return out
 
