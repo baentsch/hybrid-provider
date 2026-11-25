@@ -282,6 +282,21 @@ static void hybrid_sig_component(const HYBRID_KEY *key, unsigned i,
 }
 
 /*
+ * A component signature must fit the bound the row's size table reserves for
+ * it (c->max_sig, the space hybrid_sig_max_sig_bytes() sized the caller's buffer
+ * by). The component was told that bound; this catches one that ignores it.
+ */
+static int comp_sig_len_ok(const HYBRID_SIG_COMP *c, size_t got)
+{
+    if (got <= c->max_sig)
+        return 1;
+    ERR_raise_data(ERR_LIB_PROV, ERR_R_INTERNAL_ERROR,
+                   "hybrid component signature is %zu bytes, bound %zu",
+                   got, c->max_sig);
+    return 0;
+}
+
+/*
  * Digest-taking sign/verify over a pre-computed digest via EVP_PKEY_sign/verify
  * (ECDSA DER, or RSA PKCS#1 v1.5). For signing, sig/siglen receive the signature
  * (bounded by c->max_sig); for verify, sig/siglen are the input. Returns 1 on
@@ -313,7 +328,8 @@ static int hybrid_sig_digest_taking_op(const HYBRID_KEY *key,
 
     if (sign) {
         *siglen = c->max_sig;
-        if (EVP_PKEY_sign(pctx, sig, siglen, dig, diglen) <= 0)
+        if (EVP_PKEY_sign(pctx, sig, siglen, dig, diglen) <= 0
+                || !comp_sig_len_ok(c, *siglen))
             goto end;
     } else {
         if (EVP_PKEY_verify(pctx, sig, *siglen, dig, diglen) <= 0)
@@ -378,7 +394,8 @@ static int hybrid_sig_mdless_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
                                   c->pkey, pqp) <= 0)
             goto end;
         *siglen = c->max_sig;
-        if (EVP_DigestSign(mctx, sig, siglen, tbs, tbslen) <= 0)
+        if (EVP_DigestSign(mctx, sig, siglen, tbs, tbslen) <= 0
+                || !comp_sig_len_ok(c, *siglen))
             goto end;
     } else {
         if (EVP_DigestVerifyInit_ex(mctx, NULL, NULL, key->libctx, c->propq,
