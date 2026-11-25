@@ -83,7 +83,9 @@ Useful flags: `--providers "name[=/path] …"` (what to load), `--propquery` (pi
 contested algorithm to a provider), `--provider-param NAME:KEY=VAL`, `--csv PATH`
 (flat per-OID coverage table), `--compat-csv DIR` / `--csv-consumer NAME` (write
 the corpus's own `compatMatrices` submission CSVs, `<peer>_<consumer>.csv`),
-`-v/--verbose` (per-artifact trail behind the summary), `--workdir` / `--keep`,
+`-v/--verbose` (per-artifact trail behind the summary — each line ends in
+`PASS (ours)`, `PASS (component: <provider>)` naming the component that served
+it, `FAIL (...)`, or `skip (not served: ...)`), `--workdir` / `--keep`,
 `--round` / `--cms-version`.
 
 ## Results

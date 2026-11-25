@@ -116,6 +116,7 @@ class Corpus:
         self._oidstat = {}
         self._fetch_cache = {}
         self._compat_files = {}     # csv path -> set of rows already written
+        self._component_cache = None  # lazily-built oid -> [component names]
 
     # ---- CLI ---------------------------------------------------------------
 
@@ -409,16 +410,45 @@ class Corpus:
 
     # ---- runtime "ours" discovery -----------------------------------------
 
-    def discover_ours(self):
-        """OIDs the hybrid provider serves, read from its own generated keys."""
-        if not self.has_provider('hybrid'):
-            return
+    def _list_algs(self, flag, provider):
+        """Usable `genpkey -algorithm` names a provider lists for *flag*.
+
+        Handles both the plain form (``name @ provider``) and the brace-alias
+        form the default provider uses (``{ oid, id-foo, FOO, FOO2 } @ provider``),
+        picking a readable alias (not the bare OID) for each.
+        """
+        names = []
+        for ln in self.oss_output('list', flag).splitlines():
+            if '@' not in ln:
+                continue
+            spec, _, prov = ln.rpartition('@')
+            if prov.strip() != provider:
+                continue
+            spec = spec.strip()
+            if spec.startswith('{'):
+                toks = [t.strip() for t in spec.strip('{} ').split(',') if t.strip()]
+                cand = [t for t in toks if not re.fullmatch(r'[0-9.]+', t)]
+                name = next((t for t in cand if not t.startswith('id-')),
+                            (cand or toks or [''])[0])
+            else:
+                name = spec.split()[0] if spec.split() else ''
+            if name:
+                names.append(name)
+        return names
+
+    def _oids_served_by(self, name):
+        """OIDs a loaded provider serves, read from the keys it generates.
+
+        For each of its signature + KEM algorithms, generate a key and read the
+        OID its SPKI embeds -- the same OID the corpus names artifacts by.  This
+        is provider-name based (not a property query), so it is robust across
+        providers (a mandatory `provider=` query does not reliably select some
+        third-party decoders).
+        """
+        oids = set()
         for flag in ('-signature-algorithms', '-kem-algorithms'):
-            out = self.oss_output('list', flag)
-            algs = [ln.split()[0] for ln in out.splitlines()
-                    if '@ hybrid' in ln or '@hybrid' in ln]
-            for alg in algs:
-                key = os.path.join(self.workdir, f'own-{alg}.key')
+            for alg in self._list_algs(flag, name):
+                key = os.path.join(self.workdir, f'map-{name}-{alg}.key')
                 pub = key + '.pub'
                 if not self.oss_ok('genpkey', '-algorithm', alg, '-out', key):
                     continue
@@ -427,7 +457,13 @@ class Corpus:
                     continue
                 oid = next(_objects(pub, self.openssl_bin), '')
                 if oid:
-                    self.ours.add(oid)
+                    oids.add(oid)
+        return oids
+
+    def discover_ours(self):
+        """OIDs the hybrid provider serves (the must-pass set)."""
+        if self.has_provider('hybrid'):
+            self.ours = self._oids_served_by('hybrid')
 
     def must_pass(self, oid):
         """Artifacts we are obliged to read: anything we serve, plus (in strict
@@ -588,15 +624,17 @@ class Corpus:
             self._key_forms(peer, fam, zip_tag, oid, served, rows)
             if served and oid in self.ours:
                 ours += 1
-                verdict = 'ours (hybrid)'
+                verdict = 'PASS (ours)'
             elif served:
                 qual += 1
-                verdict = 'qualified (a loaded component)'
+                comp = self._component_of(oid) if self.verbose else 'component'
+                verdict = f'PASS (component: {comp})'
             elif self.must_pass(oid):
                 verdict = f'FAIL ({detail})'
             else:
                 unserved += 1
-                verdict = f'not-served ({detail})' if detail else 'not-served'
+                verdict = f'skip (not served: {detail})' if detail \
+                    else 'skip (not served)'
             if self.verbose:
                 print(f'    {peer} [{fam}] {oid} {os.path.basename(art)}'
                       f'  ->  {verdict}')
@@ -606,10 +644,10 @@ class Corpus:
         """Apply per-key-form results: compatMatrices CSV + FAIL/SKIP policy.
 
         A loadable key form that fails its check (wrong public key, failed
-        signature, wrong secret/plaintext) is a FAIL for an artifact we must read
-        and otherwise informational (the component's business, shown only with
-        -v).  A form that does not load (ok is None) is always a SKIP: peers ship
-        encodings the spec does not define.
+        signature, wrong secret/plaintext) is a FAIL for an artifact we must read.
+        A form that does not load, or a failure on an artifact we only qualify, is
+        informational -- the component's business -- printed only with -v and not
+        counted as a SKIP (those count real environment gaps, not per-form detail).
         """
         for typ, ok in rows:
             if self.compat_dir and ok is not None:
@@ -620,11 +658,11 @@ class Corpus:
                 else f'{peer}: {oid} key forms inconsistent with trust anchor'
             if ok is None:
                 if self.verbose:
-                    self.note(f'{peer}: {oid} key form {typ} not loadable')
+                    print(f'    .. {peer}: {oid} key form {typ} not loadable')
             elif self.must_pass(oid):
                 self.no(label + ' failed its check')
             elif self.verbose:
-                self.note(label + ' not handled by a component')
+                print(f'    .. {label} not handled by a component')
 
     # Artifact kinds: name, zip prefix, tag source, glob, probe, default peers,
     # minimum OpenSSL.  sig + kem share the 'certs' zip; cms is its own.
@@ -672,8 +710,8 @@ class Corpus:
                     self.miss(f'{peer} [{name}]: ships no {name} artifacts '
                               f'in {prefix}_{tag}')
                 else:
-                    self.ok(f'{peer} [{name}]: {o} ours, {q} qualified, '
-                            f'{u} not-served (of {n})')
+                    self.ok(f'{peer} [{name}]: {o} PASS(ours), '
+                            f'{q} PASS(component), {u} not-served (of {n})')
 
         self._coverage()
 
@@ -683,6 +721,26 @@ class Corpus:
         if fam == 'kem':                       # _ss.bin itself carries no OID
             return privs(art[:-len(SUF_SS)])
         return [art]                           # sig cert / cms KEMRI blob
+
+    def _component_names(self):
+        """Loaded provider names other than hybrid (the qualification candidates)."""
+        return [e.split('=', 1)[0] for e in self.providers.split()
+                if e.split('=', 1)[0] != 'hybrid']
+
+    def _component_of(self, oid):
+        """Name the loaded component provider(s) that serve a qualified OID.
+
+        Looked up in an OID->provider map built (once, lazily) by asking each
+        non-hybrid provider which OIDs its own keys carry -- see _oids_served_by.
+        'component' if none maps it (e.g. an OID whose alg the provider lists but
+        cannot keygen).  Only called in --verbose, so the map cost is opt-in.
+        """
+        if self._component_cache is None:
+            self._component_cache = {}
+            for name in self._component_names():
+                for o in self._oids_served_by(name):
+                    self._component_cache.setdefault(o, []).append(name)
+        return ','.join(self._component_cache.get(oid, [])) or 'component'
 
     @staticmethod
     def _cms_expected(d):
@@ -743,9 +801,7 @@ class Corpus:
         return False
 
     def _hybrid_algs(self, flag):
-        out = self.oss_output('list', flag)
-        return [ln.split()[0] for ln in out.splitlines()
-                if '@ hybrid' in ln or '@hybrid' in ln]
+        return self._list_algs(flag, 'hybrid')
 
     def generate(self):
         if not self.can_generate():
