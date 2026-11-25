@@ -352,4 +352,9 @@ above: `HYBRID_CEDE_TO_DEFAULT` at load time, `HYBRID_LOG` whenever it logs. (Be
 | `HYBRID_LOG` | Diagnostic lines to stderr. `caps`: each advertisement dropped and why. `ops`: per operation, the provider that actually served each component. Comma-combinable; `1` (any other value) = all; unset/empty/`0` = off. | [Only operable algorithms are advertised](#only-operable-algorithms-are-advertised), [Which provider served it](#which-provider-served-it-hybrid_logops) above |
 
 `OPENSSL_MODULES` (OpenSSL's standard module-search-path variable, not specific to
-this provider) locates `hybrid.so` when it is not on the default path.
+this provider) locates `hybrid.so` when it is not on the default path; without
+`component-path` it is also the private component context's search path.
+
+In a privileged process (setuid/setgid or file capabilities) the provider ignores
+all of these variables, as OpenSSL does for its own: use the `cede-to-default` and
+`component-path` config keys instead (`HYBRID_LOG` then stays off).

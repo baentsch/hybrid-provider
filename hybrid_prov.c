@@ -293,7 +293,7 @@ static int hybrid_setup_component_ctx(HYBRID_PROV_CTX *ctx,
     if ((cc = OSSL_LIB_CTX_new()) == NULL)
         return 0;
     if (path == NULL)
-        path = getenv("OPENSSL_MODULES");
+        path = hybrid_getenv("OPENSSL_MODULES");
     if (path != NULL)
         OSSL_PROVIDER_set_default_search_path(cc, path);
 
@@ -1105,7 +1105,7 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
     /* Environment variable overrides the config key when set. Then apply
      * withdrawals: the seed-less composites (always, below 3.5) and — when
      * enabled — everything the default provider already serves in this context. */
-    cede_to_default = hybrid_parse_bool(getenv(HYBRID_ENV_CEDE_TO_DEFAULT),
+    cede_to_default = hybrid_parse_bool(hybrid_getenv(HYBRID_ENV_CEDE_TO_DEFAULT),
                                         cede_to_default);
     /* Compute this instance's cede tables before returning *provctx. */
     if (!hybrid_apply_cede(ctx, cede_to_default))

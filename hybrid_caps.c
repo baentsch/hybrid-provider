@@ -9,7 +9,13 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <openssl/provider.h>
+#if defined(__linux__)
+# include <sys/auxv.h>       /* getauxval(AT_SECURE) */
+#elif defined(__unix__) || defined(__APPLE__)
+# include <unistd.h>         /* issetugid */
+#endif
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"
 #endif
@@ -37,11 +43,25 @@ static const struct {
     { "ops",  HYBRID_LOG_OPS  },
 };
 
+/* See hybrid_prov.h. AT_SECURE is set by the kernel for setuid/setgid and
+ * file-capability execs (what glibc's secure_getenv keys on). */
+const char *hybrid_getenv(const char *name)
+{
+#if defined(__linux__)
+    if (getauxval(AT_SECURE) != 0)
+        return NULL;
+#elif defined(__unix__) || defined(__APPLE__)
+    if (issetugid())
+        return NULL;
+#endif
+    return getenv(name);
+}
+
 /* See hybrid_prov.h. Read on every call (no cached state): getenv is cheap next
  * to the operations being logged, and nothing here needs a lock. */
 int hybrid_log_enabled(unsigned int category)
 {
-    const char *v = getenv(HYBRID_ENV_LOG), *p, *e;
+    const char *v = hybrid_getenv(HYBRID_ENV_LOG), *p, *e;
     unsigned int mask = 0;
     size_t c;
 
