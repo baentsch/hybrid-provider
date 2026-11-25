@@ -518,7 +518,7 @@ hybrid_sig_digest_verify(void *vctx,
     }
     len0 = ((size_t)sig[0] << 24) | ((size_t)sig[1] << 16)
          | ((size_t)sig[2] << 8) | (size_t)sig[3];
-    if (sizeof(uint32_t) + len0 > siglen) {
+    if (len0 > siglen - sizeof(uint32_t)) {   /* subtractive: no 32-bit wrap */
         ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_SIGNATURE_SIZE,
                        "hybrid component 1 length %zu inconsistent with "
                        "signature length %zu", len0, siglen);

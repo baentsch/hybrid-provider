@@ -239,10 +239,12 @@ static int hybrid_decode(void *vctx, OSSL_CORE_BIO *cin, int selection,
     /* From here the OID is a hybrid one we own, so a failure is a real error for
      * this key rather than a "let another decoder try" decline: raise a message
      * so the user learns why an otherwise-recognized hybrid key did not load. */
+    /* Bounds are checked subtractively: clen is an untrusted UINT32, and
+     * `4 + clen` would wrap where size_t is 32 bits. */
     clen = 0;
     if (pklen >= 4)
         clen = dec_uint32_be(pk);
-    if (pklen < 4 || 4 + (size_t)clen > (size_t)pklen) {
+    if (pklen < 4 || (size_t)clen > (size_t)pklen - 4) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
                        "hybrid decode: malformed %s public key", oidbuf);
         ret = 0;
@@ -343,8 +345,9 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         ret = 0;
         goto end;
     }
-    /* Common bound: the slot-1 block (length in the UINT32 prefix) must fit. */
-    if (sizeof(uint32_t) + (size_t)clen > octlen)
+    /* Common bound: the slot-1 block (length in the UINT32 prefix) must fit.
+     * Subtractive (octlen >= 4 above), so an untrusted clen cannot wrap. */
+    if ((size_t)clen > octlen - sizeof(uint32_t))
         goto end;
 
     if (!is_kem) {
@@ -396,7 +399,7 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
         goto end;
     /* The private parts (classical DER of length clen + PQ raw private) must fit
      * before the trailing PQ public block. */
-    if (sizeof(uint32_t) + (size_t)clen + pqvlen > octlen)
+    if (pqvlen > octlen - sizeof(uint32_t) - (size_t)clen)
         goto end;
     /* Place each private part at its wire offset — hybrid_wire_to_comp() owns
      * the order; the classical share is the prefixed DER (clen), the PQ share
@@ -417,7 +420,7 @@ static int hybrid_decode_p8(void *vctx, OSSL_CORE_BIO *cin, int selection,
      * Pass it through so the decoded key is complete — research keytypes cannot
      * re-derive it from private material, and a certificate needs it. Blobs
      * without the trailing block decode private-only (pqpub stays NULL). */
-    if (pqpublen > 0 && off + pqpublen <= octlen)
+    if (pqpublen > 0 && pqpublen <= octlen - off)
         pqpub = octdata + off;
     else
         pqpublen = 0;
