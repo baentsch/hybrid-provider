@@ -283,11 +283,8 @@ static EVP_PKEY *load_trad_pub(OSSL_LIB_CTX *libctx, const char *propq,
         return EVP_PKEY_new_raw_public_key_ex(libctx, info->trad_alg,
                                               propq, pub, len);
     /* RSA / RSA-PSS: raw form is i2d_PublicKey (RSAPublicKey) DER. */
-    {
-        const unsigned char *pp = pub;
-
-        return d2i_PublicKey(EVP_PKEY_RSA, NULL, &pp, (long)len);
-    }
+    return hybrid_component_d2i_rsa_pub(libctx, propq, pub, len,
+                                        info->trad_rsa_bits);
 }
 
 int composite_key_load_pub(COMPOSITE_KEY *key,
@@ -324,11 +321,11 @@ static EVP_PKEY *load_trad_priv(OSSL_LIB_CTX *libctx, const char *propq,
             || strcmp(info->trad_alg, "ED448") == 0)
         return EVP_PKEY_new_raw_private_key_ex(libctx, info->trad_alg,
                                                propq, priv, len);
-    {
-        const unsigned char *pp = priv;
-
-        return d2i_AutoPrivateKey_ex(NULL, &pp, (long)len, libctx, propq);
-    }
+    /* EC or RSA (any padding): pin the DER's key type to the row. */
+    return hybrid_component_d2i_priv(libctx, propq, priv, len,
+                                     info->trad_rsa_bits != 0 ? "RSA"
+                                                              : info->trad_alg,
+                                     info->trad_group, info->trad_rsa_bits);
 }
 
 int composite_key_load_prv(COMPOSITE_KEY *key,

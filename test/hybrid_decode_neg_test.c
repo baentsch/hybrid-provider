@@ -31,6 +31,9 @@
  *   5. Input over the decoder size cap (HYBRID_MAX_KEY_DER) is refused, and a
  *      well-formed SPKI with a FOREIGN OID is declined (not ours, no key).
  *
+ *   6. A genuine key whose DER-encoded classical component is swapped for a
+ *      well-formed key of the wrong curve or RSA size is refused (type pinning).
+ *
  * All families share one SPKI parser (hybrid_spki_parse) and one read-all/OID
  * routing path; the composite families are additionally iterated when built
  * (-DHYBRID_COMPOSITE).
@@ -123,8 +126,9 @@ static EVP_PKEY *decode_p8_der(OSSL_LIB_CTX *ctx, const unsigned char *der,
  * hybrid blob we control. DER truncation alone fails at the ASN.1 layer and never
  * reaches hybrid_key_load_prv_components_sym; this routes by OID and drives that
  * slot-symmetric loader directly. Returns i2d DER (caller OPENSSL_free). */
-static unsigned char *make_p8(const char *oidstr, const unsigned char *inner,
-                              size_t innerlen, size_t *outlen)
+static unsigned char *make_p8_wrap(const char *oidstr, int octet_wrap,
+                                   const unsigned char *inner, size_t innerlen,
+                                   size_t *outlen)
 {
     ASN1_OBJECT *oid = OBJ_txt2obj(oidstr, 1);
     ASN1_OCTET_STRING *oct = ASN1_OCTET_STRING_new();
@@ -132,10 +136,18 @@ static unsigned char *make_p8(const char *oidstr, const unsigned char *inner,
     unsigned char *innder = NULL, *der = NULL;
     int innderlen, derlen;
 
-    if (oid == NULL || oct == NULL || p8 == NULL
-            || !hybrid_asn1_octet_set(oct, inner, innerlen)
-            || (innderlen = i2d_ASN1_OCTET_STRING(oct, &innder)) < 0
-            || !PKCS8_pkey_set0(p8, oid, 0, V_ASN1_UNDEF, NULL, innder, innderlen))
+    if (oid == NULL || oct == NULL || p8 == NULL)
+        goto err;
+    if (octet_wrap) {
+        if (!hybrid_asn1_octet_set(oct, inner, innerlen)
+                || (innderlen = i2d_ASN1_OCTET_STRING(oct, &innder)) < 0)
+            goto err;
+    } else if ((innder = OPENSSL_memdup(inner, innerlen)) == NULL) {
+        goto err;
+    } else {
+        innderlen = (int)innerlen;
+    }
+    if (!PKCS8_pkey_set0(p8, oid, 0, V_ASN1_UNDEF, NULL, innder, innderlen))
         goto err;
     oid = NULL; innder = NULL;           /* ownership transferred to p8 */
     if ((derlen = i2d_PKCS8_PRIV_KEY_INFO(p8, &der)) < 0)
@@ -150,6 +162,13 @@ err:
     ASN1_OCTET_STRING_free(oct);
     PKCS8_PRIV_KEY_INFO_free(p8);
     return NULL;
+}
+
+/* The hybrid families' layout: the blob in an inner OCTET STRING. */
+static unsigned char *make_p8(const char *oidstr, const unsigned char *inner,
+                              size_t innerlen, size_t *outlen)
+{
+    return make_p8_wrap(oidstr, 1, inner, innerlen, outlen);
 }
 
 /* Feed one crafted-inner PKCS#8 to the private decoder; pass iff it fails cleanly
@@ -494,6 +513,295 @@ end:
     EVP_PKEY_free(got);
 }
 
+/*
+ * 6. Classical component pinning. The classical half of a key file is a DER
+ *    blob that names its own key type, so a well-formed key of the WRONG type,
+ *    curve or RSA size could be spliced in. For every row whose classical
+ *    component is DER-encoded (EC/RSA), splice a mismatched key (another curve,
+ *    or RSA-1024) into a genuine key's blob: the decoder must refuse it. The
+ *    unmodified re-spliced blob must still decode (control), so the rejection
+ *    is the mismatch, not the harness.
+ */
+/* A classical key that does NOT fit the row: RSA-1024 (below every RSA row)
+ * for an RSA slot, else an EC key on a different curve (P-384 for a P-256 row,
+ * P-256 otherwise -- also a same-size mismatch for the brainpool rows). */
+static EVP_PKEY *mismatched_classical(OSSL_LIB_CTX *ctx, int is_rsa,
+                                      const char *group)
+{
+    if (is_rsa)
+        return EVP_PKEY_Q_keygen(ctx, NULL, "RSA", (size_t)1024);
+    return EVP_PKEY_Q_keygen(ctx, NULL, "EC",
+                             group != NULL && strcmp(group, "P-256") == 0
+                                 ? "P-384" : "P-256");
+}
+
+/* The provider's inner key blob (PKCS#8 privateKey octets -- inside an inner
+ * OCTET STRING when octet_wrap, as the hybrid families write it; directly for
+ * composite -- or SPKI bits) of `k`, as a fresh copy (caller OPENSSL_free). */
+static unsigned char *key_blob(EVP_PKEY *k, int pub, int octet_wrap,
+                               size_t *len)
+{
+    size_t derlen = 0;
+    unsigned char *der = encode(k, pub ? EVP_PKEY_PUBLIC_KEY : EVP_PKEY_KEYPAIR,
+                                "DER", pub ? "SubjectPublicKeyInfo"
+                                           : "PrivateKeyInfo",
+                                "provider=hybrid", &derlen);
+    const unsigned char *p = der, *data = NULL;
+    unsigned char *out = NULL;
+    X509_PUBKEY *xp = NULL;
+    PKCS8_PRIV_KEY_INFO *p8 = NULL;
+    ASN1_OCTET_STRING *oct = NULL;
+    int dlen = 0;
+
+    if (der == NULL)
+        return NULL;
+    if (pub) {
+        if ((xp = d2i_X509_PUBKEY(NULL, &p, (long)derlen)) != NULL
+                && X509_PUBKEY_get0_param(NULL, &data, &dlen, NULL, xp))
+            out = OPENSSL_memdup(data, (size_t)dlen);
+    } else if ((p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, (long)derlen)) != NULL
+               && PKCS8_pkey_get0(NULL, &data, &dlen, NULL, p8)) {
+        if (!octet_wrap) {
+            out = OPENSSL_memdup(data, (size_t)dlen);
+        } else if ((oct = d2i_ASN1_OCTET_STRING(NULL, &data, dlen)) != NULL) {
+            out = OPENSSL_memdup(ASN1_STRING_get0_data(oct),
+                                 hybrid_asn1_string_length(oct));
+            dlen = (int)hybrid_asn1_string_length(oct);
+        }
+    }
+    if (out != NULL)
+        *len = (size_t)dlen;
+    ERR_clear_error();
+    ASN1_STRING_clear_free(oct);
+    PKCS8_PRIV_KEY_INFO_free(p8);
+    X509_PUBKEY_free(xp);
+    OPENSSL_clear_free(der, derlen);
+    return out;
+}
+
+/* A classical component's on-wire bytes, as the encoders write them:
+ * i2d_PrivateKey (private) or i2d_PublicKey (RSA public). */
+static unsigned char *classical_der(EVP_PKEY *k, int pub, size_t *len)
+{
+    unsigned char *der = NULL;
+    int n = pub ? i2d_PublicKey(k, &der) : i2d_PrivateKey(k, &der);
+
+    if (n <= 0)
+        return NULL;
+    *len = (size_t)n;
+    return der;
+}
+
+/* 1 iff the blob, wrapped as `oid`'s SPKI (pub) or PKCS#8, decodes to a key. */
+static int blob_decodes(OSSL_LIB_CTX *ctx, const char *oid, int pub,
+                        int octet_wrap, const unsigned char *blob, size_t len)
+{
+    size_t derlen = 0;
+    unsigned char *der = pub ? make_spki(oid, blob, len, &derlen)
+                             : make_p8_wrap(oid, octet_wrap, blob, len, &derlen);
+    EVP_PKEY *got = NULL;
+
+    if (der != NULL)
+        got = pub ? decode_spki_der(ctx, der, derlen)
+                  : decode_p8_der(ctx, der, derlen);
+    ERR_clear_error();
+    EVP_PKEY_free(got);
+    OPENSSL_clear_free(der, derlen);
+    return got != NULL;
+}
+
+/* head || mid || tail, with mid's length written as a UINT32 prefix when
+ * `prefix` is set (the hybrid slot-1 layout). Caller OPENSSL_clear_free. */
+static unsigned char *splice(int prefix, const unsigned char *head, size_t hl,
+                             const unsigned char *mid, size_t ml,
+                             const unsigned char *tail, size_t tl, size_t *len)
+{
+    size_t pl = prefix ? 4 : 0;
+    unsigned char *b = OPENSSL_malloc(pl + hl + ml + tl);
+
+    if (b == NULL)
+        return NULL;
+    if (prefix) {
+        b[0] = (unsigned char)(ml >> 24); b[1] = (unsigned char)(ml >> 16);
+        b[2] = (unsigned char)(ml >> 8);  b[3] = (unsigned char)ml;
+    }
+    if (hl > 0)                          /* memcpy from NULL is UB even for 0 */
+        memcpy(b + pl, head, hl);
+    if (ml > 0)
+        memcpy(b + pl + hl, mid, ml);
+    if (tl > 0)
+        memcpy(b + pl + hl + ml, tail, tl);
+    *len = pl + hl + ml + tl;
+    return b;
+}
+
+/* Record one pinning case: the re-spliced original (orig) must decode and the
+ * mismatched splice (bad) must not. NULL buffers are a setup failure. */
+static int pin_case(OSSL_LIB_CTX *ctx, const char *oid, int pub,
+                    int octet_wrap, const char *what,
+                    const unsigned char *orig, size_t ol,
+                    const unsigned char *bad, size_t bl)
+{
+    if (orig == NULL || bad == NULL) {
+        printf("FAIL: setup (%s)\n", what);
+        ERR_print_errors_fp(stdout);
+        return 0;
+    }
+    if (!blob_decodes(ctx, oid, pub, octet_wrap, orig, ol)) {
+        printf("FAIL: control (%s): unmodified blob did not decode\n", what);
+        return 0;
+    }
+    if (blob_decodes(ctx, oid, pub, octet_wrap, bad, bl)) {
+        printf("FAIL: %s: mismatched classical component accepted\n", what);
+        return 0;
+    }
+    return 1;
+}
+
+/* Hybrid signatures: slot-symmetric UINT32(len1) || slot1 || slot2, either slot
+ * may be the classical one; RSA additionally in the SPKI (RSAPublicKey DER). */
+static void check_pin_hybrid_sig(OSSL_LIB_CTX *ctx, const HYBRID_SIG_INFO *row)
+{
+    const char *grp[2] = { row->alg1_group, row->alg2_group };
+    /* DER-encoded classical slots: EC (a group) or RSA. */
+    int rsa[2] = { strcmp(row->alg1_name, "RSA") == 0,
+                   strcmp(row->alg2_name, "RSA") == 0 };
+    int der[2] = { rsa[0] || strcmp(row->alg1_name, "EC") == 0,
+                   rsa[1] || strcmp(row->alg2_name, "EC") == 0 };
+    EVP_PKEY *k = NULL;
+    int slot, pub, all = 1;
+
+    if (!der[0] && !der[1])
+        return;
+    printf("  %-28s mismatched classical -> refused ... ", row->hybrid_name);
+    fflush(stdout);
+    tests++;
+    if ((k = keygen(ctx, row->hybrid_name)) == NULL) {
+        printf("SKIP (components unavailable)\n");
+        skipped++; tests--; ERR_clear_error();
+        return;
+    }
+    for (slot = 0; slot < 2; slot++) {
+        EVP_PKEY *sub;
+
+        if (!der[slot])
+            continue;
+        sub = mismatched_classical(ctx, rsa[slot], grp[slot]);
+        for (pub = 0; pub <= 1; pub++) {
+            unsigned char *blob, *sd = NULL, *orig = NULL, *bad = NULL;
+            size_t bl = 0, sl = 0, ol = 0, xl = 0, l1;
+
+            /* An EC public point goes through a group-pinned fromdata already;
+             * only RSA's public half is self-describing DER. */
+            if (pub && !rsa[slot])
+                continue;
+            blob = key_blob(k, pub, 1, &bl);
+            if (sub != NULL)
+                sd = classical_der(sub, pub, &sl);
+            if (blob != NULL && bl >= 4) {
+                l1 = ((size_t)blob[0] << 24) | ((size_t)blob[1] << 16)
+                   | ((size_t)blob[2] << 8) | blob[3];
+                if (l1 <= bl - 4) {
+                    const unsigned char *s1 = blob + 4, *s2 = blob + 4 + l1;
+                    size_t l2 = bl - 4 - l1;
+
+                    orig = splice(1, NULL, 0, s1, l1, s2, l2, &ol);
+                    if (sd != NULL)
+                        bad = slot == 0
+                            ? splice(1, NULL, 0, sd, sl, s2, l2, &xl)
+                            : splice(1, NULL, 0, s1, l1, sd, sl, &xl);
+                }
+            }
+            all &= pin_case(ctx, row->oid, pub, 1,
+                            pub ? "public slot" : "private slot",
+                            orig, ol, bad, xl);
+            OPENSSL_clear_free(orig, ol);
+            OPENSSL_clear_free(bad, xl);
+            OPENSSL_clear_free(sd, sl);
+            OPENSSL_clear_free(blob, bl);
+        }
+        EVP_PKEY_free(sub);
+    }
+    if (all) {
+        printf("PASS\n");
+        passed++;
+    } else {
+        failed++;
+    }
+    EVP_PKEY_free(k);
+}
+
+#ifdef HYBRID_COMPOSITE
+/* Length of `param` on a throwaway `pq_alg` key: the fixed PQ prefix length of
+ * a composite blob (the provider discovers it the same way). */
+static size_t pq_param_len(OSSL_LIB_CTX *ctx, const char *pq_alg,
+                           const char *param)
+{
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(ctx, pq_alg, NULL);
+    EVP_PKEY *t = NULL;
+    size_t n = 0;
+
+    if (c != NULL && EVP_PKEY_keygen_init(c) > 0 && EVP_PKEY_keygen(c, &t) > 0)
+        EVP_PKEY_get_octet_string_param(t, param, NULL, 0, &n);
+    EVP_PKEY_free(t);
+    EVP_PKEY_CTX_free(c);
+    ERR_clear_error();
+    return n;
+}
+
+/* Composite (sig and KEM): pq || trad, the PQ part at a fixed length. */
+static void check_pin_composite(OSSL_LIB_CTX *ctx, const char *name,
+                                const char *oid, const char *pq_alg,
+                                const char *pq_priv_param,
+                                const char *trad_alg, const char *trad_group,
+                                int trad_rsa_bits)
+{
+    EVP_PKEY *k = NULL, *sub = NULL;
+    int is_rsa = trad_rsa_bits != 0, pub, all = 1;
+
+    /* DER-encoded classical: RSA (any padding) or EC; Ed/X are raw. */
+    if (oid == NULL || !(is_rsa || strcmp(trad_alg, "EC") == 0))
+        return;
+    printf("  %-28s mismatched classical -> refused ... ", name);
+    fflush(stdout);
+    tests++;
+    if ((k = keygen(ctx, name)) == NULL) {
+        printf("SKIP (components unavailable)\n");
+        skipped++; tests--; ERR_clear_error();
+        return;
+    }
+    sub = mismatched_classical(ctx, is_rsa, trad_group);
+    for (pub = 0; pub <= 1; pub++) {
+        unsigned char *blob, *sd = NULL, *bad = NULL;
+        size_t bl = 0, sl = 0, xl = 0;
+        size_t pqn = pq_param_len(ctx, pq_alg, pub ? OSSL_PKEY_PARAM_PUB_KEY
+                                                   : pq_priv_param);
+
+        if (pub && !is_rsa)
+            continue;                    /* see check_pin_hybrid_sig */
+        blob = key_blob(k, pub, 0, &bl);
+        if (sub != NULL)
+            sd = classical_der(sub, pub, &sl);
+        if (blob != NULL && sd != NULL && pqn > 0 && pqn < bl)
+            bad = splice(0, blob, pqn, sd, sl, NULL, 0, &xl);
+        all &= pin_case(ctx, oid, pub, 0,
+                        pub ? "public trad" : "private trad",
+                        blob, bl, bad, xl);
+        OPENSSL_clear_free(bad, xl);
+        OPENSSL_clear_free(sd, sl);
+        OPENSSL_clear_free(blob, bl);
+    }
+    if (all) {
+        printf("PASS\n");
+        passed++;
+    } else {
+        failed++;
+    }
+    EVP_PKEY_free(sub);
+    EVP_PKEY_free(k);
+}
+#endif
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -537,6 +845,28 @@ int main(void)
 #endif
     check_oversize(ctx);
     check_foreign_oid(ctx);
+
+    for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
+        if (hybrid_sig_table[i].oid != NULL)
+            check_pin_hybrid_sig(ctx, &hybrid_sig_table[i]);
+#ifdef HYBRID_COMPOSITE
+    for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
+        check_pin_composite(ctx, composite_sig_table[i].name,
+                            composite_sig_table[i].oid,
+                            composite_sig_table[i].pq_alg,
+                            composite_sig_table[i].pq_priv_param,
+                            composite_sig_table[i].trad_alg,
+                            composite_sig_table[i].trad_group,
+                            composite_sig_table[i].trad_rsa_bits);
+    for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
+        check_pin_composite(ctx, composite_kem_table[i].name,
+                            composite_kem_table[i].oid,
+                            composite_kem_table[i].pq_alg,
+                            composite_kem_table[i].pq_priv_param,
+                            composite_kem_table[i].trad_alg,
+                            composite_kem_table[i].trad_group,
+                            composite_kem_table[i].trad_rsa_bits);
+#endif
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);

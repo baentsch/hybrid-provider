@@ -6,6 +6,10 @@
 #include "hybrid_prov.h"
 #include <openssl/provider.h>
 #include <openssl/x509.h>
+#include <openssl/decoder.h>
+#include <openssl/ec.h>
+#include <openssl/objects.h>
+#include <limits.h>
 #include <stdlib.h>
 #ifdef HYBRID_COMPOSITE
 # include "composite_prov.h"       /* composite (LAMPS) signatures, folded in here */
@@ -120,6 +124,112 @@ int hybrid_component_load_privpub(OSSL_LIB_CTX *libctx, const char *propq,
 err:
     EVP_PKEY_CTX_free(ctx);
     return ret;
+}
+
+/* NID of a curve named by NIST ("P-256") or SN/LN ("prime256v1",
+ * "brainpoolP256r1") spelling, so table and key names compare equal. */
+static int curve_nid(const char *name)
+{
+    int nid = EC_curve_nist2nid(name);
+
+    if (nid == NID_undef)
+        nid = OBJ_sn2nid(name);
+    if (nid == NID_undef)
+        nid = OBJ_ln2nid(name);
+    return nid;
+}
+
+/* Room for an EC group name ("brainpoolP512r1" and the like); a longer one
+ * fails the lookup, which rejects the key. */
+#define HYBRID_GROUP_NAME_MAX 64
+
+/* Check that |pk| is the key the table row names (see hybrid_prov.h). */
+static int component_conforms(const EVP_PKEY *pk, const char *alg,
+                              const char *group, int bits)
+{
+    char got[HYBRID_GROUP_NAME_MAX];
+
+    if (!EVP_PKEY_is_a(pk, alg)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "component key is not of type %s", alg);
+        return 0;
+    }
+    if (group != NULL
+            && (!EVP_PKEY_get_group_name(pk, got, sizeof(got), NULL)
+                || curve_nid(got) == NID_undef
+                || curve_nid(got) != curve_nid(group))) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "component key is not on curve %s", group);
+        return 0;
+    }
+    if (bits > 0 && EVP_PKEY_get_bits(pk) != bits) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "component %s key has %d bits, expected %d", alg,
+                       EVP_PKEY_get_bits(pk), bits);
+        return 0;
+    }
+    return 1;
+}
+
+EVP_PKEY *hybrid_component_d2i_priv(OSSL_LIB_CTX *libctx, const char *propq,
+                                    const unsigned char *der, size_t len,
+                                    const char *alg, const char *group,
+                                    int bits)
+{
+    const unsigned char *p = der;
+    EVP_PKEY *pk;
+
+    if (len > LONG_MAX)
+        return NULL;
+    pk = d2i_AutoPrivateKey_ex(NULL, &p, (long)len, libctx, propq);
+    if (pk == NULL)
+        return NULL;
+    if (p != der + len) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "trailing data after component %s private key", alg);
+        EVP_PKEY_free(pk);
+        return NULL;
+    }
+    if (!component_conforms(pk, alg, group, bits)) {
+        EVP_PKEY_free(pk);
+        return NULL;
+    }
+    return pk;
+}
+
+EVP_PKEY *hybrid_component_d2i_rsa_pub(OSSL_LIB_CTX *libctx, const char *propq,
+                                       const unsigned char *der, size_t len,
+                                       int bits)
+{
+    /* RSAPublicKey DER via the component libctx's own decoder (d2i_PublicKey
+     * would parse in the default libctx). The decoder advances data/left. */
+    EVP_PKEY *pk = NULL;
+    OSSL_DECODER_CTX *dctx;
+    const unsigned char *data = der;
+    size_t left = len;
+    int ok;
+
+    dctx = OSSL_DECODER_CTX_new_for_pkey(&pk, "DER", "type-specific", "RSA",
+                                         EVP_PKEY_PUBLIC_KEY, libctx, propq);
+    if (dctx == NULL)
+        return NULL;
+    ok = OSSL_DECODER_from_data(dctx, &data, &left);
+    OSSL_DECODER_CTX_free(dctx);
+    if (!ok || pk == NULL) {
+        EVP_PKEY_free(pk);
+        return NULL;
+    }
+    if (left != 0) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT,
+                       "trailing data after component RSA public key");
+        EVP_PKEY_free(pk);
+        return NULL;
+    }
+    if (!component_conforms(pk, "RSA", NULL, bits)) {
+        EVP_PKEY_free(pk);
+        return NULL;
+    }
+    return pk;
 }
 
 static OSSL_FUNC_provider_teardown_fn hybrid_teardown;

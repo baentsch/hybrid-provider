@@ -1350,6 +1350,21 @@ int hybrid_component_load_privpub(OSSL_LIB_CTX *libctx, const char *propq,
                                   EVP_PKEY **out);
 
 /*
+ * Classical components parsed from untrusted DER (hybrid_prov.c). The DER
+ * carries its own key type, so these pin it to what the table row expects:
+ * |alg| ("EC"/"RSA"), the EC |group| when non-NULL, and the RSA modulus |bits|
+ * when > 0. All |len| bytes must be consumed. Parsed in |libctx| with |propq|.
+ * Return NULL (error raised) on any mismatch.
+ */
+EVP_PKEY *hybrid_component_d2i_priv(OSSL_LIB_CTX *libctx, const char *propq,
+                                    const unsigned char *der, size_t len,
+                                    const char *alg, const char *group,
+                                    int bits);
+EVP_PKEY *hybrid_component_d2i_rsa_pub(OSSL_LIB_CTX *libctx, const char *propq,
+                                       const unsigned char *der, size_t len,
+                                       int bits);
+
+/*
  * TLS code-point hygiene (issue #45).
  *
  * A provisional code point must never sit in IANA standards-track space, where
