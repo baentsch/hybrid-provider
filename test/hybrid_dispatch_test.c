@@ -19,6 +19,9 @@
  *       the check tightens by itself once it is lifted. Composite keys have no
  *       keymgmt dup (libcrypto copies by export + import) and must always copy
  *       faithfully.
+ *       EVP_PKEY_dup always copies everything, so the keymgmt dup's selection
+ *       is driven straight through the provider's dispatch table: a
+ *       public-only dup of a full hybrid keypair must carry no private key.
  *   D2. Operation-context copies (OSSL_FUNC_*_DUPCTX): EVP_MD_CTX_copy_ex after
  *       sign-init, and EVP_PKEY_CTX_dup mid-way through a streaming
  *       sign-message (3.4+) — original and copy must both produce valid
@@ -504,6 +507,98 @@ end:
     EVP_PKEY_free(k);
 }
 
+/* Fetch function `id` from a keymgmt dispatch table (NULL if absent). */
+static void (*dispatch_fn(const OSSL_DISPATCH *d, int id))(void)
+{
+    for (; d->function_id != 0; d++)
+        if (d->function_id == id)
+            return d->function;
+    return NULL;
+}
+
+/* D1, selection-honouring dup: libcrypto's EVP_PKEY_dup always passes
+ * OSSL_KEYMGMT_SELECT_ALL, so call the provider's KEYMGMT_DUP directly with a
+ * public-only selection on a freshly generated keypair. */
+static void check_dup_selection(OSSL_PROVIDER *hyb, const char *alg)
+{
+    int no_cache = 0, ok = 1;
+    const OSSL_ALGORITHM *a;
+    const OSSL_DISPATCH *d = NULL;
+    OSSL_FUNC_keymgmt_gen_init_fn *gen_init;
+    OSSL_FUNC_keymgmt_gen_fn *gen;
+    OSSL_FUNC_keymgmt_gen_cleanup_fn *gen_cleanup;
+    OSSL_FUNC_keymgmt_dup_fn *dup;
+    OSSL_FUNC_keymgmt_has_fn *has;
+    OSSL_FUNC_keymgmt_match_fn *match;
+    OSSL_FUNC_keymgmt_free_fn *kfree;
+    void *gctx = NULL, *key = NULL, *pub = NULL;
+
+    for (a = OSSL_PROVIDER_query_operation(hyb, OSSL_OP_KEYMGMT, &no_cache);
+         a != NULL && a->algorithm_names != NULL; a++) {
+        size_t n = strlen(alg);
+
+        if (strncmp(a->algorithm_names, alg, n) == 0
+                && (a->algorithm_names[n] == '\0'
+                    || a->algorithm_names[n] == ':')) {
+            d = a->implementation;
+            break;
+        }
+    }
+    printf("  %-34s keymgmt dup(public-only) ... ", alg);
+    fflush(stdout);
+    tests++;
+    if (d == NULL) {
+        /* Ceded or not served in this build: nothing to drive. */
+        printf("SKIP (not served)\n");
+        skipped++; tests--;
+        return;
+    }
+    gen_init = (OSSL_FUNC_keymgmt_gen_init_fn *)
+        dispatch_fn(d, OSSL_FUNC_KEYMGMT_GEN_INIT);
+    gen = (OSSL_FUNC_keymgmt_gen_fn *)dispatch_fn(d, OSSL_FUNC_KEYMGMT_GEN);
+    gen_cleanup = (OSSL_FUNC_keymgmt_gen_cleanup_fn *)
+        dispatch_fn(d, OSSL_FUNC_KEYMGMT_GEN_CLEANUP);
+    dup = (OSSL_FUNC_keymgmt_dup_fn *)dispatch_fn(d, OSSL_FUNC_KEYMGMT_DUP);
+    has = (OSSL_FUNC_keymgmt_has_fn *)dispatch_fn(d, OSSL_FUNC_KEYMGMT_HAS);
+    match = (OSSL_FUNC_keymgmt_match_fn *)
+        dispatch_fn(d, OSSL_FUNC_KEYMGMT_MATCH);
+    kfree = (OSSL_FUNC_keymgmt_free_fn *)dispatch_fn(d, OSSL_FUNC_KEYMGMT_FREE);
+    EXPECT(gen_init != NULL && gen != NULL && gen_cleanup != NULL
+           && dup != NULL && has != NULL && match != NULL && kfree != NULL,
+           "keymgmt dispatch entries");
+    gctx = gen_init(OSSL_PROVIDER_get0_provider_ctx(hyb),
+                    OSSL_KEYMGMT_SELECT_KEYPAIR, NULL);
+    if (gctx == NULL || (key = gen(gctx, NULL, NULL)) == NULL) {
+        printf("SKIP (components unavailable)\n");
+        ERR_clear_error();
+        skipped++; tests--;
+        goto out;
+    }
+    EXPECT(has(key, OSSL_KEYMGMT_SELECT_PRIVATE_KEY), "generated keypair");
+    EXPECT((pub = dup(key, OSSL_KEYMGMT_SELECT_PUBLIC_KEY)) != NULL,
+           "public-only dup");
+    EXPECT(has(pub, OSSL_KEYMGMT_SELECT_PUBLIC_KEY),
+           "public-only dup lacks the public key");
+    EXPECT(!has(pub, OSSL_KEYMGMT_SELECT_PRIVATE_KEY),
+           "public-only dup still carries the private key");
+    EXPECT(match(key, pub, OSSL_KEYMGMT_SELECT_PUBLIC_KEY),
+           "public-only dup does not match the original's public key");
+end:
+    if (ok) {
+        printf("PASS\n");
+        passed++;
+    } else {
+        failed++;
+    }
+out:
+    if (kfree != NULL) {
+        kfree(pub);
+        kfree(key);
+    }
+    if (gctx != NULL && gen_cleanup != NULL)
+        gen_cleanup(gctx);
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -541,6 +636,7 @@ int main(void)
                     { in->alg2_name, in->alg2_group, NULL } } };
 
         check_sig(ctx, &r);
+        check_dup_selection(hyb, in->hybrid_name);
     }
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++) {
         const HYBRID_KEM_INFO *in = &hybrid_kem_table[i];
@@ -552,6 +648,7 @@ int main(void)
             r.comp[j].group = in->component[j].group;
         }
         check_kem(ctx, &r);
+        check_dup_selection(hyb, in->hybrid_name);
     }
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++) {

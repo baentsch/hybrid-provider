@@ -14,6 +14,7 @@
  *         carries a component-1 length past its end / is truncated / is flipped
  *     S4. a context-string of the wrong OSSL_PARAM type (hybrid only; 3.2+)
  *     S5. streaming verify-final without the SIGNATURE ctx-param (3.4+)
+ *     S6. digest sign/verify-init with an explicit digest name
  *
  *   KEMs (hybrid + composite):
  *     K1. encaps-init on a key with no material, decaps-init on a public-only
@@ -164,6 +165,17 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
         EXPECT(!sign_init(ctx, m, k, p), "utf8 context-string accepted");
     }
 #endif
+
+    /* S6: the component digests are fixed by the algorithm, so a caller digest
+     * must be refused, not silently overridden. */
+    EVP_MD_CTX_reset(m);
+    EXPECT(EVP_DigestSignInit_ex(m, NULL, "SHA256", ctx, PROPQ, k, NULL) <= 0,
+           "sign-init accepted an explicit digest");
+    EVP_MD_CTX_reset(m);
+    EXPECT(EVP_DigestVerifyInit_ex(m, NULL, "SHA256", ctx, PROPQ, pub,
+                                   NULL) <= 0,
+           "verify-init accepted an explicit digest");
+    ERR_clear_error();
 
 #ifdef OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT
     /* S5: streaming verify needs the signature delivered as a ctx-param. */

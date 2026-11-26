@@ -121,6 +121,7 @@ static void *hybrid_kem_dup(const void *vkey, int selection)
     const HYBRID_KEY *key = vkey;
     HYBRID_KEY *ret;
     unsigned i;
+    int pub_only;
 
     if ((ret = OPENSSL_zalloc(sizeof(*ret))) == NULL)
         return NULL;
@@ -144,14 +145,22 @@ static void *hybrid_kem_dup(const void *vkey, int selection)
             || HYBRID_KEY_COMP(key, HYBRID_COMP_ALG1) == NULL)
         return ret;
 
+    /* A public-only selection must not carry the private components along:
+     * copy each component's public half only (#178). */
+    pub_only = (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) == 0
+               && hybrid_have_prvkey(key);
     for (i = 0; i < HYBRID_KEY_NCOMP(key); i++)
-        HYBRID_KEY_COMP(ret, i) = EVP_PKEY_dup(HYBRID_KEY_COMP(key, i));
+        HYBRID_KEY_COMP(ret, i) = pub_only
+            ? hybrid_component_dup_public(key->libctx,
+                                          hybrid_key_comp_propq(key, i),
+                                          HYBRID_KEY_COMP(key, i))
+            : EVP_PKEY_dup(HYBRID_KEY_COMP(key, i));
     for (i = 0; i < HYBRID_KEY_NCOMP(key); i++)
         if (HYBRID_KEY_COMP(ret, i) == NULL) {
             hybrid_key_free(ret);
             return NULL;
         }
-    ret->state = key->state;
+    ret->state = pub_only ? HYBRID_HAVE_PUBKEY : key->state;
     return ret;
 }
 

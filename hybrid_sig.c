@@ -172,6 +172,8 @@ hybrid_sig_digest_sign_init(void *vctx, const char *mdname,
     HYBRID_SIG_CTX *ctx = vctx;
     HYBRID_KEY *key = vkey;
 
+    if (!hybrid_sig_no_explicit_digest(mdname, "hybrid"))
+        return 0;
     if (key == NULL || !hybrid_have_prvkey(key)) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PRIVATE_KEY,
                        "hybrid signing requires a private key");
@@ -189,6 +191,8 @@ hybrid_sig_digest_verify_init(void *vctx, const char *mdname,
     HYBRID_SIG_CTX *ctx = vctx;
     HYBRID_KEY *key = vkey;
 
+    if (!hybrid_sig_no_explicit_digest(mdname, "hybrid"))
+        return 0;
     if (key == NULL || !hybrid_have_pubkey(key)) {
         ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PUBLIC_KEY,
                        "hybrid verification requires a public key");
