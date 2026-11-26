@@ -234,15 +234,16 @@ static int run_sig(OSSL_LIB_CTX *ctx, SCEN *s, int baseline)
         goto end;
     /* Fail closed: a corrupted signature must never verify, whatever failed. */
     sig[siglen - 1] ^= 0x01;
-    if (hybrid_test_verify(ctx, k, sig, siglen, msg, sizeof(msg))) {
+    if (hybrid_test_verify(ctx, k, sig, siglen, msg, sizeof(msg), NULL)) {
         r = RUN_UNSOUND;
         goto end;
     }
     sig[siglen - 1] ^= 0x01;
-    if (!hybrid_test_verify(ctx, k, sig, siglen, msg, sizeof(msg))
+    if (!hybrid_test_verify(ctx, k, sig, siglen, msg, sizeof(msg), NULL)
             || (pub = hybrid_test_reimport(ctx, s->alg, k,
                                            EVP_PKEY_PUBLIC_KEY)) == NULL
-            || !hybrid_test_verify(ctx, pub, sig, siglen, msg, sizeof(msg))
+            || !hybrid_test_verify(ctx, pub, sig, siglen, msg, sizeof(msg),
+                                   NULL)
             || !keyfile_step(ctx, s, baseline))
         goto end;
     r = RUN_OK;

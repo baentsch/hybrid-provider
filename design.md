@@ -676,8 +676,11 @@ RSA and the groupless PQ algorithms are groupless
 ([#125](https://github.com/baentsch/hybrid-provider/issues/125) lifted the former
 `alg1`-only limit). A
 per-operation context string, if set, is applied to every md-less component (both
-halves of a PQ/PQ pair) and never to a digest-taking one; a component that does
-not itself honour a context string ignores it (best-effort, no hard failure).
+halves of a PQ/PQ pair) and never to a digest-taking one, so for a classical x PQ
+pair only the PQ half binds it. It is delivered at init and again through the
+component's set_ctx_params; a component that cannot honour it refuses, and the
+hybrid operation fails closed rather than drop it
+([#178](https://github.com/baentsch/hybrid-provider/issues/178)).
 
 ### Sign
 

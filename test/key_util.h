@@ -92,15 +92,17 @@ static inline EVP_PKEY *hybrid_test_empty_key(OSSL_LIB_CTX *ctx,
     return k;
 }
 
-/* 1 iff `sig` is a valid signature by `k` over msg[0..msglen). */
+/* 1 iff `sig` is a valid signature by `k` over msg[0..msglen), verified with
+ * the init `params` (NULL for none; e.g. a context string). */
 static inline int hybrid_test_verify(OSSL_LIB_CTX *ctx, EVP_PKEY *k,
                                      const unsigned char *sig, size_t siglen,
-                                     const unsigned char *msg, size_t msglen)
+                                     const unsigned char *msg, size_t msglen,
+                                     const OSSL_PARAM *params)
 {
     EVP_MD_CTX *m = EVP_MD_CTX_new();
     int r = m != NULL
         && EVP_DigestVerifyInit_ex(m, NULL, NULL, ctx, HYBRID_TEST_PROPQ, k,
-                                   NULL) > 0
+                                   params) > 0
         && EVP_DigestVerify(m, sig, siglen, msg, msglen) == 1;
 
     EVP_MD_CTX_free(m);

@@ -57,6 +57,9 @@
 /* Whole-scheme domain separator (fixed ASCII, draft-19). Shared by every combo,
  * standardized and experimental; the per-combo `label` differentiates them. */
 #define COMPOSITE_SIG_PREFIX "CompositeAlgorithmSignatures2025"
+/* Caller context string bound into M': len(ctx) is a single octet (draft-19),
+ * so at most 255 bytes. */
+#define COMPOSITE_SIG_CTX_MAX 255
 
 /* The PQ private split length is discovered at runtime from the component
  * algorithm (info->pq_priv_param on a fresh key) — no hardcoded seed size, so a
@@ -382,17 +385,20 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
  *
  * The cryptographic core, independent of the provider plumbing so it can be
  * unit-tested directly with EVP-generated component keys. Builds the draft-19
- * message representative M' = PREFIX || label || len(ctx) || ctx || PH(M) (empty
- * ctx), signs it with each component (PQ one-shot with context = label; classic
- * with trad_md, or pure for Ed), and concatenates PQ-sig || trad-sig. Verify
- * splits at the fixed ML-DSA signature length. *sig is malloc'd; caller frees. */
+ * message representative M' = PREFIX || label || len(ctx) || ctx || PH(M) (ctx
+ * the caller's context string, NULL/0 for none), signs it with each component
+ * (PQ one-shot with context = label; classic with trad_md, or pure for Ed), and
+ * concatenates PQ-sig || trad-sig. Verify splits at the fixed ML-DSA signature
+ * length. *sig is malloc'd; caller frees. */
 int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                    OSSL_LIB_CTX *libctx, const char *alg2_propq,
                    const char *trad_propq, const unsigned char *msg,
-                   size_t msglen, unsigned char **sig, size_t *siglen);
+                   size_t msglen, const unsigned char *ctx, size_t ctxlen,
+                   unsigned char **sig, size_t *siglen);
 int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                      OSSL_LIB_CTX *libctx, const char *alg2_propq,
                      const char *trad_propq, const unsigned char *msg,
-                     size_t msglen, const unsigned char *sig, size_t siglen);
+                     size_t msglen, const unsigned char *ctx, size_t ctxlen,
+                     const unsigned char *sig, size_t siglen);
 
 #endif /* HYBRID_COMPOSITE_PROV_H */

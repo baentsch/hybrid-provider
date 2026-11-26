@@ -8,7 +8,9 @@
  * component keys — no provider registration yet. For each combo in the master
  * table it generates the PQ + classical components (from the default provider,
  * or oqsprovider for the experimental tier), signs a message, verifies it (must
- * pass), then tampers a byte and verifies again (must fail). Combos whose
+ * pass), then tampers a byte and verifies again (must fail). A signature made
+ * under a context string verifies only under that same context string (it is
+ * bound into M'), and an over-long one is refused. Combos whose
  * components are unavailable (e.g. ML-DSA on 3.4, or mayo2 without oqsprovider)
  * self-skip.
  *
@@ -55,6 +57,8 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     const char *pqprop = info->tier == COMPOSITE_TIER_EXPERIMENTAL
                              ? "provider=oqsprovider" : "provider=default";
     const unsigned char msg[] = "composite LAMPS combiner self-consistency";
+    const unsigned char ctxa[] = { 'A' }, ctxb[] = { 'B' };
+    unsigned char longctx[COMPOSITE_SIG_CTX_MAX + 1] = { 0 };
     EVP_PKEY *pq = NULL, *trad = NULL;
     unsigned char *sig = NULL;
     size_t siglen = 0;
@@ -71,14 +75,14 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
         goto done;
     }
     if (!composite_sign(info, pq, trad, ctx, pqprop, "provider=default",
-                        msg, sizeof(msg) - 1, &sig, &siglen)) {
+                        msg, sizeof(msg) - 1, NULL, 0, &sig, &siglen)) {
         printf("FAIL (sign)\n");
         ERR_print_errors_fp(stdout);
         failed++;
         goto done;
     }
     if (!composite_verify(info, pq, trad, ctx, pqprop, "provider=default",
-                          msg, sizeof(msg) - 1, sig, siglen)) {
+                          msg, sizeof(msg) - 1, NULL, 0, sig, siglen)) {
         printf("FAIL (verify good)\n");
         ERR_print_errors_fp(stdout);
         failed++;
@@ -87,8 +91,41 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     /* Tamper the last byte (in the traditional component) — must reject. */
     sig[siglen - 1] ^= 0x01;
     if (composite_verify(info, pq, trad, ctx, pqprop, "provider=default",
-                         msg, sizeof(msg) - 1, sig, siglen)) {
+                         msg, sizeof(msg) - 1, NULL, 0, sig, siglen)) {
         printf("FAIL (tampered signature verified)\n");
+        failed++;
+        goto done;
+    }
+    ERR_clear_error();
+
+    /* Context string: bound into M', so only the same one verifies. */
+    OPENSSL_free(sig);
+    sig = NULL;
+    if (!composite_sign(info, pq, trad, ctx, pqprop, "provider=default",
+                        msg, sizeof(msg) - 1, ctxa, sizeof(ctxa), &sig, &siglen)
+            || !composite_verify(info, pq, trad, ctx, pqprop,
+                                 "provider=default", msg, sizeof(msg) - 1,
+                                 ctxa, sizeof(ctxa), sig, siglen)) {
+        printf("FAIL (sign/verify under a context string)\n");
+        ERR_print_errors_fp(stdout);
+        failed++;
+        goto done;
+    }
+    if (composite_verify(info, pq, trad, ctx, pqprop, "provider=default",
+                         msg, sizeof(msg) - 1, ctxb, sizeof(ctxb), sig, siglen)
+            || composite_verify(info, pq, trad, ctx, pqprop,
+                                "provider=default", msg, sizeof(msg) - 1,
+                                NULL, 0, sig, siglen)) {
+        printf("FAIL (verified under a different context string)\n");
+        failed++;
+        goto done;
+    }
+    OPENSSL_free(sig);
+    sig = NULL;
+    if (composite_sign(info, pq, trad, ctx, pqprop, "provider=default",
+                       msg, sizeof(msg) - 1, longctx, sizeof(longctx),
+                       &sig, &siglen)) {
+        printf("FAIL (over-long context string accepted)\n");
         failed++;
         goto done;
     }

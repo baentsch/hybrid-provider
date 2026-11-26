@@ -217,13 +217,12 @@ static void sig_selfcheck(OSSL_LIB_CTX *ctx, const char *alg)
         goto fail;
 
 #ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
-    /* Context-string round-trip (issue #114). A context string is forwarded to
-     * every md-less component; one that does not support it ignores the param
-     * (best-effort, no hard failure). Signing and verifying with the SAME context
-     * must therefore succeed for every pairing — including a PQ/PQ pair whose
-     * components do not all honour a context string (e.g. falcon512_mayo1). This
-     * asserts only the no-hard-fail property, not cross-half domain separation
-     * (which holds only when a component actually honours the context). */
+    /* Context-string round-trip (issues #114, #178). A context string is
+     * forwarded to every md-less component, and one that cannot honour it
+     * refuses, failing the hybrid closed (e.g. a Falcon or MAYO half). So a
+     * pairing either refuses to sign under it, or signs and then verifies under
+     * the SAME context. That the context is actually bound (never verifies
+     * under another) is asserted for every row in hybrid_op_neg_test S4. */
     {
         unsigned char cs[] = "hybrid-sig ctx";
         OSSL_PARAM cp[] = {
@@ -233,7 +232,7 @@ static void sig_selfcheck(OSSL_LIB_CTX *ctx, const char *alg)
         };
         unsigned char *csig = NULL;
         size_t cslen = 0;
-        int cok;
+        int cok, signed_ok;
 
         EVP_MD_CTX_free(md);
         md = EVP_MD_CTX_new();
@@ -243,6 +242,7 @@ static void sig_selfcheck(OSSL_LIB_CTX *ctx, const char *alg)
             && EVP_DigestSign(md, NULL, &cslen, msg, sizeof(msg)) > 0
             && (csig = OPENSSL_malloc(cslen)) != NULL
             && EVP_DigestSign(md, csig, &cslen, msg, sizeof(msg)) > 0;
+        signed_ok = cok;
         if (cok) {
             EVP_MD_CTX_free(md);
             md = EVP_MD_CTX_new();
@@ -252,8 +252,11 @@ static void sig_selfcheck(OSSL_LIB_CTX *ctx, const char *alg)
                 && EVP_DigestVerify(md, csig, cslen, msg, sizeof(msg)) == 1;
         }
         OPENSSL_free(csig);
-        if (!cok)
+        /* A refusal to sign is fail-closed, as required; only a signature
+         * that then fails to verify under its own context is an error. */
+        if (signed_ok && !cok)
             goto fail;
+        ERR_clear_error();
     }
 #endif
 

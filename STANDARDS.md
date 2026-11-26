@@ -438,9 +438,9 @@ as naturally as ECDSA DER):
 
 | Row | Components | Exercises |
 |---|---|---|
-| `mldsa65_falcon1024` | ML-DSA-65 + Falcon-1024 | md-less in both slots; variable-length component 2; context string honoured by the ML-DSA half |
+| `mldsa65_falcon1024` | ML-DSA-65 + Falcon-1024 | md-less in both slots; variable-length component 2; a context string is refused (the Falcon half cannot honour it, so the hybrid fails closed) |
 | `mldsa44_mayo1` | ML-DSA-44 + MAYO-1 | fixed+fixed md-less pair |
-| `falcon512_mayo1` | Falcon-512 + MAYO-1 | variable-length md-less component 1; a pair whose components do **not** honour a context string (no cross-half domain separation) |
+| `falcon512_mayo1` | Falcon-512 + MAYO-1 | variable-length md-less component 1; a pair whose components do **not** honour a context string, so the hybrid refuses one (fails closed) |
 | `mldsa65_p256` | ML-DSA-65 + P-256 | a classical **EC** (digest-taking) half in slot 2, via `alg2_group`; md-less + digest-taking, PQ-first |
 
 No standard defines a PQ/PQ concatenation signature (RFC 9955 gives only the

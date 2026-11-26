@@ -54,7 +54,7 @@
 #define EXPECT HYBRID_TEST_EXPECT
 /* `sig` (len bytes) is a valid signature by `k` over this test's message. */
 #define VERIFIES(k, sig, len) \
-    hybrid_test_verify(ctx, (k), (sig), (len), msg, sizeof(msg))
+    hybrid_test_verify(ctx, (k), (sig), (len), msg, sizeof(msg), NULL)
 /* Generous bound on any OSSL_PARAM descriptor list we serve; a list that runs
  * past it is treated as unterminated. */
 #define MAX_PARAM_LIST 64

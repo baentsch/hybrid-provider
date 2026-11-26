@@ -12,7 +12,10 @@
  *     S2. sign into a buffer one byte smaller than the size query reported
  *     S3. verify a signature that is empty / shorter than the length prefix /
  *         carries a component-1 length past its end / is truncated / is flipped
- *     S4. a context-string of the wrong OSSL_PARAM type (hybrid only; 3.2+)
+ *     S4. context string (3.2+): the wrong OSSL_PARAM type is refused; a
+ *         signature made under one never verifies under another or none —
+ *         every component binds it or refuses it (fail closed, whatever its
+ *         provider); composite binds it into M', so there it must sign
  *     S5. streaming verify-final without the SIGNATURE ctx-param (3.4+)
  *     S6. digest sign/verify-init with an explicit digest name
  *
@@ -48,7 +51,7 @@
 #define EXPECT HYBRID_TEST_EXPECT
 /* `sig` (len bytes) is a valid signature by `k` over this test's message. */
 #define VERIFIES(k, sig, len) \
-    hybrid_test_verify(ctx, (k), (sig), (len), msg, sizeof(msg))
+    hybrid_test_verify(ctx, (k), (sig), (len), msg, sizeof(msg), NULL)
 
 /* The hybrid signature's UINT32 big-endian component-1 length prefix. */
 #define PREFIX_LEN sizeof(uint32_t)
@@ -153,16 +156,41 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
     }
 
 #ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
-    /* S4: the context-string must be an octet string. Composite has no
-     * settable context string (the label is fixed), so hybrid only. */
-    if (is_hybrid) {
-        OSSL_PARAM p[2];
+    /* S4: context string. */
+    {
+        static unsigned char cs_a[] = "context A", cs_b[] = "context B";
+        OSSL_PARAM pa[2], pb[2];
+        size_t cslen = maxlen;
+        int bound;
 
-        p[0] = OSSL_PARAM_construct_utf8_string(
-                   OSSL_SIGNATURE_PARAM_CONTEXT_STRING, "ctx", 0);
-        p[1] = OSSL_PARAM_construct_end();
+        pa[0] = OSSL_PARAM_construct_utf8_string(
+                    OSSL_SIGNATURE_PARAM_CONTEXT_STRING, "ctx", 0);
+        pa[1] = OSSL_PARAM_construct_end();
         EVP_MD_CTX_reset(m);
-        EXPECT(!sign_init(ctx, m, k, p), "utf8 context-string accepted");
+        EXPECT(!sign_init(ctx, m, k, pa), "utf8 context-string accepted");
+
+        pa[0] = OSSL_PARAM_construct_octet_string(
+                    OSSL_SIGNATURE_PARAM_CONTEXT_STRING, cs_a, sizeof(cs_a));
+        pb[0] = OSSL_PARAM_construct_octet_string(
+                    OSSL_SIGNATURE_PARAM_CONTEXT_STRING, cs_b, sizeof(cs_b));
+        pb[1] = OSSL_PARAM_construct_end();
+        EVP_MD_CTX_reset(m);
+        bound = sign_init(ctx, m, k, pa)
+                && EVP_DigestSign(m, sig, &cslen, msg, sizeof(msg)) > 0;
+        ERR_clear_error();
+        /* Refusing is fail-closed for a hybrid (a component cannot honour
+         * it); composite binds it into M' itself, so must sign. */
+        EXPECT(bound || is_hybrid, "composite refused a context string");
+        if (bound) {
+            EXPECT(hybrid_test_verify(ctx, pub, sig, cslen, msg, sizeof(msg),
+                                      pa),
+                   "signature does not verify under its context string");
+            EXPECT(!hybrid_test_verify(ctx, pub, sig, cslen, msg, sizeof(msg),
+                                       pb),
+                   "context string ignored: verifies under another one");
+            EXPECT(!VERIFIES(pub, sig, cslen),
+                   "context string ignored: verifies without one");
+        }
     }
 #endif
 
