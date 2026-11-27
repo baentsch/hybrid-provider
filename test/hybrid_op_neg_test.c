@@ -16,7 +16,8 @@
  *         signature made under one never verifies under another or none —
  *         every component binds it or refuses it (fail closed, whatever its
  *         provider); composite binds it into M', so there it must sign,
- *         and refuses one over 255 bytes. Delivered every way (init param,
+ *         and refuses one over 255 bytes. An empty one is the same as none
+ *         and must never be refused. Delivered every way (init param,
  *         set_ctx_params after init, a copied context, the streaming
  *         message-signature API), the outcome must be the same
  *     S5. streaming verify-final without the SIGNATURE ctx-param (3.4+)
@@ -295,6 +296,46 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
                    && hybrid_test_verify(ctx, pub, sig, cslen, msg,
                                          sizeof(msg), pa),
                    what);
+        }
+        /* An empty context string is no context string (FIPS 204 and
+         * draft-19 both use len(ctx) = 0 for "none"): every row must sign
+         * under it, and the two must be interchangeable, on every path. */
+        {
+            static unsigned char cs_e[1];
+            OSSL_PARAM pe[2];
+
+            pe[0] = OSSL_PARAM_construct_octet_string(
+                        OSSL_SIGNATURE_PARAM_CONTEXT_STRING, cs_e, 0);
+            pe[1] = OSSL_PARAM_construct_end();
+            EVP_MD_CTX_reset(m);
+            cslen = maxlen;
+            EXPECT(sign_init(ctx, m, k, pe)
+                   && EVP_DigestSign(m, sig, &cslen, msg, sizeof(msg)) > 0
+                   && VERIFIES(pub, sig, cslen)
+                   && hybrid_test_verify(ctx, pub, sig, cslen, msg,
+                                         sizeof(msg), pe),
+                   "empty context string: init path differs from none");
+            EVP_MD_CTX_reset(m);
+            cslen = maxlen;
+            EXPECT(sign_init(ctx, m, k, NULL)
+                   && EVP_DigestSign(m, sig, &cslen, msg, sizeof(msg)) > 0
+                   && hybrid_test_verify(ctx, pub, sig, cslen, msg,
+                                         sizeof(msg), pe),
+                   "empty context string: rejects a signature made with none");
+            for (how = 0; how < CS_HOWS; how++) {
+                int got;
+
+                cslen = maxlen;
+                if ((got = cs_op(ctx, alg, k, 1, how, pe, sig, &cslen)) < 0)
+                    continue;                   /* API absent on this build */
+                snprintf(what, sizeof(what),
+                         "%s: empty context string differs from none",
+                         cs_how[how]);
+                EXPECT(got == 1
+                       && cs_op(ctx, alg, pub, 0, how, pe, sig, &cslen) == 1
+                       && cs_op(ctx, alg, pub, 0, how, NULL, sig, &cslen) == 1,
+                       what);
+            }
         }
 #ifdef HYBRID_COMPOSITE
         if (!is_hybrid) {

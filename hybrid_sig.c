@@ -149,6 +149,12 @@ static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
             return 0;
         }
         OPENSSL_free(ctx->ctxstr);
+        if (len == 0) {
+            /* Empty is none (FIPS 204 / draft-19 len(ctx) = 0): store nothing,
+             * so no component that cannot take one sees it. */
+            OPENSSL_free(buf);
+            buf = NULL;
+        }
         ctx->ctxstr = buf;
         ctx->ctxstrlen = len;
     }
