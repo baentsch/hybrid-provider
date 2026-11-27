@@ -177,7 +177,10 @@ draft-19 reference vectors: `s` and `sWithContext` verify (the latter under the
 draft's `ctx`, which must also be bound), `sk` imports to `pk` and signs, the
 `sk_pkcs8` decode matches `sk` byte-for-byte, and the self-signed `x5c` carries
 `pk` and verifies. M' matches the draft's two worked samples byte-for-byte
-(`composite_sig_test`), and a context string over 255 bytes is refused. CMS
+(`composite_sig_test`), and a context string over 255 bytes is refused. The
+context string is bound whichever way it is delivered (init param, set after
+init, a copied operation context, the streaming message-signature API;
+`hybrid_op_neg_test` S4). CMS
 sign/verify round-trips in both SignerInfo modes. *Not yet tested:* the CMS
 conformance points above (per-combo `digestAlgorithm`, Appendix B example).
 

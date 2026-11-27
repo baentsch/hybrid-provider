@@ -166,7 +166,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — Leak-check with teeth: exercise+free every allocation path across all 138 algorithms, unload-clean before LSan (no broad libcrypto catch-all).
 #### 41. hybrid_op_neg_test
 
-— Operation misuse across every family: missing key material at init, short output buffers, malformed signatures and ciphertexts must fail cleanly (never the real secret).
+— Operation misuse across every family: missing key material at init, short output buffers, malformed signatures and ciphertexts must fail cleanly (never the real secret). Signature context strings must be bound (a signature verifies only under its own context string) or refused, never ignored, whichever way they are delivered: init param, set after init, a copied context, or the streaming message-signature API.
 #### 42. hybrid_dispatch_test
 
 — Entry points no round-trip reaches: key dup, ctx dup (incl. mid-stream), param introspection, set_params guards. A hybrid's dup must match exactly the worst of its components' own dups (probed from the same provider), so a component-provider limit is asserted precisely; composite keys must always copy faithfully.

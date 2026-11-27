@@ -16,7 +16,9 @@
  *         signature made under one never verifies under another or none —
  *         every component binds it or refuses it (fail closed, whatever its
  *         provider); composite binds it into M', so there it must sign,
- *         and refuses one over 255 bytes
+ *         and refuses one over 255 bytes. Delivered every way (init param,
+ *         set_ctx_params after init, a copied context, the streaming
+ *         message-signature API), the outcome must be the same
  *     S5. streaming verify-final without the SIGNATURE ctx-param (3.4+)
  *     S6. digest sign/verify-init with an explicit digest name
  *
@@ -75,6 +77,84 @@ static int sign_init(OSSL_LIB_CTX *ctx, EVP_MD_CTX *m, EVP_PKEY *k,
 {
     int r = EVP_DigestSignInit_ex(m, NULL, NULL, ctx, PROPQ, k, params) > 0;
 
+    ERR_clear_error();
+    return r;
+}
+
+/*
+ * The ways a context string reaches a signature operation besides the one-shot
+ * init param (S4): set through set_ctx_params after init, carried into a
+ * copied operation context, or given to the streaming message-signature API.
+ */
+enum { CS_SET, CS_DUP, CS_STREAM, CS_HOWS };
+static const char *const cs_how[CS_HOWS] = {
+    "set after init", "copied context", "streaming API"
+};
+
+/*
+ * Sign (sign = 1: into sig, capacity *len in, length out) or verify (sign = 0:
+ * sig of *len bytes) msg with `k`, delivering `params` (may be NULL) the `how`
+ * way. Returns 1 on success, 0 on failure, -1 if `how` is unavailable here.
+ */
+static int cs_op(OSSL_LIB_CTX *ctx, const char *alg, EVP_PKEY *k, int sign,
+                 int how, const OSSL_PARAM *params,
+                 unsigned char *sig, size_t *len)
+{
+    EVP_MD_CTX *m = NULL, *m2 = NULL;
+    EVP_PKEY_CTX *pc = NULL;
+    int r = 0;
+
+    if (how == CS_STREAM) {
+#ifdef OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT
+        EVP_SIGNATURE *s = EVP_SIGNATURE_fetch(ctx, alg, PROPQ);
+        size_t half = sizeof(msg) / 2;
+
+        pc = EVP_PKEY_CTX_new_from_pkey(ctx, k, PROPQ);
+        r = s != NULL && pc != NULL
+            && (sign ? EVP_PKEY_sign_message_init(pc, s, params)
+                     : EVP_PKEY_verify_message_init(pc, s, params)) > 0
+            && (sign || EVP_PKEY_CTX_set_signature(pc, sig, *len) > 0)
+            && (sign ? EVP_PKEY_sign_message_update(pc, msg, half)
+                     : EVP_PKEY_verify_message_update(pc, msg, half)) > 0
+            && (sign ? EVP_PKEY_sign_message_update(pc, msg + half,
+                                                    sizeof(msg) - half)
+                     : EVP_PKEY_verify_message_update(pc, msg + half,
+                                                      sizeof(msg) - half)) > 0
+            && (sign ? EVP_PKEY_sign_message_final(pc, sig, len) > 0
+                     : EVP_PKEY_verify_message_final(pc) == 1);
+        EVP_SIGNATURE_free(s);
+#else
+        r = -1;
+#endif
+        goto end;
+    }
+    if ((m = EVP_MD_CTX_new()) == NULL)
+        goto end;
+    if (sign) {
+        if (EVP_DigestSignInit_ex(m, &pc, NULL, ctx, PROPQ, k,
+                                  how == CS_DUP ? params : NULL) <= 0)
+            goto end;
+    } else if (EVP_DigestVerifyInit_ex(m, &pc, NULL, ctx, PROPQ, k,
+                                       how == CS_DUP ? params : NULL) <= 0) {
+        goto end;
+    }
+    pc = NULL;                          /* owned by m */
+    if (how == CS_SET && params != NULL
+            && EVP_PKEY_CTX_set_params(EVP_MD_CTX_get_pkey_ctx(m), params) <= 0)
+        goto end;
+    if (how == CS_DUP) {
+        if ((m2 = EVP_MD_CTX_new()) == NULL || !EVP_MD_CTX_copy_ex(m2, m))
+            goto end;
+        EVP_MD_CTX_free(m);             /* the copy must stand on its own */
+        m = m2;
+        m2 = NULL;
+    }
+    r = sign ? EVP_DigestSign(m, sig, len, msg, sizeof(msg)) > 0
+             : EVP_DigestVerify(m, sig, *len, msg, sizeof(msg)) == 1;
+end:
+    EVP_MD_CTX_free(m);
+    EVP_MD_CTX_free(m2);
+    EVP_PKEY_CTX_free(pc);
     ERR_clear_error();
     return r;
 }
@@ -162,7 +242,8 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
         static unsigned char cs_a[] = "context A", cs_b[] = "context B";
         OSSL_PARAM pa[2], pb[2];
         size_t cslen = maxlen;
-        int bound;
+        int bound, how;
+        char what[128];
 
         pa[0] = OSSL_PARAM_construct_utf8_string(
                     OSSL_SIGNATURE_PARAM_CONTEXT_STRING, "ctx", 0);
@@ -191,6 +272,29 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
                    "context string ignored: verifies under another one");
             EXPECT(!VERIFIES(pub, sig, cslen),
                    "context string ignored: verifies without one");
+        }
+        /* The other delivery paths must give the same outcome: bound
+         * (verifies under its own context string only), or refused. */
+        for (how = 0; how < CS_HOWS; how++) {
+            int got;
+
+            cslen = maxlen;
+            if ((got = cs_op(ctx, alg, k, 1, how, pa, sig, &cslen)) < 0)
+                continue;                       /* API absent on this build */
+            snprintf(what, sizeof(what), "%s: %s", cs_how[how],
+                     bound ? "refused a context string the init path binds"
+                           : "signed although the init path refuses");
+            EXPECT(got == bound, what);
+            if (!bound)
+                continue;
+            snprintf(what, sizeof(what), "%s: not bound to its context string",
+                     cs_how[how]);
+            EXPECT(cs_op(ctx, alg, pub, 0, how, pa, sig, &cslen) == 1
+                   && cs_op(ctx, alg, pub, 0, how, pb, sig, &cslen) == 0
+                   && cs_op(ctx, alg, pub, 0, how, NULL, sig, &cslen) == 0
+                   && hybrid_test_verify(ctx, pub, sig, cslen, msg,
+                                         sizeof(msg), pa),
+                   what);
         }
 #ifdef HYBRID_COMPOSITE
         if (!is_hybrid) {
