@@ -149,6 +149,12 @@ static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
             return 0;
         }
         OPENSSL_free(ctx->ctxstr);
+        if (len == 0) {
+            /* Empty is none (FIPS 204 / draft-19 len(ctx) = 0): store nothing,
+             * so no component that cannot take one sees it. */
+            OPENSSL_free(buf);
+            buf = NULL;
+        }
         ctx->ctxstr = buf;
         ctx->ctxstrlen = len;
     }
@@ -355,9 +361,11 @@ end:
  * The rule, generalized for either-slot / PQ-PQ hybrids (issue #114): the context
  * string is applied to EVERY md-less component (ML-DSA, and for a PQ/PQ pair both
  * halves) and never to a digest-taking classical component (ECDSA/RSA have no
- * such concept). A component that does not itself honour a context string simply
- * ignores the param — best-effort, no hard failure — so a pair whose components
- * do not all support one cannot enforce domain separation across both halves.
+ * such concept), so for a classical x PQ pair only the PQ half binds it. It is
+ * passed at init and again through set_ctx_params (mdless_set_ctx_params); a
+ * component that cannot honour it refuses, failing the hybrid closed.
+ * hybrid_op_neg_test S4 checks every row (bound or refused, never ignored),
+ * whichever provider serves the component.
  */
 static OSSL_PARAM *pq_ctx_params(HYBRID_SIG_CTX *ctx, OSSL_PARAM store[2])
 {
@@ -373,6 +381,25 @@ static OSSL_PARAM *pq_ctx_params(HYBRID_SIG_CTX *ctx, OSSL_PARAM store[2])
     (void)store;                 /* ctxstr is never set without the param name */
     return NULL;
 #endif
+}
+
+/*
+ * Deliver the context string (if any) to an initialized component through its
+ * set_ctx_params as well: an implementation may honour or refuse it there but
+ * not as an init param, and an init param it skips would silently drop it. A
+ * refusal fails the hybrid operation closed (#178).
+ */
+static int mdless_set_ctx_params(EVP_MD_CTX *mctx, const HYBRID_SIG_COMP *c,
+                                 const OSSL_PARAM *pqp)
+{
+    if (pqp == NULL)
+        return 1;
+    if (EVP_PKEY_CTX_set_params(EVP_MD_CTX_get_pkey_ctx(mctx), pqp) > 0)
+        return 1;
+    ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                   "hybrid component %s cannot honour a context string",
+                   EVP_PKEY_get0_type_name(c->pkey));
+    return 0;
 }
 
 /*
@@ -395,7 +422,8 @@ static int hybrid_sig_mdless_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
         goto end;
     if (sign) {
         if (EVP_DigestSignInit_ex(mctx, NULL, NULL, key->libctx, c->propq,
-                                  c->pkey, pqp) <= 0)
+                                  c->pkey, pqp) <= 0
+                || !mdless_set_ctx_params(mctx, c, pqp))
             goto end;
         *siglen = c->max_sig;
         if (EVP_DigestSign(mctx, sig, siglen, tbs, tbslen) <= 0
@@ -403,7 +431,8 @@ static int hybrid_sig_mdless_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
             goto end;
     } else {
         if (EVP_DigestVerifyInit_ex(mctx, NULL, NULL, key->libctx, c->propq,
-                                    c->pkey, pqp) <= 0)
+                                    c->pkey, pqp) <= 0
+                || !mdless_set_ctx_params(mctx, c, pqp))
             goto end;
         if (EVP_DigestVerify(mctx, sig, *siglen, tbs, tbslen) <= 0)
             goto end;

@@ -136,7 +136,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — X-Wing KAT interop: decapsulate the draft's reference ciphertexts under its decap keys; on 3.5+ also re-derives keys from seeds.
 #### 24. composite_sig_test
 
-— Composite combiner self-consistency, driving `composite_sig.c` directly (unit level, below the provider).
+— Composite combiner self-consistency, driving `composite_sig.c` directly (unit level, below the provider): sign/verify, tamper, a context string bound against near misses (case, truncated, extended, one byte changed, one byte, empty, none), over-long refused, and the draft's two worked M' samples.
 #### 25. composite_test
 
 — Provider-level composite signatures through EVP by name (`provider=hybrid`): keygen/sign/verify per combo.
@@ -145,7 +145,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — Composite signatures as CMS SignedData (signed attrs + `-noattr`) per combo, plus the direct message-signature API round-trip.
 #### 27. composite_kat_test
 
-— draft-19 reference KAT interop for composite signatures (cross-impl vs lamps-wg/draft-composite-sigs); 3.5+ only.
+— draft-19 reference KAT interop for composite signatures (cross-impl vs lamps-wg/draft-composite-sigs), covering every vector field: `s`, `sWithContext` under the draft's `ctx` (and that ctx is bound), `sk` import, a fresh signature by `sk`, `sk_pkcs8` decode, and the self-signed `x5c`; 3.5+ only.
 #### 28. composite_kem_test
 
 — Composite KEM combiner self-consistency + draft X25519 combiner KAT, driving `composite_kem.c` directly over EVP-generated components. Covers **both** tiers — standardized ML-KEM from the default provider (3.5+) and experimental Frodo/BIKE/HQC from oqsprovider (best-effort loaded; combos self-skip only if their PQ provider is absent).
@@ -166,13 +166,13 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — Leak-check with teeth: exercise+free every allocation path across all 138 algorithms, unload-clean before LSan (no broad libcrypto catch-all).
 #### 41. hybrid_op_neg_test
 
-— Operation misuse across every family: missing key material at init, short output buffers, malformed signatures and ciphertexts must fail cleanly (never the real secret).
+— Operation misuse across every family: missing key material at init, short output buffers, malformed signatures and ciphertexts must fail cleanly (never the real secret). Signature context strings must be bound (a signature verifies only under its own context string) or refused, never ignored, whichever way they are delivered: init param, set after init, a copied context, or the streaming message-signature API.
 #### 42. hybrid_dispatch_test
 
 — Entry points no round-trip reaches: key dup, ctx dup (incl. mid-stream), param introspection, set_params guards. A hybrid's dup must match exactly the worst of its components' own dups (probed from the same provider), so a component-provider limit is asserted precisely; composite keys must always copy faithfully.
 #### 43. hybrid_alloc_fail_test
 
-— Allocation-failure injection: each provider-site allocation (keygen, operation round-trip, key file, provider load) is failed in turn; the run must fail closed (no corrupted signature verifies, no wrong secret) with no provider block leaked.
+— Allocation-failure injection: each provider-site allocation (keygen, operation round-trip, key file, provider load) is failed in turn; the run must fail closed (no corrupted signature verifies, no signature verifies under another context string, no wrong secret) with no provider block leaked. Signature rows that bind context strings also sign under one through a copied operation context.
 
 ### Benchmarks (guard-only smoke under `ctest`)
 

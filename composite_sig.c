@@ -53,10 +53,12 @@
  * prehash (the Ed448 combo); a fixed-length digest just uses its natural size. */
 #define COMPOSITE_XOF_PH_BYTES 64
 
-/* PH(M): PREFIX || label || 0x00 (empty ctx) || digest(prehash, M). */
-static int build_mprime(const COMPOSITE_SIG_INFO *info, OSSL_LIB_CTX *libctx,
-                        const unsigned char *msg, size_t msglen,
-                        unsigned char **out, size_t *outlen)
+/* M' = PREFIX || label || len(ctx) || ctx || digest(prehash, M). */
+int composite_build_mprime(const COMPOSITE_SIG_INFO *info,
+                           OSSL_LIB_CTX *libctx,
+                           const unsigned char *msg, size_t msglen,
+                           const unsigned char *ctx, size_t ctxlen,
+                           unsigned char **out, size_t *outlen)
 {
     static const char prefix[] = COMPOSITE_SIG_PREFIX; /* no trailing NUL used */
     /* Provider-neutral message prehash: fetched from the provider's libctx with
@@ -70,6 +72,12 @@ static int build_mprime(const COMPOSITE_SIG_INFO *info, OSSL_LIB_CTX *libctx,
     unsigned char *buf = NULL;
     int ret = 0;
 
+    if (ctxlen > COMPOSITE_SIG_CTX_MAX || (ctxlen > 0 && ctx == NULL)) {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                       "composite context string longer than %d bytes",
+                       COMPOSITE_SIG_CTX_MAX);
+        goto end;
+    }
     if (md == NULL || mc == NULL
             || EVP_DigestInit_ex2(mc, md, NULL) <= 0
             || EVP_DigestUpdate(mc, msg, msglen) <= 0)
@@ -85,13 +93,15 @@ static int build_mprime(const COMPOSITE_SIG_INFO *info, OSSL_LIB_CTX *libctx,
         phlen = l;
     }
 
-    *outlen = plen + llen + 1 + phlen;
+    *outlen = plen + llen + 1 + ctxlen + phlen;
     if ((buf = OPENSSL_malloc(*outlen)) == NULL)
         goto end;
     memcpy(buf, prefix, plen);
     memcpy(buf + plen, info->label, llen);
-    buf[plen + llen] = 0x00;              /* len(ctx) = 0, ctx absent */
-    memcpy(buf + plen + llen + 1, ph, phlen);
+    buf[plen + llen] = (unsigned char)ctxlen;     /* len(ctx), one octet */
+    if (ctxlen > 0)
+        memcpy(buf + plen + llen + 1, ctx, ctxlen);
+    memcpy(buf + plen + llen + 1 + ctxlen, ph, phlen);
     *out = buf;
     ret = 1;
 end:
@@ -100,7 +110,13 @@ end:
     return ret;
 }
 
-/* ML-DSA component: one-shot over M' with context string = label. */
+/*
+ * PQ component: one-shot over M'. draft-19 passes the Label to ML-DSA as its
+ * own context string (mldsa_ctx = Label), so the standardized (ML-DSA) tier
+ * sets it -- after init, where a component must honour or refuse it, and a
+ * refusal fails closed. The experimental tier's components (Falcon, MAYO, ...)
+ * have no context-string input; the Label still reaches them inside M'.
+ */
 static int pq_op(int sign, const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq,
                  OSSL_LIB_CTX *libctx, const char *propq,
                  const unsigned char *mp, size_t mplen,
@@ -119,17 +135,25 @@ static int pq_op(int sign, const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq,
     sp[1] = OSSL_PARAM_construct_end();
     if (m == NULL)
         goto end;
+    if ((sign ? EVP_DigestSignInit_ex(m, NULL, NULL, libctx, propq, pq, NULL)
+              : EVP_DigestVerifyInit_ex(m, NULL, NULL, libctx, propq, pq,
+                                        NULL)) <= 0)
+        goto end;
+    if (info->tier == COMPOSITE_TIER_STANDARD
+            && EVP_PKEY_CTX_set_params(EVP_MD_CTX_get_pkey_ctx(m), sp) <= 0) {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                       "%s: PQ component %s refused the Label as its context "
+                       "string", info->name, info->pq_alg);
+        goto end;
+    }
     if (sign) {
-        if (EVP_DigestSignInit_ex(m, NULL, NULL, libctx, propq, pq, sp) <= 0
-                || EVP_DigestSign(m, NULL, &l, mp, mplen) <= 0
+        if (EVP_DigestSign(m, NULL, &l, mp, mplen) <= 0
                 || (s = OPENSSL_malloc(l)) == NULL
                 || EVP_DigestSign(m, s, &l, mp, mplen) <= 0)
             goto end;
         *osig = s; *olen = l; s = NULL;
-    } else {
-        if (EVP_DigestVerifyInit_ex(m, NULL, NULL, libctx, propq, pq, sp) <= 0
-                || EVP_DigestVerify(m, isig, ilen, mp, mplen) != 1)
-            goto end;
+    } else if (EVP_DigestVerify(m, isig, ilen, mp, mplen) != 1) {
+        goto end;
     }
     ret = 1;
 end:
@@ -192,13 +216,15 @@ end:
 int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                    OSSL_LIB_CTX *libctx, const char *alg2_propq,
                    const char *trad_propq, const unsigned char *msg,
-                   size_t msglen, unsigned char **sig, size_t *siglen)
+                   size_t msglen, const unsigned char *ctx, size_t ctxlen,
+                   unsigned char **sig, size_t *siglen)
 {
     unsigned char *mp = NULL, *pqsig = NULL, *tradsig = NULL;
     size_t mplen = 0, pqlen = 0, tradlen = 0;
     int ret = 0;
 
-    if (!build_mprime(info, libctx, msg, msglen, &mp, &mplen)) {
+    if (!composite_build_mprime(info, libctx, msg, msglen, ctx, ctxlen,
+                                &mp, &mplen)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "composite sign: message prehash (M') failed");
         goto end;
@@ -232,7 +258,8 @@ end:
 int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                      OSSL_LIB_CTX *libctx, const char *alg2_propq,
                      const char *trad_propq, const unsigned char *msg,
-                     size_t msglen, const unsigned char *sig, size_t siglen)
+                     size_t msglen, const unsigned char *ctx, size_t ctxlen,
+                     const unsigned char *sig, size_t siglen)
 {
     unsigned char *mp = NULL;
     size_t mplen = 0;
@@ -252,7 +279,8 @@ int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *tra
                        "the %d-byte PQ component", siglen, pqfixed);
         return 0;                          /* need room for both components */
     }
-    if (!build_mprime(info, libctx, msg, msglen, &mp, &mplen)) {
+    if (!composite_build_mprime(info, libctx, msg, msglen, ctx, ctxlen,
+                                &mp, &mplen)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "composite verify: message prehash (M') failed");
         goto end;
@@ -287,6 +315,9 @@ typedef struct {
      * message in final(). Freed in freectx, deep-copied in dupctx.
      */
     HYBRID_MSG_ACCUM stream;
+    /* Caller context string, bound into M' (inline: a struct copy dups it). */
+    unsigned char ctxstr[COMPOSITE_SIG_CTX_MAX];
+    size_t ctxstrlen;
 } COMPOSITE_SIGCTX;
 
 static void *composite_sig_newctx(void *provctx, const char *propq)
@@ -322,6 +353,54 @@ err:
     return NULL;
 }
 
+/*
+ * Apply the settable ctx params: the context string (3.2+ name), and for the
+ * streaming verify-message path (3.4+) the signature to check, which
+ * verify_message_final() cannot take as an argument. Shared by the inits and
+ * set_ctx_params.
+ */
+static int composite_sig_apply_params(COMPOSITE_SIGCTX *c,
+                                      const OSSL_PARAM params[])
+{
+#ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+    const OSSL_PARAM *p;
+    void *buf = c->ctxstr;
+    size_t len = 0;
+
+    if (params == NULL)
+        return 1;
+    p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
+    if (p != NULL) {
+        if (p->data_type != OSSL_PARAM_OCTET_STRING) {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                           "composite context-string must be an octet string");
+            return 0;
+        }
+        /* draft-19 Sign/Verify step 1: len(ctx) > 255 MUST be an error. */
+        if (p->data_size > COMPOSITE_SIG_CTX_MAX) {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                           "composite context-string of %zu bytes exceeds "
+                           "the maximum of %d", p->data_size,
+                           COMPOSITE_SIG_CTX_MAX);
+            return 0;
+        }
+        if (!OSSL_PARAM_get_octet_string(p, &buf, sizeof(c->ctxstr), &len)) {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                           "cannot read the composite context string");
+            return 0;
+        }
+        c->ctxstrlen = len;
+    }
+#endif
+#ifdef COMPOSITE_HAVE_MSG_SIG
+    return hybrid_msg_accum_set_sig_param(&c->stream, params);
+#else
+    (void)c;
+    (void)params;
+    return 1;
+#endif
+}
+
 static int composite_sig_sign_init(void *vctx, const char *mdname, void *vkey,
                                    const OSSL_PARAM params[])
 {
@@ -336,7 +415,7 @@ static int composite_sig_sign_init(void *vctx, const char *mdname, void *vkey,
         return 0;
     }
     c->key = k;
-    return 1;
+    return composite_sig_apply_params(c, params);
 }
 
 static int composite_sig_verify_init(void *vctx, const char *mdname, void *vkey,
@@ -353,7 +432,7 @@ static int composite_sig_verify_init(void *vctx, const char *mdname, void *vkey,
         return 0;
     }
     c->key = k;
-    return 1;
+    return composite_sig_apply_params(c, params);
 }
 
 static int composite_sig_digest_sign(void *vctx, unsigned char *sig,
@@ -372,7 +451,8 @@ static int composite_sig_digest_sign(void *vctx, unsigned char *sig,
         return 1;
     }
     if (!composite_sign(k->info, k->pq_key, k->trad_key, k->libctx,
-                        k->alg2_propq, k->trad_propq, tbs, tbslen, &tmp, &tlen))
+                        k->alg2_propq, k->trad_propq, tbs, tbslen,
+                        c->ctxstr, c->ctxstrlen, &tmp, &tlen))
         return 0;                            /* composite_sign already raised */
     if (tlen <= sigsize) {
         memcpy(sig, tmp, tlen);
@@ -395,7 +475,8 @@ static int composite_sig_digest_verify(void *vctx, const unsigned char *sig,
     COMPOSITE_KEY *k = c->key;
 
     return composite_verify(k->info, k->pq_key, k->trad_key, k->libctx,
-                            k->alg2_propq, k->trad_propq, tbs, tbslen, sig, siglen);
+                            k->alg2_propq, k->trad_propq, tbs, tbslen,
+                            c->ctxstr, c->ctxstrlen, sig, siglen);
 }
 
 #ifdef COMPOSITE_HAVE_MSG_SIG
@@ -465,31 +546,27 @@ static int composite_sig_verify_message_final(void *vctx)
                                        c->stream.msg, c->stream.msglen);
 }
 
-/*
- * Receive the signature to check for the streaming verify-message path:
- * verify_message_final() takes only the ctx, so libcrypto delivers the signature
- * here as an octet string before calling it. Composite has no context-string or
- * other settable params, so this is the only one handled.
- */
+#endif /* COMPOSITE_HAVE_MSG_SIG */
+
 static int composite_sig_set_ctx_params(void *vctx, const OSSL_PARAM params[])
 {
-    COMPOSITE_SIGCTX *c = vctx;
-
-    if (params == NULL)
-        return 1;
-    return hybrid_msg_accum_set_sig_param(&c->stream, params);
+    return composite_sig_apply_params(vctx, params);
 }
 
 static const OSSL_PARAM *composite_sig_settable_ctx_params(void *vctx,
                                                            void *provctx)
 {
     static const OSSL_PARAM params[] = {
+#ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+        OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING, NULL, 0),
+#endif
+#ifdef COMPOSITE_HAVE_MSG_SIG
         OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_SIGNATURE, NULL, 0),
+#endif
         OSSL_PARAM_END
     };
     return params;
 }
-#endif /* COMPOSITE_HAVE_MSG_SIG */
 
 /* Provide the X.509 AlgorithmIdentifier (DER SEQUENCE { composite OID }, absent
  * parameters) so X509_sign()/verify and TLS CertificateVerify can label the
@@ -565,11 +642,11 @@ const OSSL_DISPATCH composite_sig_functions[] = {
       (void (*)(void))composite_sig_signverify_message_update },
     { OSSL_FUNC_SIGNATURE_VERIFY_MESSAGE_FINAL,
       (void (*)(void))composite_sig_verify_message_final },
+#endif
     { OSSL_FUNC_SIGNATURE_SET_CTX_PARAMS,
       (void (*)(void))composite_sig_set_ctx_params },
     { OSSL_FUNC_SIGNATURE_SETTABLE_CTX_PARAMS,
       (void (*)(void))composite_sig_settable_ctx_params },
-#endif
     { OSSL_FUNC_SIGNATURE_GET_CTX_PARAMS,
       (void (*)(void))composite_sig_get_ctx_params },
     { OSSL_FUNC_SIGNATURE_GETTABLE_CTX_PARAMS,

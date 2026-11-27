@@ -5,10 +5,17 @@ The KAT file is vendored so the tests stay hermetic (no network at test time),
 but it must not silently go stale: run this to refresh it from the pinned draft
 revision, and bump TAG when moving to a newer draft.
 
-    python3 test/regen_composite_kat.py > test/composite_kat.txt
+    python3 test/regen_composite_kat.py [testvectors.json] > test/composite_kat.txt
 
-Source of truth: lamps-wg/draft-composite-sigs src/testvectors.json (m/pk/s are
-base64 there; we emit hex). `s` is the signature over m with an empty context.
+(an optional local copy of the pinned testvectors.json avoids the download).
+
+Source of truth: lamps-wg/draft-composite-sigs src/testvectors.json (base64
+there; we emit hex). EVERY field the draft ships is vendored and tested by
+composite_kat_test, so none can silently go unchecked: the shared message `m`
+and context string `ctx`, and per vector `pk`, `s` (signature over m, empty
+ctx), `sWithContext` (over m with ctx), `sk` (raw private key), `sk_pkcs8` and
+`x5c` (self-signed certificate). The plain ML-DSA vectors (id-ML-DSA-*) are the
+default provider's algorithms, not ours, and are deliberately not vendored.
 """
 import base64
 import json
@@ -18,6 +25,15 @@ import urllib.request
 TAG = "draft-ietf-lamps-pq-composite-sigs-19"
 URL = ("https://raw.githubusercontent.com/lamps-wg/draft-composite-sigs/"
        + TAG + "/src/testvectors.json")
+
+# Vendored per-vector fields, in KAT-file column order (after the name). The
+# list is explicit, not derived from the JSON: each field needs a test, and
+# composite_kat_test indexes these columns by name (its KAT_* offsets and
+# kat_col_name). Staying in sync is enforced, not trusted: main() refuses any
+# field the source has that is not listed here, or lacks one that is, and the
+# emitted "#! columns:" header is checked by composite_kat_test against its own
+# layout.
+FIELDS = ("pk", "s", "sWithContext", "sk", "sk_pkcs8", "x5c")
 
 # testvectors.json tcId -> the algorithm name this provider registers.
 # Full draft-19 standardized matrix (18 combos, OIDs .37 .. .54).
@@ -48,22 +64,39 @@ def hexof(b64):
 
 
 def main():
-    with urllib.request.urlopen(URL) as f:      # nosec: pinned, read-only
-        data = json.load(f)
-    msg = hexof(data["m"])
+    if len(sys.argv) > 1:
+        with open(sys.argv[1]) as f:
+            data = json.load(f)
+    else:
+        with urllib.request.urlopen(URL) as f:  # nosec: pinned, read-only
+            data = json.load(f)
+    unknown = set(data) - {"m", "ctx", "tests"}
+    if unknown:
+        sys.exit("unvendored top-level fields: %s" % ", ".join(sorted(unknown)))
     lines = [
         "# Composite ML-DSA KAT vectors from draft-ietf-lamps-pq-composite-sigs",
         "# source: lamps-wg/draft-composite-sigs %s src/testvectors.json" % TAG,
         "# regenerate: python3 test/regen_composite_kat.py > test/composite_kat.txt",
-        "# format: <name> <msg_hex> <pubkey_hex> <sig_hex>"
-        "  (signature over msg, empty context)",
+        "# format: m <msg_hex> | ctx <ctx_hex> | <name> " + " ".join(
+            "<%s_hex>" % k for k in FIELDS),
+        "#! columns: " + " ".join(("name",) + FIELDS),
+        "m %s" % hexof(data["m"]),
+        "ctx %s" % hexof(data["ctx"]),
     ]
     seen = set()
     for t in data["tests"]:
         name = NAMES.get(t["tcId"])
         if name is None:
             continue
-        lines.append("%s %s %s %s" % (name, msg, hexof(t["pk"]), hexof(t["s"])))
+        unknown = set(t) - set(FIELDS) - {"tcId"}
+        if unknown:
+            sys.exit("%s: unvendored fields: %s"
+                     % (t["tcId"], ", ".join(sorted(unknown))))
+        absent = set(FIELDS) - set(t)
+        if absent:
+            sys.exit("%s: fields missing from the source: %s"
+                     % (t["tcId"], ", ".join(sorted(absent))))
+        lines.append(" ".join([name] + [hexof(t[k]) for k in FIELDS]))
         seen.add(t["tcId"])
     missing = set(NAMES) - seen
     if missing:

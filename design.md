@@ -320,6 +320,12 @@ are never blurred:
 | **standardized** | ML-DSA only | IANA/LAMPS registered (`…6.37`–`.54`) | byte-exact vs BouncyCastle / future OpenSSL-native; normative |
 | **experimental** | any other PQ sig — one per NIST level per OQS family: Falcon (padded), MAYO, CROSS, UOV, SNOVA, MQOM2 | disjoint private arc `1.3.9999.99.*` (a leaf of the arc OQS uses for its own hybrids) | non-normative; interop only with this provider (oqsprovider supplies the PQ components but implements no composites) |
 
+The experimental tier reuses the draft's construction with one difference: its
+PQ components (Falcon, MAYO, …) have no context-string input, so they sign `M'`
+alone, with no `ctx=Label`. The Label still binds them, inside `M'`. The
+standardized tier sets ML-DSA's `ctx=Label` after init, where a refusal fails
+closed rather than being skipped.
+
 The split keeps *cede-to-default* symmetric with the hybrid family (see Future
 work): when OpenSSL ships native composite (ML-DSA only), the standardized subset
 can be ceded cleanly while the experimental arc stays, and no experimental combo
@@ -676,8 +682,11 @@ RSA and the groupless PQ algorithms are groupless
 ([#125](https://github.com/baentsch/hybrid-provider/issues/125) lifted the former
 `alg1`-only limit). A
 per-operation context string, if set, is applied to every md-less component (both
-halves of a PQ/PQ pair) and never to a digest-taking one; a component that does
-not itself honour a context string ignores it (best-effort, no hard failure).
+halves of a PQ/PQ pair) and never to a digest-taking one, so for a classical x PQ
+pair only the PQ half binds it. It is delivered at init and again through the
+component's set_ctx_params; a component that cannot honour it refuses, and the
+hybrid operation fails closed rather than drop it
+([#178](https://github.com/baentsch/hybrid-provider/issues/178)).
 
 ### Sign
 

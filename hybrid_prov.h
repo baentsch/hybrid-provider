@@ -1362,6 +1362,10 @@ int hybrid_component_pkcs8_param(OSSL_PARAM *p, EVP_PKEY *comp);
 int hybrid_component_raw_pub(EVP_PKEY *comp, unsigned char **out, size_t *outlen);
 EVP_PKEY *hybrid_component_dup_public(OSSL_LIB_CTX *libctx, const char *propq,
                                       EVP_PKEY *comp);
+/* Signature context strings carry a one-octet length: at most 255 bytes
+ * (FIPS 204 sec. 5.2, FIPS 205, draft-ietf-lamps-pq-composite-sigs). */
+#define HYBRID_SIG_CTX_MAX 255
+
 /* Signature inits take no caller digest: each component's digest is fixed by
  * the algorithm. As ML-DSA/SLH-DSA/EdDSA do, refuse one rather than silently
  * override it (the keys advertise an empty MANDATORY_DIGEST, so libcrypto
