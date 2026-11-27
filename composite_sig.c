@@ -54,10 +54,11 @@
 #define COMPOSITE_XOF_PH_BYTES 64
 
 /* M' = PREFIX || label || len(ctx) || ctx || digest(prehash, M). */
-static int build_mprime(const COMPOSITE_SIG_INFO *info, OSSL_LIB_CTX *libctx,
-                        const unsigned char *msg, size_t msglen,
-                        const unsigned char *ctx, size_t ctxlen,
-                        unsigned char **out, size_t *outlen)
+int composite_build_mprime(const COMPOSITE_SIG_INFO *info,
+                           OSSL_LIB_CTX *libctx,
+                           const unsigned char *msg, size_t msglen,
+                           const unsigned char *ctx, size_t ctxlen,
+                           unsigned char **out, size_t *outlen)
 {
     static const char prefix[] = COMPOSITE_SIG_PREFIX; /* no trailing NUL used */
     /* Provider-neutral message prehash: fetched from the provider's libctx with
@@ -208,7 +209,8 @@ int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
     size_t mplen = 0, pqlen = 0, tradlen = 0;
     int ret = 0;
 
-    if (!build_mprime(info, libctx, msg, msglen, ctx, ctxlen, &mp, &mplen)) {
+    if (!composite_build_mprime(info, libctx, msg, msglen, ctx, ctxlen,
+                                &mp, &mplen)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "composite sign: message prehash (M') failed");
         goto end;
@@ -263,7 +265,8 @@ int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *tra
                        "the %d-byte PQ component", siglen, pqfixed);
         return 0;                          /* need room for both components */
     }
-    if (!build_mprime(info, libctx, msg, msglen, ctx, ctxlen, &mp, &mplen)) {
+    if (!composite_build_mprime(info, libctx, msg, msglen, ctx, ctxlen,
+                                &mp, &mplen)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "composite verify: message prehash (M') failed");
         goto end;

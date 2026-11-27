@@ -10,7 +10,9 @@
  * or oqsprovider for the experimental tier), signs a message, verifies it (must
  * pass), then tampers a byte and verifies again (must fail). A signature made
  * under a context string verifies only under that same context string (it is
- * bound into M'), and an over-long one is refused. Combos whose
+ * bound into M'), and an over-long one is refused. M' itself is checked
+ * byte-for-byte against the draft's two worked samples (with and without ctx).
+ * Combos whose
  * components are unavailable (e.g. ML-DSA on 3.4, or mayo2 without oqsprovider)
  * self-skip.
  *
@@ -138,6 +140,63 @@ done:
     EVP_PKEY_free(trad);
 }
 
+/*
+ * The draft's worked M' samples, verbatim (draft-ietf-lamps-pq-composite-
+ * sigs-19 src/messageFormatSample_noctx.md and _ctx.md, included in its
+ * appendix): id-MLDSA65-ECDSA-P256-SHA512, M = 00..09.
+ */
+#define MPRIME_SAMPLE_ALG "mldsa65_ecdsa_p256"
+#define MPRIME_PH "0f89ee1fcb7b0a4f7809d1267a029719004c5a5e5ec323a7c3523a20974f" \
+    "9a3f202f56fadba4cd9e8d654ab9f2e96dc5c795ea176fa20ede8d854c342f903533"
+#define MPRIME_HEAD "436f6d706f73697465416c676f726974686d5369676e61747572" \
+    "657332303235434f4d505349472d4d4c44534136352d45434453412d503235362d" \
+    "534841353132"
+static const struct {
+    const char *what, *ctx_hex, *mprime_hex;
+} mprime_samples[] = {
+    { "no ctx", "", MPRIME_HEAD "00" MPRIME_PH },
+    { "ctx", "0813061205162623",
+      MPRIME_HEAD "08" "0813061205162623" MPRIME_PH },
+};
+
+static void check_mprime_samples(OSSL_LIB_CTX *ctx)
+{
+    static const unsigned char m[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    const COMPOSITE_SIG_INFO *info = NULL;
+    size_t i;
+
+    for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
+        if (strcmp(composite_sig_table[i].name, MPRIME_SAMPLE_ALG) == 0)
+            info = &composite_sig_table[i];
+    for (i = 0; i < sizeof(mprime_samples) / sizeof(mprime_samples[0]); i++) {
+        unsigned char *cs = NULL, *mp = NULL, *want = NULL;
+        long cslen = 0, wantlen = 0;
+        size_t mplen = 0;
+        int ok;
+
+        tests++;
+        printf("  %-22s draft M' sample (%s) ... ", MPRIME_SAMPLE_ALG,
+               mprime_samples[i].what);
+        if (mprime_samples[i].ctx_hex[0] != '\0')
+            cs = OPENSSL_hexstr2buf(mprime_samples[i].ctx_hex, &cslen);
+        want = OPENSSL_hexstr2buf(mprime_samples[i].mprime_hex, &wantlen);
+        ok = info != NULL && want != NULL
+            && (cs != NULL || cslen == 0)
+            && composite_build_mprime(info, ctx, m, sizeof(m), cs,
+                                      (size_t)cslen, &mp, &mplen)
+            && mplen == (size_t)wantlen && memcmp(mp, want, mplen) == 0;
+        printf(ok ? "PASS\n" : "FAIL (M' differs from the draft sample)\n");
+        if (ok)
+            passed++;
+        else
+            failed++;
+        ERR_clear_error();
+        OPENSSL_free(cs);
+        OPENSSL_free(mp);
+        OPENSSL_free(want);
+    }
+}
+
 int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
@@ -156,6 +215,7 @@ int main(void)
 
     printf("composite (LAMPS) combiner self-consistency\n");
     printf("===========================================\n");
+    check_mprime_samples(ctx);
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
         check(ctx, &composite_sig_table[i]);
 

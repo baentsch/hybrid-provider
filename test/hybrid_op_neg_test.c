@@ -15,7 +15,8 @@
  *     S4. context string (3.2+): the wrong OSSL_PARAM type is refused; a
  *         signature made under one never verifies under another or none —
  *         every component binds it or refuses it (fail closed, whatever its
- *         provider); composite binds it into M', so there it must sign
+ *         provider); composite binds it into M', so there it must sign,
+ *         and refuses one over 255 bytes
  *     S5. streaming verify-final without the SIGNATURE ctx-param (3.4+)
  *     S6. digest sign/verify-init with an explicit digest name
  *
@@ -191,6 +192,19 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
             EXPECT(!VERIFIES(pub, sig, cslen),
                    "context string ignored: verifies without one");
         }
+#ifdef HYBRID_COMPOSITE
+        if (!is_hybrid) {
+            /* draft-19: len(ctx) > 255 MUST be an error. */
+            static unsigned char cs_long[COMPOSITE_SIG_CTX_MAX + 1];
+
+            pa[0] = OSSL_PARAM_construct_octet_string(
+                        OSSL_SIGNATURE_PARAM_CONTEXT_STRING, cs_long,
+                        sizeof(cs_long));
+            EVP_MD_CTX_reset(m);
+            EXPECT(!sign_init(ctx, m, k, pa),
+                   "composite accepted a context string over 255 bytes");
+        }
+#endif
     }
 #endif
 

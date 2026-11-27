@@ -390,6 +390,12 @@ int composite_key_load_prv(COMPOSITE_KEY *key,
  * (PQ one-shot with context = label; classic with trad_md, or pure for Ed), and
  * concatenates PQ-sig || trad-sig. Verify splits at the fixed ML-DSA signature
  * length. *sig is malloc'd; caller frees. */
+/* M' alone into *out (caller frees); exposed for the draft's M' samples. */
+int composite_build_mprime(const COMPOSITE_SIG_INFO *info,
+                           OSSL_LIB_CTX *libctx,
+                           const unsigned char *msg, size_t msglen,
+                           const unsigned char *ctx, size_t ctxlen,
+                           unsigned char **out, size_t *outlen);
 int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                    OSSL_LIB_CTX *libctx, const char *alg2_propq,
                    const char *trad_propq, const unsigned char *msg,

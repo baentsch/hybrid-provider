@@ -130,12 +130,11 @@ all-zero shared secret).
 ### 2.3 Composite signatures — `draft-ietf-lamps-pq-composite-sigs-19`
 
 LAMPS standards-track (Active I-D, v19). Full **18-combo standardized matrix**,
-OIDs `1.3.6.1.5.5.7.6.37 … .54`, each verifying the draft's reference signature
-over an empty context (`composite_kat_test`). ML-DSA (FIPS 204) only.
+OIDs `1.3.6.1.5.5.7.6.37 … .54`, each verified against **every field** of the
+draft's reference test vectors (`composite_kat_test`). ML-DSA (FIPS 204) only.
 Message-representative construction `M' = prefix || label || len(ctx) || ctx ||
-PH(M)`, raw-concat serialization. A caller's context string is **not yet**
-supported: M' is always built with an empty one, and a context string the caller
-sets is ignored (fix in #182). **Normative** (byte-exact vs. BouncyCastle /
+PH(M)` with a caller context string of up to 255 bytes (longer is refused),
+raw-concat serialization. **Normative** (byte-exact vs. BouncyCastle /
 future OpenSSL-native).
 
 These composite signatures are also exercised through CMS `SignedData` — the
@@ -173,11 +172,13 @@ points in a range that collided with OpenSSL 4.1 native SLH-DSA (`0x0912`), so t
 provider assigns **private-use** points `0xFFE0…` (RFC 8446 §4.2.3) instead. See
 `design.md` §get_capabilities.
 
-**Conformance evidence.** *Tested:* for all 18 combos, the draft-19 reference
-signature `s` (empty context) verifies under the reference `pk`; CMS sign/verify
-round-trips in both SignerInfo modes. *Not yet supported:* the caller's context
-string (above; #182). *Not yet tested:* the vectors' `sWithContext`, `sk`,
-`sk_pkcs8` and `x5c` fields; the draft's worked M' samples; and the CMS
+**Conformance evidence.** *Tested:* for all 18 combos, every field of the
+draft-19 reference vectors: `s` and `sWithContext` verify (the latter under the
+draft's `ctx`, which must also be bound), `sk` imports to `pk` and signs, the
+`sk_pkcs8` decode matches `sk` byte-for-byte, and the self-signed `x5c` carries
+`pk` and verifies. M' matches the draft's two worked samples byte-for-byte
+(`composite_sig_test`), and a context string over 255 bytes is refused. CMS
+sign/verify round-trips in both SignerInfo modes. *Not yet tested:* the CMS
 conformance points above (per-combo `digestAlgorithm`, Appendix B example).
 
 ### 2.4 Composite ML-KEM — `draft-ietf-lamps-pq-composite-kem-18`

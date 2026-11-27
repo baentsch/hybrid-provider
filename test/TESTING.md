@@ -145,7 +145,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — Composite signatures as CMS SignedData (signed attrs + `-noattr`) per combo, plus the direct message-signature API round-trip.
 #### 27. composite_kat_test
 
-— draft-19 reference KAT interop for composite signatures (cross-impl vs lamps-wg/draft-composite-sigs); 3.5+ only.
+— draft-19 reference KAT interop for composite signatures (cross-impl vs lamps-wg/draft-composite-sigs), covering every vector field: `s`, `sWithContext` under the draft's `ctx` (and that ctx is bound), `sk` import, a fresh signature by `sk`, `sk_pkcs8` decode, and the self-signed `x5c`; 3.5+ only.
 #### 28. composite_kem_test
 
 — Composite KEM combiner self-consistency + draft X25519 combiner KAT, driving `composite_kem.c` directly over EVP-generated components. Covers **both** tiers — standardized ML-KEM from the default provider (3.5+) and experimental Frodo/BIKE/HQC from oqsprovider (best-effort loaded; combos self-skip only if their PQ provider is absent).
