@@ -379,7 +379,7 @@ typedef struct hybrid_key_st {
       "MLKEM768",  1, 0x11ee, 192, "curveSM2+ML-KEM-768", NULL)\
   /* --- oqsprovider OQS-legacy ML-KEM hybrids --- */                         \
   /* mlkem512 P-256/X25519 code points follow                                 \
-   * draft-rosomakho-tls-ecdhe-mlkem512-00 (0x11e9/0x11ea, adopted by          \
+   * draft-rosomakho-tls-ecdhe-mlkem512-01 (0x11e9/0x11ea, adopted by          \
    * oqsprovider #802); the P-256 row also takes the draft's SecP256r1MLKEM512 \
    * name. OIDs are retained (oqsprovider's, per its generate.yml). */         \
   X(x25519_mlkem512,   "x25519_mlkem512",    "X25519", NULL,            0,    \
@@ -1412,7 +1412,7 @@ EVP_PKEY *hybrid_component_d2i_rsa_pub(OSSL_LIB_CTX *libctx, const char *propq,
  *   - IANA-assigned span: the ML-KEM-hybrid NamedGroups, registered as the
  *     contiguous span 0x11E9..0x11EE. 0x11EB..0x11ED are RFC 10024
  *     (ex draft-ietf-tls-ecdhe-mlkem; ML-KEM 768/1024); 0x11E9..0x11EA are the ML-KEM-512 tier added by
- *     draft-rosomakho-tls-ecdhe-mlkem512-00 (adopted by oqsprovider #802); 0x11EE
+ *     draft-rosomakho-tls-ecdhe-mlkem512-01 (adopted by oqsprovider #802); 0x11EE
  *     is curveSM2MLKEM768, the RFC 8998 SM2 group OpenSSL 4.0 added at the top of
  *     the span. The only standards-track values we use; taken verbatim from the
  *     assignments (OpenSSL's internal/tlsgroups.h).
