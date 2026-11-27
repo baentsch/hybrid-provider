@@ -58,8 +58,8 @@
  * standardized and experimental; the per-combo `label` differentiates them. */
 #define COMPOSITE_SIG_PREFIX "CompositeAlgorithmSignatures2025"
 /* Caller context string bound into M': len(ctx) is a single octet (draft-19),
- * so at most 255 bytes. */
-#define COMPOSITE_SIG_CTX_MAX 255
+ * so at most 255 bytes, as for ML-DSA. */
+#define COMPOSITE_SIG_CTX_MAX HYBRID_SIG_CTX_MAX
 
 /* The PQ private split length is discovered at runtime from the component
  * algorithm (info->pq_priv_param on a fresh key) — no hardcoded seed size, so a

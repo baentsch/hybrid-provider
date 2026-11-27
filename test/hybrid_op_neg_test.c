@@ -108,7 +108,9 @@ static int cs_op(OSSL_LIB_CTX *ctx, const char *alg, EVP_PKEY *k, int sign,
     if (how == CS_STREAM) {
 #ifdef OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT
         EVP_SIGNATURE *s = EVP_SIGNATURE_fetch(ctx, alg, PROPQ);
-        size_t half = sizeof(msg) / 2;
+        /* Two unequal fragments (the second is the remainder), so an odd
+         * split is exercised whatever msg's length. */
+        size_t half = sizeof(msg) / 3;
 
         pc = EVP_PKEY_CTX_new_from_pkey(ctx, k, PROPQ);
         r = s != NULL && pc != NULL
@@ -301,6 +303,9 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
          * draft-19 both use len(ctx) = 0 for "none"): every row must sign
          * under it, and the two must be interchangeable, on every path. */
         {
+            /* A real, non-NULL buffer passed with length 0: the empty
+             * string, as distinct from no parameter (NULL below). Its
+             * content is never read; static only for a stable address. */
             static unsigned char cs_e[1];
             OSSL_PARAM pe[2];
 
@@ -310,17 +315,20 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
             EVP_MD_CTX_reset(m);
             cslen = maxlen;
             EXPECT(sign_init(ctx, m, k, pe)
-                   && EVP_DigestSign(m, sig, &cslen, msg, sizeof(msg)) > 0
-                   && VERIFIES(pub, sig, cslen)
-                   && hybrid_test_verify(ctx, pub, sig, cslen, msg,
-                                         sizeof(msg), pe),
-                   "empty context string: init path differs from none");
+                   && EVP_DigestSign(m, sig, &cslen, msg, sizeof(msg)) > 0,
+                   "empty context string: sign failed");
+            EXPECT(VERIFIES(pub, sig, cslen),
+                   "empty context string: signature fails verify under none");
+            EXPECT(hybrid_test_verify(ctx, pub, sig, cslen, msg, sizeof(msg),
+                                      pe),
+                   "empty context string: signature fails verify under empty");
             EVP_MD_CTX_reset(m);
             cslen = maxlen;
             EXPECT(sign_init(ctx, m, k, NULL)
-                   && EVP_DigestSign(m, sig, &cslen, msg, sizeof(msg)) > 0
-                   && hybrid_test_verify(ctx, pub, sig, cslen, msg,
-                                         sizeof(msg), pe),
+                   && EVP_DigestSign(m, sig, &cslen, msg, sizeof(msg)) > 0,
+                   "no context string: sign failed");
+            EXPECT(hybrid_test_verify(ctx, pub, sig, cslen, msg, sizeof(msg),
+                                      pe),
                    "empty context string: rejects a signature made with none");
             for (how = 0; how < CS_HOWS; how++) {
                 int got;
@@ -331,25 +339,37 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
                 snprintf(what, sizeof(what),
                          "%s: empty context string differs from none",
                          cs_how[how]);
-                EXPECT(got == 1
-                       && cs_op(ctx, alg, pub, 0, how, pe, sig, &cslen) == 1
-                       && cs_op(ctx, alg, pub, 0, how, NULL, sig, &cslen) == 1,
+                EXPECT(got == 1, what);
+                snprintf(what, sizeof(what),
+                         "%s: empty-context signature fails verify under "
+                         "empty", cs_how[how]);
+                EXPECT(got != 1
+                       || cs_op(ctx, alg, pub, 0, how, pe, sig, &cslen) == 1,
+                       what);
+                snprintf(what, sizeof(what),
+                         "%s: empty-context signature fails verify under none",
+                         cs_how[how]);
+                EXPECT(got != 1
+                       || cs_op(ctx, alg, pub, 0, how, NULL, sig, &cslen) == 1,
                        what);
             }
         }
-#ifdef HYBRID_COMPOSITE
-        if (!is_hybrid) {
-            /* draft-19: len(ctx) > 255 MUST be an error. */
-            static unsigned char cs_long[COMPOSITE_SIG_CTX_MAX + 1];
+        {
+            /* len(ctx) > 255 MUST be an error: draft-19 for a composite, and
+             * FIPS 204/205 for every component that takes one -- a hybrid
+             * delegates the check to them, so it must hold on every row. */
+            static unsigned char cs_long[HYBRID_SIG_CTX_MAX + 1];
 
             pa[0] = OSSL_PARAM_construct_octet_string(
                         OSSL_SIGNATURE_PARAM_CONTEXT_STRING, cs_long,
                         sizeof(cs_long));
             EVP_MD_CTX_reset(m);
-            EXPECT(!sign_init(ctx, m, k, pa),
-                   "composite accepted a context string over 255 bytes");
+            cslen = maxlen;
+            EXPECT(!(sign_init(ctx, m, k, pa)
+                     && EVP_DigestSign(m, sig, &cslen, msg, sizeof(msg)) > 0),
+                   "signed under a context string over 255 bytes");
+            ERR_clear_error();
         }
-#endif
     }
 #endif
 

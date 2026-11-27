@@ -88,17 +88,27 @@ static int pq_available(OSSL_LIB_CTX *ctx, const char *pq_alg)
     return ok;
 }
 
-/* One decoded KAT row (all hex fields of a composite_kat.txt line). */
+/*
+ * Column offsets of a composite_kat.txt vector row: the name, then the FIELDS
+ * of regen_composite_kat.py in order. The file's "#! columns:" header names
+ * them, and main() refuses a file whose header differs from kat_col_name.
+ */
+enum {
+    KAT_NAME, KAT_PK, KAT_S, KAT_SWC, KAT_SK, KAT_SK_PKCS8, KAT_X5C, KAT_COLS
+};
+static const char *const kat_col_name[KAT_COLS] = {
+    "name", "pk", "s", "sWithContext", "sk", "sk_pkcs8", "x5c"
+};
+#define KAT_HEADER "#! columns:"
+
+/* One decoded KAT row: v[c]/len[c] hold column c (KAT_NAME is in name). */
 typedef struct {
     const char *name;
-    unsigned char *pk, *s, *sc, *sk, *p8, *crt;
-    size_t pklen, slen, sclen, sklen, p8len, crtlen;
+    unsigned char *v[KAT_COLS];
+    size_t len[KAT_COLS];
 } KAT;
 
 #define PROPQ "provider=hybrid"
-/* A vector row: name + the FIELDS of regen_composite_kat.py (pk s sWithContext
- * sk sk_pkcs8 x5c). */
-#define KAT_COLS 7
 #define EXPECT(cond, what)                                                 \
     do {                                                                   \
         if (!(cond)) {                                                     \
@@ -220,20 +230,20 @@ static void check(OSSL_LIB_CTX *ctx, const KAT *k,
         return;
     }
     EXPECT((pub = import_raw(ctx, k->name, OSSL_PKEY_PARAM_PUB_KEY,
-                             EVP_PKEY_PUBLIC_KEY, k->pk, k->pklen)) != NULL,
+                             EVP_PKEY_PUBLIC_KEY, k->v[KAT_PK], k->len[KAT_PK])) != NULL,
            "pk import");
     /* K1-K3 */
-    EXPECT(verifies(ctx, pub, k->s, k->slen, msg, msglen, NULL, 0),
+    EXPECT(verifies(ctx, pub, k->v[KAT_S], k->len[KAT_S], msg, msglen, NULL, 0),
            "K1: s does not verify");
-    EXPECT(verifies(ctx, pub, k->sc, k->sclen, msg, msglen, cs, cslen),
+    EXPECT(verifies(ctx, pub, k->v[KAT_SWC], k->len[KAT_SWC], msg, msglen, cs, cslen),
            "K2: sWithContext does not verify under ctx");
-    EXPECT(!verifies(ctx, pub, k->sc, k->sclen, msg, msglen, NULL, 0),
+    EXPECT(!verifies(ctx, pub, k->v[KAT_SWC], k->len[KAT_SWC], msg, msglen, NULL, 0),
            "K3: sWithContext verifies without ctx");
-    EXPECT(!verifies(ctx, pub, k->s, k->slen, msg, msglen, cs, cslen),
+    EXPECT(!verifies(ctx, pub, k->v[KAT_S], k->len[KAT_S], msg, msglen, cs, cslen),
            "K3: s verifies under ctx");
     /* K4-K5 */
     EXPECT((prv = import_raw(ctx, k->name, OSSL_PKEY_PARAM_PRIV_KEY,
-                             EVP_PKEY_KEYPAIR, k->sk, k->sklen)) != NULL,
+                             EVP_PKEY_KEYPAIR, k->v[KAT_SK], k->len[KAT_SK])) != NULL,
            "K4: sk import");
     EXPECT(EVP_PKEY_eq(prv, pub) == 1, "K4: sk's public key != pk");
     EXPECT((m = EVP_MD_CTX_new()) != NULL
@@ -246,16 +256,16 @@ static void check(OSSL_LIB_CTX *ctx, const KAT *k,
     EXPECT(verifies(ctx, pub, sig, siglen, msg, msglen, cs, cslen),
            "K5: our signature does not verify under pk");
     /* K6 */
-    EXPECT((p8 = decode_p8(ctx, k->name, k->p8, k->p8len)) != NULL,
+    EXPECT((p8 = decode_p8(ctx, k->name, k->v[KAT_SK_PKCS8], k->len[KAT_SK_PKCS8])) != NULL,
            "K6: sk_pkcs8 decode");
     EXPECT(EVP_PKEY_eq(p8, pub) == 1, "K6: sk_pkcs8 public key != pk");
-    EXPECT(priv_equals(p8, k->sk, k->sklen), "K6: sk_pkcs8 private != sk");
+    EXPECT(priv_equals(p8, k->v[KAT_SK], k->len[KAT_SK]), "K6: sk_pkcs8 private != sk");
     /* K7 */
     /* Decode in the test's libctx, where the hybrid provider is loaded. */
-    q = k->crt;
+    q = k->v[KAT_X5C];
     EXPECT((x = X509_new_ex(ctx, PROPQ)) != NULL
-           && d2i_X509(&x, &q, (long)k->crtlen) != NULL
-           && q == k->crt + k->crtlen, "K7: x5c decode");
+           && d2i_X509(&x, &q, (long)k->len[KAT_X5C]) != NULL
+           && q == k->v[KAT_X5C] + k->len[KAT_X5C], "K7: x5c decode");
     EXPECT(EVP_PKEY_eq(X509_get0_pubkey(x), pub) == 1,
            "K7: x5c public key != pk");
     EXPECT(X509_verify(x, pub) == 1, "K7: x5c self-signature");
@@ -284,6 +294,8 @@ int main(int argc, char **argv)
     char *line = NULL;
     size_t cap = 0, msglen = 0, cslen = 0;
     unsigned char *msg = NULL, *cs = NULL;
+    const char *bad = NULL;
+    int have_header = 0;
     ssize_t n;
 
     if (mods != NULL)
@@ -307,52 +319,66 @@ int main(int argc, char **argv)
     printf("==========================================================\n");
     while ((n = getline(&line, &cap, f)) > 0) {
         char *save, *t, *tok[KAT_COLS + 1] = { NULL };
-        unsigned char **dst[KAT_COLS - 1];
-        size_t *dlen[KAT_COLS - 1], i, nt = 0;
+        size_t c, nt = 0;
+        int hex_ok;
         KAT k = { 0 };
 
+        if (strncmp(line, KAT_HEADER, strlen(KAT_HEADER)) == 0) {
+            /* The column layout must be exactly the one this test indexes. */
+            for (t = strtok_r(line + strlen(KAT_HEADER), " \t\r\n", &save);
+                 t != NULL && nt < KAT_COLS;
+                 t = strtok_r(NULL, " \t\r\n", &save))
+                if (strcmp(t, kat_col_name[nt++]) != 0)
+                    break;
+            if (nt != KAT_COLS || t != NULL) {
+                bad = "column header differs from this test's layout";
+                break;
+            }
+            have_header = 1;
+            continue;
+        }
         if (line[0] == '#' || line[0] == '\n')
             continue;
-        /* Collect up to one column more than a row has, so extras show. */
+        /* Collect one token more than a row has, to tell a long row apart. */
         for (t = strtok_r(line, " \t\r\n", &save);
              t != NULL && nt <= KAT_COLS;
              t = strtok_r(NULL, " \t\r\n", &save))
             tok[nt++] = t;
-        if (nt >= 2 && strcmp(tok[0], "m") == 0) {
-            OPENSSL_free(msg);
-            msg = hexdec(tok[1], &msglen);
-            continue;
-        }
-        if (nt >= 2 && strcmp(tok[0], "ctx") == 0) {
-            OPENSSL_free(cs);
-            cs = hexdec(tok[1], &cslen);
-            continue;
-        }
-        tests++;
-        if (nt != KAT_COLS || msg == NULL || cs == NULL) {
-            printf("  %-22s FAIL (malformed KAT line, or m/ctx missing)\n",
-                   tok[0] != NULL ? tok[0] : "?");
-            failed++;
-            continue;
-        }
-        tests--;                               /* check() counts the row */
-        dst[0] = &k.pk; dst[1] = &k.s; dst[2] = &k.sc;
-        dst[3] = &k.sk; dst[4] = &k.p8; dst[5] = &k.crt;
-        dlen[0] = &k.pklen; dlen[1] = &k.slen; dlen[2] = &k.sclen;
-        dlen[3] = &k.sklen; dlen[4] = &k.p8len; dlen[5] = &k.crtlen;
-        k.name = tok[0];
-        for (i = 0; i < KAT_COLS - 1; i++)
-            if ((*dst[i] = hexdec(tok[i + 1], dlen[i])) == NULL)
+        if (strcmp(tok[0], "m") == 0 || strcmp(tok[0], "ctx") == 0) {
+            unsigned char **dst = tok[0][0] == 'm' ? &msg : &cs;
+            size_t *dlen = tok[0][0] == 'm' ? &msglen : &cslen;
+
+            OPENSSL_free(*dst);
+            if (nt != 2 || (*dst = hexdec(tok[1], dlen)) == NULL) {
+                bad = "malformed m/ctx line";
                 break;
-        if (i == KAT_COLS - 1) {
-            check(ctx, &k, msg, msglen, cs, cslen);
-        } else {
-            printf("  %-22s FAIL (bad hex in KAT)\n", k.name);
-            tests++;
-            failed++;
+            }
+            continue;
         }
-        for (i = 0; i < KAT_COLS - 1; i++)
-            OPENSSL_free(*dst[i]);
+        if (!have_header || nt != KAT_COLS || msg == NULL || cs == NULL) {
+            bad = "malformed vector row, or header/m/ctx missing before it";
+            break;
+        }
+        k.name = tok[KAT_NAME];
+        for (c = KAT_NAME + 1; c < KAT_COLS; c++)
+            if ((k.v[c] = hexdec(tok[c], &k.len[c])) == NULL)
+                break;
+        hex_ok = c == KAT_COLS;
+        if (hex_ok)
+            check(ctx, &k, msg, msglen, cs, cslen);
+        for (c = KAT_NAME + 1; c < KAT_COLS; c++)
+            OPENSSL_free(k.v[c]);
+        if (!hex_ok) {
+            bad = "bad hex in a vector row";
+            break;
+        }
+    }
+    /* A malformed vendored file is a broken test, not a failed vector:
+     * stop at once rather than test a partial set. */
+    if (bad != NULL) {
+        printf("  FAIL: %s: %s\n", katfile, bad);
+        failed++;
+        tests++;
     }
     OPENSSL_free(msg);
     OPENSSL_free(cs);

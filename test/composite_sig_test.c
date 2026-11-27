@@ -59,8 +59,26 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     const char *pqprop = info->tier == COMPOSITE_TIER_EXPERIMENTAL
                              ? "provider=oqsprovider" : "provider=default";
     const unsigned char msg[] = "composite LAMPS combiner self-consistency";
-    const unsigned char ctxa[] = { 'A' }, ctxb[] = { 'B' };
+    /* The signing context, and near misses that must not verify: another
+     * case, one byte short, one byte longer, one byte changed, a single byte,
+     * empty, and none. */
+    static const unsigned char ctxa[] = "Context-A";
+    static const struct {
+        const char *what;
+        const unsigned char *v;
+        size_t len;
+    } wrong[] = {
+        { "lowercased", (const unsigned char *)"context-a", sizeof(ctxa) - 1 },
+        { "truncated", ctxa, sizeof(ctxa) - 2 },
+        { "extended", ctxa, sizeof(ctxa) },              /* + its NUL byte */
+        { "last byte changed", (const unsigned char *)"Context-B",
+          sizeof(ctxa) - 1 },
+        { "one byte", ctxa, 1 },
+        { "empty", ctxa, 0 },
+        { "none", NULL, 0 },
+    };
     unsigned char longctx[COMPOSITE_SIG_CTX_MAX + 1] = { 0 };
+    size_t w;
     EVP_PKEY *pq = NULL, *trad = NULL;
     unsigned char *sig = NULL;
     size_t siglen = 0;
@@ -104,23 +122,31 @@ static void check(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info)
     OPENSSL_free(sig);
     sig = NULL;
     if (!composite_sign(info, pq, trad, ctx, pqprop, "provider=default",
-                        msg, sizeof(msg) - 1, ctxa, sizeof(ctxa), &sig, &siglen)
-            || !composite_verify(info, pq, trad, ctx, pqprop,
-                                 "provider=default", msg, sizeof(msg) - 1,
-                                 ctxa, sizeof(ctxa), sig, siglen)) {
-        printf("FAIL (sign/verify under a context string)\n");
+                        msg, sizeof(msg) - 1, ctxa, sizeof(ctxa) - 1, &sig,
+                        &siglen)) {
+        printf("FAIL (sign under a context string)\n");
         ERR_print_errors_fp(stdout);
         failed++;
         goto done;
     }
-    if (composite_verify(info, pq, trad, ctx, pqprop, "provider=default",
-                         msg, sizeof(msg) - 1, ctxb, sizeof(ctxb), sig, siglen)
-            || composite_verify(info, pq, trad, ctx, pqprop,
-                                "provider=default", msg, sizeof(msg) - 1,
-                                NULL, 0, sig, siglen)) {
-        printf("FAIL (verified under a different context string)\n");
+    if (!composite_verify(info, pq, trad, ctx, pqprop, "provider=default",
+                          msg, sizeof(msg) - 1, ctxa, sizeof(ctxa) - 1, sig,
+                          siglen)) {
+        printf("FAIL (verify under the signing context string)\n");
+        ERR_print_errors_fp(stdout);
         failed++;
         goto done;
+    }
+    for (w = 0; w < sizeof(wrong) / sizeof(wrong[0]); w++) {
+        if (composite_verify(info, pq, trad, ctx, pqprop, "provider=default",
+                             msg, sizeof(msg) - 1, wrong[w].v, wrong[w].len,
+                             sig, siglen)) {
+            printf("FAIL (verified under a %s context string)\n",
+                   wrong[w].what);
+            failed++;
+            goto done;
+        }
+        ERR_clear_error();
     }
     OPENSSL_free(sig);
     sig = NULL;
@@ -168,6 +194,13 @@ static void check_mprime_samples(OSSL_LIB_CTX *ctx)
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
         if (strcmp(composite_sig_table[i].name, MPRIME_SAMPLE_ALG) == 0)
             info = &composite_sig_table[i];
+    if (info == NULL) {         /* the draft's sample combo left our table */
+        tests++;
+        failed++;
+        printf("  %-22s draft M' samples ... FAIL (not in composite_sig_table)\n",
+               MPRIME_SAMPLE_ALG);
+        return;
+    }
     for (i = 0; i < sizeof(mprime_samples) / sizeof(mprime_samples[0]); i++) {
         unsigned char *cs = NULL, *mp = NULL, *want = NULL;
         long cslen = 0, wantlen = 0;
@@ -180,7 +213,7 @@ static void check_mprime_samples(OSSL_LIB_CTX *ctx)
         if (mprime_samples[i].ctx_hex[0] != '\0')
             cs = OPENSSL_hexstr2buf(mprime_samples[i].ctx_hex, &cslen);
         want = OPENSSL_hexstr2buf(mprime_samples[i].mprime_hex, &wantlen);
-        ok = info != NULL && want != NULL
+        ok = want != NULL
             && (cs != NULL || cslen == 0)
             && composite_build_mprime(info, ctx, m, sizeof(m), cs,
                                       (size_t)cslen, &mp, &mplen)

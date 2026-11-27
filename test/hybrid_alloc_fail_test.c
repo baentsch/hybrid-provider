@@ -178,6 +178,7 @@ typedef struct {
     int phase;
     EVP_PKEY *key;   /* PH_OPS: generated once, outside any injection */
     int encodable;   /* the baseline key-file round-trip succeeded */
+    int binds_ctx;   /* the baseline signed under a context string */
 } SCEN;
 
 /* A DER PrivateKeyInfo of `k` decoded back into a key; 1 on success. */
@@ -218,6 +219,62 @@ static int keyfile_step(OSSL_LIB_CTX *ctx, SCEN *s, int baseline)
     return !s->encodable || keyfile_roundtrip(ctx, s->alg, s->key);
 }
 
+#ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+/*
+ * The context-string path: sign under one (init param, then a copied
+ * operation context, which duplicates the stored string), verify under it,
+ * and never under another. A row that refuses context strings (hybrids with
+ * a component that has none) is probed in the baseline and skipped after.
+ * Returns a RUN_* value.
+ */
+static int ctx_step(OSSL_LIB_CTX *ctx, SCEN *s, EVP_PKEY *k, int baseline)
+{
+    static unsigned char cs_a[] = "alloc-fail-A", cs_b[] = "alloc-fail-B";
+    OSSL_PARAM pa[2], pb[2];
+    EVP_MD_CTX *m = NULL, *m2 = NULL;
+    unsigned char *sig = NULL;
+    size_t siglen = 0;
+    int r = RUN_FAILED, signed_ok;
+
+    if (!baseline && !s->binds_ctx)
+        return RUN_OK;
+    pa[0] = OSSL_PARAM_construct_octet_string(
+                OSSL_SIGNATURE_PARAM_CONTEXT_STRING, cs_a, sizeof(cs_a) - 1);
+    pa[1] = OSSL_PARAM_construct_end();
+    pb[0] = OSSL_PARAM_construct_octet_string(
+                OSSL_SIGNATURE_PARAM_CONTEXT_STRING, cs_b, sizeof(cs_b) - 1);
+    pb[1] = OSSL_PARAM_construct_end();
+    signed_ok = (m = EVP_MD_CTX_new()) != NULL && (m2 = EVP_MD_CTX_new()) != NULL
+        && EVP_DigestSignInit_ex(m, NULL, NULL, ctx, PROPQ, k, pa) > 0
+        && EVP_MD_CTX_copy_ex(m2, m) > 0
+        && EVP_DigestSign(m2, NULL, &siglen, msg, sizeof(msg)) > 0
+        && (sig = OPENSSL_malloc(siglen)) != NULL
+        && EVP_DigestSign(m2, sig, &siglen, msg, sizeof(msg)) > 0;
+    if (baseline) {
+        s->binds_ctx = signed_ok;
+        ERR_clear_error();
+        if (!signed_ok) {               /* refused: fine, if refused cleanly */
+            r = RUN_OK;
+            goto end;
+        }
+    } else if (!signed_ok) {
+        goto end;
+    }
+    /* Fail closed: never verify under another context string. */
+    if (hybrid_test_verify(ctx, k, sig, siglen, msg, sizeof(msg), pb)) {
+        r = RUN_UNSOUND;
+        goto end;
+    }
+    if (hybrid_test_verify(ctx, k, sig, siglen, msg, sizeof(msg), pa))
+        r = RUN_OK;
+end:
+    OPENSSL_free(sig);
+    EVP_MD_CTX_free(m2);
+    EVP_MD_CTX_free(m);
+    return r;
+}
+#endif
+
 static int run_sig(OSSL_LIB_CTX *ctx, SCEN *s, int baseline)
 {
     EVP_PKEY *k = s->key, *pub = NULL;
@@ -246,6 +303,10 @@ static int run_sig(OSSL_LIB_CTX *ctx, SCEN *s, int baseline)
                                    NULL)
             || !keyfile_step(ctx, s, baseline))
         goto end;
+#ifdef OSSL_SIGNATURE_PARAM_CONTEXT_STRING
+    if ((r = ctx_step(ctx, s, k, baseline)) != RUN_OK)
+        goto end;
+#endif
     r = RUN_OK;
 end:
     OPENSSL_free(sig);

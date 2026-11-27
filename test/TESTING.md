@@ -136,7 +136,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — X-Wing KAT interop: decapsulate the draft's reference ciphertexts under its decap keys; on 3.5+ also re-derives keys from seeds.
 #### 24. composite_sig_test
 
-— Composite combiner self-consistency, driving `composite_sig.c` directly (unit level, below the provider).
+— Composite combiner self-consistency, driving `composite_sig.c` directly (unit level, below the provider): sign/verify, tamper, a context string bound against near misses (case, truncated, extended, one byte changed, one byte, empty, none), over-long refused, and the draft's two worked M' samples.
 #### 25. composite_test
 
 — Provider-level composite signatures through EVP by name (`provider=hybrid`): keygen/sign/verify per combo.
@@ -172,7 +172,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — Entry points no round-trip reaches: key dup, ctx dup (incl. mid-stream), param introspection, set_params guards. A hybrid's dup must match exactly the worst of its components' own dups (probed from the same provider), so a component-provider limit is asserted precisely; composite keys must always copy faithfully.
 #### 43. hybrid_alloc_fail_test
 
-— Allocation-failure injection: each provider-site allocation (keygen, operation round-trip, key file, provider load) is failed in turn; the run must fail closed (no corrupted signature verifies, no wrong secret) with no provider block leaked.
+— Allocation-failure injection: each provider-site allocation (keygen, operation round-trip, key file, provider load) is failed in turn; the run must fail closed (no corrupted signature verifies, no signature verifies under another context string, no wrong secret) with no provider block leaked. Signature rows that bind context strings also sign under one through a copied operation context.
 
 ### Benchmarks (guard-only smoke under `ctest`)
 

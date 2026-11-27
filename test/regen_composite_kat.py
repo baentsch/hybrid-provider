@@ -26,7 +26,13 @@ TAG = "draft-ietf-lamps-pq-composite-sigs-19"
 URL = ("https://raw.githubusercontent.com/lamps-wg/draft-composite-sigs/"
        + TAG + "/src/testvectors.json")
 
-# Vendored per-vector fields, in KAT-file column order (after the name).
+# Vendored per-vector fields, in KAT-file column order (after the name). The
+# list is explicit, not derived from the JSON: each field needs a test, and
+# composite_kat_test indexes these columns by name (its KAT_* offsets and
+# kat_col_name). Staying in sync is enforced, not trusted: main() refuses any
+# field the source has that is not listed here, or lacks one that is, and the
+# emitted "#! columns:" header is checked by composite_kat_test against its own
+# layout.
 FIELDS = ("pk", "s", "sWithContext", "sk", "sk_pkcs8", "x5c")
 
 # testvectors.json tcId -> the algorithm name this provider registers.
@@ -73,6 +79,7 @@ def main():
         "# regenerate: python3 test/regen_composite_kat.py > test/composite_kat.txt",
         "# format: m <msg_hex> | ctx <ctx_hex> | <name> " + " ".join(
             "<%s_hex>" % k for k in FIELDS),
+        "#! columns: " + " ".join(("name",) + FIELDS),
         "m %s" % hexof(data["m"]),
         "ctx %s" % hexof(data["ctx"]),
     ]
@@ -85,6 +92,10 @@ def main():
         if unknown:
             sys.exit("%s: unvendored fields: %s"
                      % (t["tcId"], ", ".join(sorted(unknown))))
+        absent = set(FIELDS) - set(t)
+        if absent:
+            sys.exit("%s: fields missing from the source: %s"
+                     % (t["tcId"], ", ".join(sorted(absent))))
         lines.append(" ".join([name] + [hexof(t[k]) for k in FIELDS]))
         seen.add(t["tcId"])
     missing = set(NAMES) - seen

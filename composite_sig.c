@@ -371,12 +371,22 @@ static int composite_sig_apply_params(COMPOSITE_SIGCTX *c,
         return 1;
     p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
     if (p != NULL) {
-        if (p->data_type != OSSL_PARAM_OCTET_STRING
-                || !OSSL_PARAM_get_octet_string(p, &buf, sizeof(c->ctxstr),
-                                                &len)) {
+        if (p->data_type != OSSL_PARAM_OCTET_STRING) {
             ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
-                           "composite context-string must be an octet string "
-                           "of at most %d bytes", COMPOSITE_SIG_CTX_MAX);
+                           "composite context-string must be an octet string");
+            return 0;
+        }
+        /* draft-19 Sign/Verify step 1: len(ctx) > 255 MUST be an error. */
+        if (p->data_size > COMPOSITE_SIG_CTX_MAX) {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                           "composite context-string of %zu bytes exceeds "
+                           "the maximum of %d", p->data_size,
+                           COMPOSITE_SIG_CTX_MAX);
+            return 0;
+        }
+        if (!OSSL_PARAM_get_octet_string(p, &buf, sizeof(c->ctxstr), &len)) {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                           "cannot read the composite context-string parameter");
             return 0;
         }
         c->ctxstrlen = len;
