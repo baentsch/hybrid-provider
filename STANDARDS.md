@@ -66,6 +66,12 @@ test suite forces it off. See [USAGE.md](USAGE.md) and `design.md` §Cede-to-def
 
 ## 2. Backed by a standard or draft
 
+Each entry closes with a **Conformance evidence** block: what is tested against
+the specification (its test vectors, worked examples and requirements) and what
+is **not yet** tested. A claim of conformance covers only the tested part. The
+blocks come from a release-readiness audit of every spec in this section against
+the test suite (#183); the open items are tracked there.
+
 ### 2.1 Hybrid KEM for TLS 1.3 — **RFC 10024** (PQ/T hybrid ECDHE-MLKEM)
 
 Formerly `draft-ietf-tls-ecdhe-mlkem`; published as **RFC 10024** (Proposed
@@ -95,28 +101,52 @@ default-provider parity — see [§1](#1-ceded-to-the-default-provider-by-design
 Underlying component standards: FIPS 203 (ML-KEM), RFC 7748 (X25519/X448),
 RFC 5480/SEC1 (ECDH P-256/P-384).
 
-### 2.2 mlkem512 TLS groups — `draft-rosomakho-tls-ecdhe-mlkem512-00`
+**Conformance evidence.** RFC 10024 ships no test vectors. *Tested:* byte-level
+interop with the default provider's implementation (cross encapsulation and
+decapsulation both ways, key round-trip), TLS 1.3 handshakes against it, and
+clean failure on a tampered ciphertext or malformed key. *Not yet tested:* the
+specific §4.2 checks through this provider: the FIPS 203 §7.2 encapsulation key
+check on a well-sized invalid key, an invalid (well-sized, off-curve) ECDHE
+point, and the X25519 all-zero shared-secret check.
 
-Level-1 variant; code points and the `SecP256r1MLKEM512` name follow the draft
-(adopted by oqsprovider #802). The OIDs are oqsprovider's (see §3).
+### 2.2 mlkem512 TLS groups — `draft-rosomakho-tls-ecdhe-mlkem512-01`
+
+Level-1 variant; code points (assigned in `-01`) and the `SecP256r1MLKEM512` name
+follow the draft (adopted by oqsprovider #802). The X25519 group keeps
+oqsprovider's name `x25519_mlkem512`; the draft calls it `MLKEM512X25519`. Both
+use the draft's key_exchange order (ML-KEM first for X25519, P-256 first for
+SecP256r1). The OIDs are oqsprovider's (see §3).
 
 | Algorithm | Components | TLS code point |
 |---|---|---|
 | `SecP256r1MLKEM512` | P-256 + ML-KEM-512 | `0x11E9` |
 | `x25519_mlkem512` | X25519 + ML-KEM-512 | `0x11EA` |
 
+**Conformance evidence.** The draft ships no test vectors. *Tested:* TLS 1.3
+interop with oqsprovider at these code points. *Not yet tested:* the same
+validation checks as §2.1 (encapsulation key check, ECDHE point validity, X25519
+all-zero shared secret).
+
 ### 2.3 Composite signatures — `draft-ietf-lamps-pq-composite-sigs-19`
 
 LAMPS standards-track (Active I-D, v19). Full **18-combo standardized matrix**,
-OIDs `1.3.6.1.5.5.7.6.37 … .54`, each verified against the draft's reference
-test vectors (`composite_kat_test`). ML-DSA (FIPS 204) only. Message-representative
-construction `M' = prefix || label || len(ctx) || ctx || PH(M)`, raw-concat
-serialization. **Normative** (byte-exact vs. BouncyCastle / future OpenSSL-native).
+OIDs `1.3.6.1.5.5.7.6.37 … .54`, each verifying the draft's reference signature
+over an empty context (`composite_kat_test`). ML-DSA (FIPS 204) only.
+Message-representative construction `M' = prefix || label || len(ctx) || ctx ||
+PH(M)`, raw-concat serialization. A caller's context string is **not yet**
+supported: M' is always built with an empty one, and a context string the caller
+sets is ignored (fix in #182). **Normative** (byte-exact vs. BouncyCastle /
+future OpenSSL-native).
 
 These composite signatures are also exercised through CMS `SignedData` — the
-binding `draft-ietf-lamps-cms-composite-sigs` (WG `-00`, Jan 2026) — in both
-SignerInfo modes (signed attributes and `-noattr`) by `composite_cms_test` (issue
-#109), the signature counterpart to the composite ML-KEM KEMRI coverage in §2.4.
+binding `draft-ietf-lamps-cms-composite-sigs-05` — in both SignerInfo modes
+(signed attributes and `-noattr`) by `composite_cms_test` (issue #109), the
+signature counterpart to the composite ML-KEM KEMRI coverage in §2.4. That test
+is a sign/verify round-trip, **not yet** a conformance check against the CMS
+draft: it uses SHA-512 as the `digestAlgorithm` for every combo, whereas the
+draft's Table 1 requires SHA-256 for the three `*-SHA256` combos and SHAKE256
+for `mldsa87_ed448`, and the draft's Appendix B example SignedData is not yet in
+the suite.
 The `-noattr` (md-less content-signing) path needed the signer to implement the
 message-signature EVP API (`sign_message`/`verify_message_*`), which the provider
 now does; it engages from OpenSSL **3.6.0** (3.5.x lacks md-less CMS content-signing
@@ -143,11 +173,19 @@ points in a range that collided with OpenSSL 4.1 native SLH-DSA (`0x0912`), so t
 provider assigns **private-use** points `0xFFE0…` (RFC 8446 §4.2.3) instead. See
 `design.md` §get_capabilities.
 
+**Conformance evidence.** *Tested:* for all 18 combos, the draft-19 reference
+signature `s` (empty context) verifies under the reference `pk`; CMS sign/verify
+round-trips in both SignerInfo modes. *Not yet supported:* the caller's context
+string (above; #182). *Not yet tested:* the vectors' `sWithContext`, `sk`,
+`sk_pkcs8` and `x5c` fields; the draft's worked M' samples; and the CMS
+conformance points above (per-combo `digestAlgorithm`, Appendix B example).
+
 ### 2.4 Composite ML-KEM — `draft-ietf-lamps-pq-composite-kem-18`
 
-LAMPS standards-track (combiner stable since -14). Full **12-combo standardized
-matrix**, OIDs `1.3.6.1.5.5.7.6.55 … .66`, verified against the draft's reference
-vectors (`composite_kem_kat_test`) and interop-tested against independent
+LAMPS standards-track (combiner stable since -14; the latest revision, `-23`,
+changes only editorial text and has byte-identical reference vectors). Full
+**12-combo standardized matrix**, OIDs `1.3.6.1.5.5.7.6.55 … .66`, decapsulating
+the draft's reference vectors (`composite_kem_kat_test`) and interop-tested against independent
 implementations in both PKI roles: as X.509 recipients (raw composite-KEM decaps)
 and as CMS `EnvelopedData` / `KEMRecipientInfo` recipients (RFC 9629, issue #108).
 Single fixed KDF combiner `ss = SHA3-256(mlkemSS || tradSS || tradCT || tradPK || Label)`.
@@ -174,6 +212,14 @@ opt-in. Beyond the static corpus, the CMS KEMRI wire format is also checked
 
 Underlying: FIPS 203 (ML-KEM), RFC 8017 (RSA-OAEP), RFC 7748, RFC 5480.
 
+**Conformance evidence.** *Tested:* for all 12 combos, decapsulation of the
+reference ciphertext `c` with the reference `dk_pkcs8` recovers `k`; the X25519
+worked combiner example byte-for-byte; corpus decapsulation and CMS KEMRI interop
+as above. *Not yet tested:* the vectors' `ek`, raw `dk`, `x5c` and `cacert`
+fields; the P-256 and P-384 worked combiner examples; and the encoding and
+validation requirements (uncompressed-only ECDH points, RSA modulus size at
+decapsulation).
+
 ### 2.5 X-Wing — [`draft-connolly-cfrg-xwing-kem-11`](https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/) (CFRG)
 
 General-purpose hybrid KEM, X25519 + ML-KEM-768, with a **strongly-binding**
@@ -193,7 +239,8 @@ here (exposed via the KEM API only, like `X448MLKEM1024`). The combiner is
 selected per row by `hybrid_kem_combiner[]` (not a new code path per algorithm),
 and verified byte-for-byte against the draft's reference vectors by
 `xwing_kat_test` (vendored `test/xwing_kat.txt`, pinned to the draft tag and
-kept coherent with upstream by a weekly drift check). **Normative** (CFRG draft).
+kept coherent with upstream by a weekly drift check), decapsulation only (see
+the evidence block below). **Normative** (CFRG draft).
 
 | Algorithm | Components | Combiner | Identifier |
 |---|---|---|---|
@@ -213,7 +260,15 @@ KEM in *both* slots (`alg1_is_kem`), the first such row (see §3.4).
 
 Underlying: FIPS 203 (ML-KEM), RFC 7748 (X25519), FIPS 202 (SHA-3).
 
-### 2.6 HQC-KEM hybrid TLS groups — [`draft-preussmattsson-tls-hqckem`](https://datatracker.ietf.org/doc/draft-preussmattsson-tls-hqckem/)
+**Conformance evidence.** *Tested:* decapsulation of all three reference
+vectors recovers `ss`, which checks the combiner byte-for-byte. *Not yet
+supported:* the draft's 32-byte decapsulation key. The provider imports only the
+expanded key, which the test derives offline from the vector's seed, and it does
+not implement the draft's SPKI/PKCS#8 encoding (§5), so X-Wing keys cannot be
+written to or read from key files. *Not yet tested:* derandomized encapsulation
+against the vectors' `eseed`.
+
+### 2.6 HQC-KEM hybrid TLS groups — [`draft-preussmattsson-tls-hqckem-03`](https://datatracker.ietf.org/doc/draft-preussmattsson-tls-hqckem/)
 
 Six hybrid KEM groups pairing **HQC** with a classical key exchange and/or ML-KEM,
 from an individual-submission TLS draft (issue #131). Four are **2-component** —
@@ -254,6 +309,13 @@ and composition overhead pinned by `hybrid_sizes_test` / `hybrid_bench`.
 
 Underlying: HQC (oqsprovider), FIPS 203 (ML-KEM), RFC 7748 (X25519/X448),
 RFC 9954 (shared-secret concatenation).
+
+**Conformance evidence.** The draft ships no test vectors. *Tested:* key share
+and shared-secret sizes for all six groups match `-03` Table 1, plus the
+functional checks above. `-03` also defines plain HQC groups
+(`HQCKEM128/192/256`), which are PQ-only and out of scope. *Not yet tested:* the
+§3.9 validation checks (key share length on the encapsulation side, ML-KEM
+encapsulation key check, X25519/X448 all-zero shared secret).
 
 ---
 
