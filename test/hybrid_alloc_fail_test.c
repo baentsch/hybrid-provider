@@ -244,7 +244,8 @@ static int ctx_step(OSSL_LIB_CTX *ctx, SCEN *s, EVP_PKEY *k, int baseline)
     pb[0] = OSSL_PARAM_construct_octet_string(
                 OSSL_SIGNATURE_PARAM_CONTEXT_STRING, cs_b, sizeof(cs_b) - 1);
     pb[1] = OSSL_PARAM_construct_end();
-    signed_ok = (m = EVP_MD_CTX_new()) != NULL && (m2 = EVP_MD_CTX_new()) != NULL
+    signed_ok = (m = EVP_MD_CTX_new()) != NULL
+        && (m2 = EVP_MD_CTX_new()) != NULL
         && EVP_DigestSignInit_ex(m, NULL, NULL, ctx, PROPQ, k, pa) > 0
         && EVP_MD_CTX_copy_ex(m2, m) > 0
         && EVP_DigestSign(m2, NULL, &siglen, msg, sizeof(msg)) > 0

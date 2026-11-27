@@ -386,7 +386,7 @@ static int composite_sig_apply_params(COMPOSITE_SIGCTX *c,
         }
         if (!OSSL_PARAM_get_octet_string(p, &buf, sizeof(c->ctxstr), &len)) {
             ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
-                           "cannot read the composite context-string parameter");
+                           "cannot read the composite context string");
             return 0;
         }
         c->ctxstrlen = len;

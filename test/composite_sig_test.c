@@ -197,8 +197,8 @@ static void check_mprime_samples(OSSL_LIB_CTX *ctx)
     if (info == NULL) {         /* the draft's sample combo left our table */
         tests++;
         failed++;
-        printf("  %-22s draft M' samples ... FAIL (not in composite_sig_table)\n",
-               MPRIME_SAMPLE_ALG);
+        printf("  %-22s draft M' samples ... FAIL (not in "
+               "composite_sig_table)\n", MPRIME_SAMPLE_ALG);
         return;
     }
     for (i = 0; i < sizeof(mprime_samples) / sizeof(mprime_samples[0]); i++) {

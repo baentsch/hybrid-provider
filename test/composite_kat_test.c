@@ -102,6 +102,7 @@ static const char *const kat_col_name[KAT_COLS] = {
 #define KAT_HEADER "#! columns:"
 
 /* One decoded KAT row: v[c]/len[c] hold column c (KAT_NAME is in name). */
+#define KAT_FIELD(k, c) (k)->v[c], (k)->len[c]     /* buffer, length */
 typedef struct {
     const char *name;
     unsigned char *v[KAT_COLS];
@@ -230,20 +231,21 @@ static void check(OSSL_LIB_CTX *ctx, const KAT *k,
         return;
     }
     EXPECT((pub = import_raw(ctx, k->name, OSSL_PKEY_PARAM_PUB_KEY,
-                             EVP_PKEY_PUBLIC_KEY, k->v[KAT_PK], k->len[KAT_PK])) != NULL,
+                             EVP_PKEY_PUBLIC_KEY, KAT_FIELD(k, KAT_PK)))
+           != NULL,
            "pk import");
     /* K1-K3 */
-    EXPECT(verifies(ctx, pub, k->v[KAT_S], k->len[KAT_S], msg, msglen, NULL, 0),
+    EXPECT(verifies(ctx, pub, KAT_FIELD(k, KAT_S), msg, msglen, NULL, 0),
            "K1: s does not verify");
-    EXPECT(verifies(ctx, pub, k->v[KAT_SWC], k->len[KAT_SWC], msg, msglen, cs, cslen),
+    EXPECT(verifies(ctx, pub, KAT_FIELD(k, KAT_SWC), msg, msglen, cs, cslen),
            "K2: sWithContext does not verify under ctx");
-    EXPECT(!verifies(ctx, pub, k->v[KAT_SWC], k->len[KAT_SWC], msg, msglen, NULL, 0),
+    EXPECT(!verifies(ctx, pub, KAT_FIELD(k, KAT_SWC), msg, msglen, NULL, 0),
            "K3: sWithContext verifies without ctx");
-    EXPECT(!verifies(ctx, pub, k->v[KAT_S], k->len[KAT_S], msg, msglen, cs, cslen),
+    EXPECT(!verifies(ctx, pub, KAT_FIELD(k, KAT_S), msg, msglen, cs, cslen),
            "K3: s verifies under ctx");
     /* K4-K5 */
     EXPECT((prv = import_raw(ctx, k->name, OSSL_PKEY_PARAM_PRIV_KEY,
-                             EVP_PKEY_KEYPAIR, k->v[KAT_SK], k->len[KAT_SK])) != NULL,
+                             EVP_PKEY_KEYPAIR, KAT_FIELD(k, KAT_SK))) != NULL,
            "K4: sk import");
     EXPECT(EVP_PKEY_eq(prv, pub) == 1, "K4: sk's public key != pk");
     EXPECT((m = EVP_MD_CTX_new()) != NULL
@@ -256,10 +258,10 @@ static void check(OSSL_LIB_CTX *ctx, const KAT *k,
     EXPECT(verifies(ctx, pub, sig, siglen, msg, msglen, cs, cslen),
            "K5: our signature does not verify under pk");
     /* K6 */
-    EXPECT((p8 = decode_p8(ctx, k->name, k->v[KAT_SK_PKCS8], k->len[KAT_SK_PKCS8])) != NULL,
+    EXPECT((p8 = decode_p8(ctx, k->name, KAT_FIELD(k, KAT_SK_PKCS8))) != NULL,
            "K6: sk_pkcs8 decode");
     EXPECT(EVP_PKEY_eq(p8, pub) == 1, "K6: sk_pkcs8 public key != pk");
-    EXPECT(priv_equals(p8, k->v[KAT_SK], k->len[KAT_SK]), "K6: sk_pkcs8 private != sk");
+    EXPECT(priv_equals(p8, KAT_FIELD(k, KAT_SK)), "K6: sk_pkcs8 private != sk");
     /* K7 */
     /* Decode in the test's libctx, where the hybrid provider is loaded. */
     q = k->v[KAT_X5C];
