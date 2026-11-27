@@ -704,7 +704,8 @@ if(HYBRID_COMPOSITE)
     target_link_libraries(composite_kat_test PRIVATE OpenSSL::Crypto)
     add_dependencies(composite_kat_test hybrid-provider)
     add_test(NAME composite_kat_test
-        COMMAND composite_kat_test ${CMAKE_SOURCE_DIR}/test/composite_kat.txt)
+        COMMAND composite_kat_test ${CMAKE_SOURCE_DIR}/test/composite_kat.txt
+                ${CMAKE_SOURCE_DIR}/test/cms_composite_sigs_appb.pem)
     set_tests_properties(composite_kat_test PROPERTIES
         ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
     )

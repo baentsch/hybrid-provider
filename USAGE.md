@@ -27,6 +27,15 @@ EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "mldsa44_ecdsa_p256", NUL
 Application code selects the provider by property query (`?provider=hybrid`) once
 it is loaded.
 
+**Digests.** A composite signature fixes its own prehash (SHA-256, SHA-512 or
+SHAKE256, per combo) and accepts that digest or none; a hybrid signature
+accepts none. In CMS, pass no digest for a composite signer (`openssl cms -sign`
+without `-md`, or `CMS_add1_signer(..., NULL, ...)`): CMS then uses the prehash,
+as `draft-ietf-lamps-cms-composite-sigs-05` requires, and any other digest is
+refused. A hybrid signer needs one named (`-md sha256`). Composite certificates
+verify only under a property query that can also fetch the prehash digest, so
+prefer `?provider=hybrid` over `provider=hybrid`.
+
 ## Mixing sub-algorithms from different providers
 
 The hybrid provider fetches sub-algorithms through the EVP layer, so they can

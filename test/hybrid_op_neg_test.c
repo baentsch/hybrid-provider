@@ -373,15 +373,38 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
     }
 #endif
 
-    /* S6: the component digests are fixed by the algorithm, so a caller digest
-     * must be refused, not silently overridden. */
-    EVP_MD_CTX_reset(m);
-    EXPECT(EVP_DigestSignInit_ex(m, NULL, "SHA256", ctx, PROPQ, k, NULL) <= 0,
-           "sign-init accepted an explicit digest");
-    EVP_MD_CTX_reset(m);
-    EXPECT(EVP_DigestVerifyInit_ex(m, NULL, "SHA256", ctx, PROPQ, pub,
-                                   NULL) <= 0,
-           "verify-init accepted an explicit digest");
+    /* S6: the digests are fixed by the algorithm, so a caller digest must be
+     * refused, not silently overridden. A composite names its prehash PH as the
+     * mandatory digest and accepts exactly that one (cms-composite-sigs-05
+     * Table 1: CMS passes it as the SignerInfo digestAlgorithm), and refuses
+     * the realistic wrong one (SHA-256 for SHA-512 combos, else SHA-512). A
+     * hybrid accepts none. */
+    {
+        char ph[64] = "";
+        const char *bad = "SHA256";
+
+        if (!is_hybrid) {
+            EXPECT(EVP_PKEY_get_default_digest_name(k, ph, sizeof(ph)) == 2
+                   && ph[0] != '\0' && strcmp(ph, "UNDEF") != 0,
+                   "composite names no mandatory digest");
+            if (OPENSSL_strcasecmp(ph, "SHA512") != 0)
+                bad = "SHA512";
+            EVP_MD_CTX_reset(m);
+            EXPECT(EVP_DigestSignInit_ex(m, NULL, ph, ctx, PROPQ, k, NULL) > 0,
+                   "sign-init refused the composite's own prehash");
+            EVP_MD_CTX_reset(m);
+            EXPECT(EVP_DigestVerifyInit_ex(m, NULL, ph, ctx, PROPQ, pub,
+                                           NULL) > 0,
+                   "verify-init refused the composite's own prehash");
+        }
+        EVP_MD_CTX_reset(m);
+        EXPECT(EVP_DigestSignInit_ex(m, NULL, bad, ctx, PROPQ, k, NULL) <= 0,
+               "sign-init accepted an explicit digest");
+        EVP_MD_CTX_reset(m);
+        EXPECT(EVP_DigestVerifyInit_ex(m, NULL, bad, ctx, PROPQ, pub,
+                                       NULL) <= 0,
+               "verify-init accepted an explicit digest");
+    }
     ERR_clear_error();
 
 #ifdef OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT

@@ -661,11 +661,17 @@ sig_cert_one() {
             2>/dev/null | grep -qi "Signature Algorithm: *$alg"; then
         no "$alg  (cert signature algorithm mismatch)"; return
     fi
-    # CMS sign + verify. Hashless PQ signatures have no default digest, so name
-    # one for the SignedAttributes messageDigest (independent of the signature).
+    # CMS sign + verify. An algorithm whose signature takes a digest param (the
+    # composites: it must be their prehash, cms-composite-sigs-05 Table 1)
+    # names it as the key's mandatory digest, so CMS picks it unprompted; any
+    # failure there is real. Hashless hybrids have none: name one for the
+    # SignedAttributes messageDigest.
+    local md_opt="-md sha256"
+    case " $SIG_DIGEST_ALGS " in *" $alg "*) md_opt="" ;; esac
     echo "hybrid-provider CMS payload" > "$msg"
+    # shellcheck disable=SC2086  # md_opt is deliberately empty or two words
     if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" cms -sign -signer "$crt" -inkey "$key" \
-            -in "$msg" -out "$cms" -md sha256 -binary -nodetach >"$log" 2>&1; then
+            -in "$msg" -out "$cms" $md_opt -binary -nodetach >"$log" 2>&1; then
         no "$alg  (cms -sign)"; sed 's/^/        /' "$log" | head -2; return
     fi
     if ! OPENSSL_CONF="$cnf" "$OPENSSL_BIN" cms -verify -in "$cms" \
@@ -689,6 +695,12 @@ cmd_sig_certs() {
         note "no hybrid signature algorithms advertised (composite built out / < 3.5?)"
         return
     fi
+    # Signatures that advertise a settable digest choose their own (see the
+    # CMS step in sig_cert_one).
+    SIG_DIGEST_ALGS="$(OPENSSL_CONF="$cnf" "$OPENSSL_BIN" list \
+        -signature-algorithms -verbose 2>/dev/null | awk '
+        /@ / { alg = ($0 ~ /@ *hybrid/) ? $1 : "" }
+        /^ *digest:/ && alg != "" { printf "%s ", alg; alg = "" }')"
     for a in $algs; do
         sig_cert_one "$cnf" "$a"
     done

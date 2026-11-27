@@ -753,6 +753,31 @@ no size cap, so this design assumes bounded content-signing inputs (as CMS
 content-signing is); large-message streaming would be the reason to revisit and
 drive the component contexts directly.
 
+### Composite signatures: the prehash as mandatory digest
+
+A composite signature hashes the message with a fixed prehash `PH` before
+building `M'`, and draft-19 allows that step to run outside the signer
+("External Pre-hashing") as long as the output is the same. The CMS binding
+(`draft-ietf-lamps-cms-composite-sigs-05` §3.3) requires the SignerInfo
+`digestAlgorithm` to be `PH`. So a composite key reports `PH` as its mandatory
+digest (`OSSL_PKEY_PARAM_MANDATORY_DIGEST`), unlike the hybrids, which report
+none (`UNDEF`). OpenSSL's CMS layer then:
+
+- picks `PH` when the caller names no digest, and passes it to the signature,
+  which accepts exactly `PH` and refuses any other digest;
+- with signed attributes, streams the encoded attributes through
+  `digest_sign_update` / `digest_sign_final`, which buffer and sign the whole
+  input (the combiner needs it all for `M'`);
+- without signed attributes, hashes the content with `PH` and signs that hash
+  through the raw `sign` / `verify` entry points, which take `ph = PH(M)` of
+  exactly `PH`'s length. This is the external-prehash route.
+
+The (PH, composite) → OID pair is registered, which CMS needs to name the
+signature algorithm. X.509 verification maps the signature OID through the same
+pair and fetches `PH` under the caller's property query, as it does for RSA and
+ECDSA certificates: a query that excludes digest providers (such as
+`provider=hybrid`) cannot verify composite certificates.
+
 ## Provider Registration
 
 ### query_operation

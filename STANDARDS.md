@@ -137,19 +137,17 @@ PH(M)` with a caller context string of up to 255 bytes (longer is refused),
 raw-concat serialization. **Normative** (byte-exact vs. BouncyCastle /
 future OpenSSL-native).
 
-These composite signatures are also exercised through CMS `SignedData` — the
+These composite signatures are also served through CMS `SignedData` — the
 binding `draft-ietf-lamps-cms-composite-sigs-05` — in both SignerInfo modes
-(signed attributes and `-noattr`) by `composite_cms_test` (issue #109), the
-signature counterpart to the composite ML-KEM KEMRI coverage in §2.4. That test
-is a sign/verify round-trip, **not yet** a conformance check against the CMS
-draft: it uses SHA-512 as the `digestAlgorithm` for every combo, whereas the
-draft's Table 1 requires SHA-256 for the three `*-SHA256` combos and SHAKE256
-for `mldsa87_ed448`, and the draft's Appendix B example SignedData is not yet in
-the suite.
-The `-noattr` (md-less content-signing) path needed the signer to implement the
-message-signature EVP API (`sign_message`/`verify_message_*`), which the provider
-now does; it engages from OpenSSL **3.6.0** (3.5.x lacks md-less CMS content-signing
-even for native ML-DSA) and self-skips below that, probed at runtime.
+(signed attributes and `-noattr`), the signature counterpart to the composite
+ML-KEM KEMRI coverage in §2.4. Each composite key names its prehash `PH` as its
+mandatory digest, so CMS uses it as the SignerInfo `digestAlgorithm` (the
+draft's Table 1: SHA-256 for the three `*-SHA256` combos, SHAKE256 at 64 bytes
+for `mldsa87_ed448`, SHA-512 otherwise) and refuses any other digest. With
+signed attributes CMS hands the composite the encoded attributes; with
+`-noattr` it hashes the content with `PH` and the composite signs that hash —
+draft-19's "External Pre-hashing", which yields the same signature as signing
+the content. Both modes work from OpenSSL 3.5.
 
 This family *can* take part in the IETF Hackathon
 [`pqc-certificates`](https://github.com/IETF-Hackathon/pqc-certificates)
@@ -180,9 +178,18 @@ draft's `ctx`, which must also be bound), `sk` imports to `pk` and signs, the
 (`composite_sig_test`), and a context string over 255 bytes is refused. The
 context string is bound whichever way it is delivered (init param, set after
 init, a copied operation context, the streaming message-signature API;
-`hybrid_op_neg_test` S4). CMS
-sign/verify round-trips in both SignerInfo modes. *Not yet tested:* the CMS
-conformance points above (per-combo `digestAlgorithm`, Appendix B example).
+`hybrid_op_neg_test` S4). External prehashing: `s` and `sWithContext` verify
+over `PH(m)`, a signature made over `PH(m)` verifies over `m`, and a wrong-length
+prehash or a digest other than `PH` is refused (`composite_kat_test` K8).
+CMS (`-05`): the draft's Appendix B SignedData verifies under the draft-19
+`x5c`, and fails with a flipped signature byte (K9). For every combo, in both
+SignerInfo modes, `digestAlgorithm` is the Table 1 digest with absent
+parameters, the `messageDigest` attribute is `PH(content)` at `PH`'s length, a
+`-noattr` signature verifies over the raw content outside CMS, tampered content
+is rejected, and the other common digest (SHA-256 for SHA-512 combos, else
+SHA-512) is refused (`composite_cms_test`). *Not yet tested:*
+verification of a mismatched-digest SignerInfo produced by another
+implementation (the draft's SHOULD-reject); we refuse to produce one.
 
 ### 2.4 Composite ML-KEM — `draft-ietf-lamps-pq-composite-kem-18`
 
