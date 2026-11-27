@@ -110,7 +110,13 @@ end:
     return ret;
 }
 
-/* ML-DSA component: one-shot over M' with context string = label. */
+/*
+ * PQ component: one-shot over M'. draft-19 passes the Label to ML-DSA as its
+ * own context string (mldsa_ctx = Label), so the standardized (ML-DSA) tier
+ * sets it -- after init, where a component must honour or refuse it, and a
+ * refusal fails closed. The experimental tier's components (Falcon, MAYO, ...)
+ * have no context-string input; the Label still reaches them inside M'.
+ */
 static int pq_op(int sign, const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq,
                  OSSL_LIB_CTX *libctx, const char *propq,
                  const unsigned char *mp, size_t mplen,
@@ -129,17 +135,25 @@ static int pq_op(int sign, const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq,
     sp[1] = OSSL_PARAM_construct_end();
     if (m == NULL)
         goto end;
+    if ((sign ? EVP_DigestSignInit_ex(m, NULL, NULL, libctx, propq, pq, NULL)
+              : EVP_DigestVerifyInit_ex(m, NULL, NULL, libctx, propq, pq,
+                                        NULL)) <= 0)
+        goto end;
+    if (info->tier == COMPOSITE_TIER_STANDARD
+            && EVP_PKEY_CTX_set_params(EVP_MD_CTX_get_pkey_ctx(m), sp) <= 0) {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                       "%s: PQ component %s refused the Label as its context "
+                       "string", info->name, info->pq_alg);
+        goto end;
+    }
     if (sign) {
-        if (EVP_DigestSignInit_ex(m, NULL, NULL, libctx, propq, pq, sp) <= 0
-                || EVP_DigestSign(m, NULL, &l, mp, mplen) <= 0
+        if (EVP_DigestSign(m, NULL, &l, mp, mplen) <= 0
                 || (s = OPENSSL_malloc(l)) == NULL
                 || EVP_DigestSign(m, s, &l, mp, mplen) <= 0)
             goto end;
         *osig = s; *olen = l; s = NULL;
-    } else {
-        if (EVP_DigestVerifyInit_ex(m, NULL, NULL, libctx, propq, pq, sp) <= 0
-                || EVP_DigestVerify(m, isig, ilen, mp, mplen) != 1)
-            goto end;
+    } else if (EVP_DigestVerify(m, isig, ilen, mp, mplen) != 1) {
+        goto end;
     }
     ret = 1;
 end:
