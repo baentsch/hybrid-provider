@@ -134,8 +134,9 @@ hybrid-provider/
     ├── setup_oqs_interop.sh       ← (re)build the from-source liboqs + oqsprovider interop peer
     └── hybrid_scenarios.sh        ← CLI (s_server/s_client) TLS interop harness
 └── integrations/          ← downstream integration demos (Docker; not built by CMake)
-    └── curl-nginx-3alg/   ← curl↔nginx TLS 1.3 over a 3-provider hybrid KEM
-                             (X25519+ML-KEM-768+HQC-192); see its README.md/USAGE.md
+    └── curl-nginx-3alg/   ← curl↔nginx TLS 1.3: interop vs oqsprovider's own hybrids
+                             (interop.sh) + a 3-provider hybrid KEM (X25519+ML-KEM-768+
+                             HQC-192); see its README.md, USAGE.md, THREE-PROVIDERS.md
 ```
 
 ## Code Conventions

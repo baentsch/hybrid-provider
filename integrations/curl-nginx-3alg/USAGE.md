@@ -1,38 +1,45 @@
-# Using the curl ↔ nginx 3-provider demo image
+# curl ↔ nginx demo image: reference
 
-This is the user guide for the image built per [README.md](README.md). It explains
-what the image does, how to run it, the environment variables and scripts, how to
-read the output, and how to poke at it interactively.
+This is the reference for the image built per [README.md](README.md): what the
+servers offer, the validation scripts and how to read their output, the
+environment variables, and interactive use. For a first walkthrough, start
+with the README.
 
 ## What the image is
 
-A self-contained image with an **nginx TLS 1.3 server** that offers every hybrid
-KEM group the hybrid provider can serve in it, and a **client validator**
-(`connect.sh`) that connects with curl and `openssl s_client` and checks which
-KEM group was actually negotiated. The headline group is the draft-preussmattsson
-**`HQCKEM192MLKEM768X25519`**, whose three components come from three different
-OpenSSL providers (X25519 ← default, ML-KEM-768 ← wolfProvider, HQC-192 ←
-oqsprovider), composed by hybrid-provider through `openssl.cnf` alone. It is a
-**demonstration/validation image**, not a production server.
+A self-contained image with two **nginx TLS 1.3 servers**: one under the hybrid
+config (port 4433), where hybrid-provider serves the hybrid KEM groups, and one
+under the stock config (port 4434), where oqsprovider serves its own. Two
+client scripts check them:
+
+- `interop.sh`: every group both servers offer, in all four client/server
+  pairings (see [Interop with oqsprovider's own hybrids](#interop-with-oqsproviders-own-hybrids)).
+- `connect.sh`: every group of the hybrid server, with curl and
+  `openssl s_client`, including which provider served each component (see
+  [Validating with connect.sh](#validating-with-connectsh)). Its headline group
+  combines three providers; see [THREE-PROVIDERS.md](THREE-PROVIDERS.md).
+
+It is a **demonstration/validation image**, not a production server.
 
 ## Quick start
 
 ```sh
-# server: runs in the foreground until the container is stopped
-docker run -d --name hyp -p 4433:4433 hyp-3alg
+# servers: run until the container is stopped
+docker run -d --name hyp -p 4433:4433 -p 4434:4434 hyp-3alg
 
-# client: validate every offered group (exit 0 = all OK)
-docker exec hyp connect.sh
+docker exec hyp interop.sh       # hybrid-provider vs oqsprovider, four pairings
+docker exec hyp connect.sh       # hybrid server, with per-component provenance
 docker exec hyp connect.sh HQCKEM192MLKEM768X25519   # or just some groups
 
 docker logs -f hyp      # server log: one line per request with the negotiated group
 docker stop hyp && docker rm hyp
 ```
 
-For CI, `selftest` does both in one container and exits with the client's result:
+One-shot runs (for CI) start the servers, run one check and exit with its result:
 
 ```sh
-docker run --rm hyp-3alg selftest
+docker run --rm hyp-3alg selftest   # connect.sh
+docker run --rm hyp-3alg interop    # interop.sh
 ```
 
 ## What the server offers
@@ -205,7 +212,7 @@ each server then sees a key share it doesn't recognize (`no suitable key share`
 in its log).
 
 Which liboqs and oqsprovider the image contains is a build choice
-(`UPSTREAM`, see [README.md](README.md#build-arguments)), and `interop.sh`
+(`UPSTREAM`, see [README.md](README.md#build)), and `interop.sh`
 prints it first (from `/opt/pq/demo/upstream.txt`):
 
 - **`release`** (default): the latest release pair known to match this
