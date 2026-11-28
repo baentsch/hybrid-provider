@@ -21,6 +21,12 @@ each served by a different provider:
 The selection is expressed only in `openssl.cnf` (`component-providers` +
 `alg1/2/3-propquery`); no application, library, or build change is involved.
 
+A second nginx serves the same group names from **oqsprovider's own hybrids**
+(stock cnf, no hybrid provider), and `interop.sh` checks every shared group in
+all four client/server pairings, so the image also shows that the hybrid
+provider can replace oqsprovider's hybrids on the wire (see
+[USAGE.md](USAGE.md#interop-with-oqsproviders-own-hybrids)).
+
 > **This file is the build guide.** For running and exploring the resulting
 > image (environment variables, the provenance log, interactive use, the scripts and
 > config files), see **[USAGE.md](USAGE.md)**.
@@ -61,8 +67,23 @@ docker build -f integrations/curl-nginx-3alg/Dockerfile --build-arg ENABLE_TRACE
 ### Build arguments
 
 All versions are `ARG`s at the top of the `Dockerfile` and can be overridden with
-`--build-arg`, e.g. `--build-arg NGINX_VERSION=1.29.0`. The notable one is
-`ENABLE_TRACE` (`0`/`1`, default `0`).
+`--build-arg`, e.g. `--build-arg NGINX_VERSION=1.29.0`. The notable ones are
+`ENABLE_TRACE` (`0`/`1`, default `0`) and `UPSTREAM`, which picks liboqs and
+oqsprovider:
+
+| `UPSTREAM` | liboqs | oqsprovider | use |
+|---|---|---|---|
+| `release` (default) | `LIBOQS_RELEASE` (0.16.0) | `OQSPROVIDER_RELEASE` (0.12.0) | the latest release pair known to match this provider's algorithm catalogue (names, OIDs, TLS code points); `interop.sh` should pass |
+| `main` | `main` | `main` | preview of the next releases; `interop.sh` flags groups whose code points they change |
+
+```sh
+docker build --build-arg UPSTREAM=main -f integrations/curl-nginx-3alg/Dockerfile -t hyp-3alg-main .
+```
+
+`LIBOQS_TAG` / `OQSPROVIDER_TAG`, if set, override the pick for that component
+(any branch or tag). The refs actually built, with their commits, are recorded
+in the image at `/opt/pq/demo/upstream.txt`. When a new release pair is
+verified to match, bump `LIBOQS_RELEASE` / `OQSPROVIDER_RELEASE`.
 
 ## Relationship to the upstream oqs-demos Dockerfiles
 

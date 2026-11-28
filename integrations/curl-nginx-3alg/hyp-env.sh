@@ -25,6 +25,15 @@ SERVER_LOG=${HYP_STATE}/server.log                # nginx stderr: HYBRID_LOG lin
 HYP_HOST=${HYP_HOST:-127.0.0.1}
 HYP_PORT=${HYP_PORT:-4433}
 
+# Second server for the interop check (interop.sh): nginx under the STOCK cnf,
+# so oqsprovider serves its OWN hybrids there, not the hybrid provider.
+# HYP_OQS_PORT=0 disables it.
+HYP_OQS_PORT=${HYP_OQS_PORT:-4434}
+OQS_GROUPS_FILE=${HYP_STATE}/oqs-server-groups
+OQS_NGINX_CONF=${HYP_STATE}/nginx-oqs.conf
+OQS_SERVER_LOG=${HYP_STATE}/server-oqs.log
+OQS_KEM_LOG=${NGINX_PREFIX}/logs/kem-access-oqs.log
+
 # Build the active config once per container (idempotent), picking the ML-KEM
 # source (HYP_MLKEM_PROVIDER, default wolfProvider). If the wolfProvider module
 # is missing, fall back to the default provider, and drop wolfprov from
@@ -72,6 +81,16 @@ hyp_hybrid_groups() {
     comm -23 \
         <(OPENSSL_CONF="$ACTIVE_CNF" "$OPENSSL" list -tls-groups 2>/dev/null | tr ':' '\n' | sort -u) \
         <(OPENSSL_CONF=/dev/null "$OPENSSL" list -tls-groups 2>/dev/null | tr ':' '\n' | sort -u) \
+        | grep -v '^$'
+}
+
+# Groups for the interop check: hybrid groups the hybrid provider serves
+# under the active cnf AND oqsprovider serves under the stock cnf, i.e. the
+# same group name implemented twice, independently. Derived, never hardcoded.
+hyp_shared_groups() {
+    comm -12 \
+        <(hyp_hybrid_groups | sort -u) \
+        <(OPENSSL_CONF="$STOCK_CNF" "$OPENSSL" list -tls-groups 2>/dev/null | tr ':' '\n' | sort -u) \
         | grep -v '^$'
 }
 
