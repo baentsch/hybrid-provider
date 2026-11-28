@@ -28,6 +28,7 @@
  *
  * Skipped wholesale when oqsprovider is unavailable.
  */
+#define _POSIX_C_SOURCE 200809L   /* setenv, unsetenv */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,10 +97,18 @@ err:
     return NULL;
 }
 
+/* Generic keygen: EVP_PKEY_Q_keygen takes only built-in key types before 3.5. */
 static EVP_PKEY *keygen(const SIDE *s, const char *alg)
 {
-    EVP_PKEY *k = EVP_PKEY_Q_keygen(s->ctx, s->prop, alg);
+    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(s->ctx, alg, s->prop);
+    EVP_PKEY *k = NULL;
 
+    if (g == NULL || EVP_PKEY_keygen_init(g) <= 0
+            || EVP_PKEY_keygen(g, &k) <= 0) {
+        EVP_PKEY_free(k);
+        k = NULL;
+    }
+    EVP_PKEY_CTX_free(g);
     ERR_clear_error();
     return k;
 }
@@ -451,8 +460,29 @@ int main(void)
         EVP_PKEY_free(probe);
         check_off(alg, &hd);
     }
-    if (lever_alg != NULL)
+    if (lever_alg != NULL) {
         check_lever(mods, lever_alg, &hc, &hd);
+    } else {
+        /* Nothing crossed. Fine where this build serves no hybrid signature
+         * (KEM-only OpenSSL); otherwise the cross never ran, so fail rather
+         * than pass on skips alone. */
+        EVP_SIGNATURE *any = HYBRID_SIG_ALG_COUNT > 0
+            ? EVP_SIGNATURE_fetch(hcctx, hybrid_sig_table[0].hybrid_name, HPROP)
+            : NULL;
+
+        tests++;
+        if (any != NULL) {
+            printf("  FAIL: hybrid signatures are served but none crossed "
+                   "with oqsprovider\n");
+            failed++;
+        } else {
+            printf("  no hybrid signature served here: nothing to cross\n");
+            tests--;
+            skipped++;
+        }
+        EVP_SIGNATURE_free(any);
+        ERR_clear_error();
+    }
 
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
