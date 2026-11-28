@@ -1,0 +1,63 @@
+#!/bin/bash
+# =============================================================================
+# demo-help: what this container is and how to use it. Printed once when an
+# interactive shell starts (/etc/bash/hyp-welcome.sh); run it again any time.
+# =============================================================================
+. "$(dirname "$0")/hyp-env.sh"
+
+B=$(printf '\033[1m'); N=$(printf '\033[0m')
+[ -t 1 ] || { B=""; N=""; }
+
+up() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && echo "running" || echo "not running"; }
+
+cat <<EOF
+
+${B}hybrid-provider demo: a drop-in for oqsprovider's hybrids${N}
+Same curl, same nginx; only openssl.cnf differs.
+$( [ -r "${INSTALLDIR}/demo/upstream.txt" ] && echo "Built against: $(paste -sd' ' "${INSTALLDIR}/demo/upstream.txt")" )
+
+  port 4433  hybrid-provider serves the hybrids  (/tmp/hyp/openssl-active.cnf)   $(up "$HYP_PORT")
+  port 4434  oqsprovider serves its own hybrids  (/opt/pq/ssl/openssl-stock.cnf)  $(up "$HYP_OQS_PORT")
+  component steering: HYP_STEERING=${HYP_STEERING}
+
+${B}1. See the config change${N} (the whole difference between the two):
+     diff -u /opt/pq/ssl/openssl-stock.cnf /tmp/hyp/openssl-active.cnf
+   Load hybrid instead of oqsprovider, and name the providers its hybrids take
+   their components from; oqsprovider stays, but only underneath. Explained:
+     https://github.com/baentsch/hybrid-provider/blob/main/integrations/curl-nginx-3alg/README.md#try-it
+
+${B}2. Run the interop check${N} (every shared group, all four client/server pairings):
+     interop.sh                   all groups
+     interop.sh p384_hqc3         just some
+     interop.sh -v p384_hqc3      plus, per side: stack, group used, provider
+
+${B}3. Switch stacks by hand${N} (same curl, only OPENSSL_CONF changes):
+     OPENSSL_CONF=/opt/pq/ssl/openssl-stock.cnf curl --curves p384_hqc3 \\
+         --cacert /opt/pq/demo/CA.crt https://localhost:4433/
+
+${B}4. Second source for ML-KEM${N}: wolfProvider instead of OpenSSL's default provider
+   (two more config lines; same groups, same interop result):
+     docker run -d --name hyp -e HYP_STEERING=wolfprov hyp-3alg
+     docker run --rm -e HYP_STEERING=wolfprov hyp-3alg interop     (one-shot)
+
+More:
+     connect.sh [GROUP...]        hybrid server only: which provider served each component
+     noconf.sh                    what works without openssl.cnf (needs a fresh container:
+                                  docker run --rm hyp-3alg noconf.sh)
+     demo-help                    show this again
+
+Docs:
+     this demo          https://github.com/baentsch/hybrid-provider/blob/main/integrations/curl-nginx-3alg/README.md
+     configuring hybrid-provider in your own openssl.cnf:
+                        https://github.com/baentsch/hybrid-provider/blob/main/USAGE.md#configuration
+EOF
+
+if [ "$(up "$HYP_PORT")" != running ]; then
+    cat <<EOF
+
+${B}Note:${N} the servers aren't running in this container. Start them in the
+background with   entrypoint.sh server >/tmp/hyp-server.log 2>&1 &
+or run the image without a command:   docker run -d --name hyp hyp-3alg
+EOF
+fi
+echo

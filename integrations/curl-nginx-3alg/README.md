@@ -48,8 +48,10 @@ docker run -d --name hyp hyp-3alg
 docker exec -it hyp bash
 ```
 
-(A plain `bash`: a login shell, `bash -l`, resets `PATH` and loses the demo's
-tools.)
+The shell opens with a short overview: which server runs on which port, the
+command to see the config change, how to run the interop check, and links to
+the docs. `demo-help` shows it again. You're the unprivileged user `demo`, who
+also runs the servers; `docker exec -u root -it hyp bash` gives a root shell.
 
 (By default the hybrid server offers every group hybrid-provider can compose,
 including the Frodo, BIKE and HQC hybrids. `-e HYP_STEERING=strict` instead pins
@@ -151,7 +153,37 @@ OPENSSL_CONF=/opt/pq/ssl/openssl-stock.cnf curl --curves p384_hqc3 \
 Each server answers with the group it negotiated, e.g.
 `negotiated=p384_hqc3 protocol=TLSv1.3 cipher=TLS_AES_256_GCM_SHA384`.
 
-Leave the shell and stop the container with `docker rm -f hyp`.
+**4. Second source for ML-KEM: wolfProvider.** hybrid-provider takes each
+component from whichever provider the config names, so the ML-KEM half doesn't
+have to come from OpenSSL's default provider. `HYP_STEERING=wolfprov` adds two
+lines to the active config:
+
+```diff
+-component-providers = default oqsprovider
++component-providers = default oqsprovider wolfprov
++alg2-propquery = ?provider=wolfprov
+```
+
+```sh
+docker run -d --name hyp2 -e HYP_STEERING=wolfprov hyp-3alg
+docker exec hyp2 interop.sh -v x25519_mlkem512 | grep 'hyb>oqs client'
+#   ... via hybrid-provider: X25519@default MLKEM512@wolfprov
+docker run --rm -e HYP_STEERING=wolfprov hyp-3alg interop    # one-shot: 146 OK, 0 FAIL
+```
+
+Every ML-KEM half is then served by wolfProvider, and the result against
+oqsprovider is the same as by default (146 OK, 0 FAIL, 6 n/a on the release
+build). `?provider=` is a preference: groups whose second component isn't
+ML-KEM (Frodo, BIKE, HQC) take it from oqsprovider as before. Two limits in
+this image, causes not yet determined:
+
+- the default provider must stay in `component-providers`: without it,
+  wolfProvider's ML-KEM can't be fetched in hybrid-provider's component context;
+- preferring wolfProvider for the classical half as well (`alg1-propquery`)
+  works for P-256/384/521, X25519 and X448, but makes the three brainpool
+  hybrids fail.
+
+Leave the shell and stop the containers with `docker rm -f hyp hyp2`.
 
 Without a shell: `docker run --rm hyp-3alg interop` runs
 the same check one-shot and exits with its result.
@@ -168,6 +200,8 @@ the same check one-shot and exits with its result.
 | `connect.sh` | per-group check against the hybrid server: negotiated group from four sources, plus which provider served each component on both ends |
 | `hyp-env.sh` | shared paths, active config and group derivation for the scripts |
 | `noconf.sh` | opt-in test: what still works with `openssl.cnf` removed (command-line activation only) |
+| `demo-help` | the overview an interactive shell opens with: ports, the config diff command, how to run the checks, doc links |
+| `shell-welcome.sh`, `profile-path.sh` | installed as `/etc/bash/hyp-welcome.sh` (prints `demo-help` once per interactive shell) and `/etc/profile.d/hyp-path.sh` (keeps the demo's `PATH` in login shells) |
 | `build-wolfprovider-lean.sh` | build time only: lean wolfSSL + wolfProvider build and drift guard |
 | [USAGE.md](USAGE.md) | reference: environment variables, scripts, output, interactive use |
 | [THREE-PROVIDERS.md](THREE-PROVIDERS.md) | the three-provider group, wolfProvider build, version pins |

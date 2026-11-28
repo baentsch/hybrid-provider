@@ -197,7 +197,9 @@ COPY integrations/curl-nginx-3alg/connect.sh         ${INSTALLDIR}/bin/connect.s
 COPY integrations/curl-nginx-3alg/interop.sh         ${INSTALLDIR}/bin/interop.sh
 ### +++ ADDED (opt-in): what works WITHOUT openssl.cnf (`docker run … noconf.sh`) +++
 COPY integrations/curl-nginx-3alg/noconf.sh          ${INSTALLDIR}/bin/noconf.sh
-RUN chmod +x ${INSTALLDIR}/bin/entrypoint.sh ${INSTALLDIR}/bin/connect.sh ${INSTALLDIR}/bin/interop.sh ${INSTALLDIR}/bin/noconf.sh
+### +++ ADDED: welcome/help for interactive shells +++
+COPY integrations/curl-nginx-3alg/demo-help          ${INSTALLDIR}/bin/demo-help
+RUN chmod +x ${INSTALLDIR}/bin/entrypoint.sh ${INSTALLDIR}/bin/connect.sh ${INSTALLDIR}/bin/interop.sh ${INSTALLDIR}/bin/noconf.sh ${INSTALLDIR}/bin/demo-help
 
 # -----------------------------------------------------------------------------
 ### +++ ADDED: drop static libraries before the runtime stage copies the
@@ -225,6 +227,19 @@ ENV PATH=${INSTALLDIR}/bin:${NGINX_PREFIX}/sbin:${PATH}
 ENV LD_LIBRARY_PATH=${INSTALLDIR}/lib64
 # nginx (built --with-openssl replacement) needs OPENSSL_CONF set explicitly.
 ENV OPENSSL_CONF=${INSTALLDIR}/ssl/openssl.cnf
+
+### +++ ADDED: run as an unprivileged user (both servers listen above 1024).
+### It owns what the demo writes: nginx's pid/log/temp files, the demo key and
+### cert (server.key is 0600), and /opt/pq/ssl, from which noconf.sh briefly
+### moves openssl.cnf away. Root stays available: docker exec -u root ... +++
+RUN adduser -D -u 1000 -h /home/demo -s /bin/bash demo && \
+    chown -R demo:demo ${NGINX_PREFIX} ${INSTALLDIR}/ssl ${INSTALLDIR}/demo
+### +++ ADDED: interactive shells print demo-help once; login shells keep
+### the demo's PATH (/etc/profile resets it) +++
+COPY integrations/curl-nginx-3alg/shell-welcome.sh   /etc/bash/hyp-welcome.sh
+COPY integrations/curl-nginx-3alg/profile-path.sh    /etc/profile.d/hyp-path.sh
+USER demo
+WORKDIR /home/demo
 
 EXPOSE 4433 4434
 # server (default): nginx in the foreground (+ the oqsprovider interop server

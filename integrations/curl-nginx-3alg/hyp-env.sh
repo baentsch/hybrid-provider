@@ -40,6 +40,12 @@ OQS_KEM_LOG=${NGINX_PREFIX}/logs/kem-access-oqs.log
 #                  whose components exist is offered (incl. the Frodo/BIKE/HQC
 #                  hybrids), each component from whichever component provider
 #                  has it; connect.sh reports which one did.
+#   wolfprov       second source for ML-KEM: adds wolfProvider to
+#                  component-providers and prefers it for the 2nd component
+#                  slot (alg2-propquery = ?provider=wolfprov), so every ML-KEM
+#                  half comes from wolfProvider instead of OpenSSL's default
+#                  provider; groups whose 2nd component is not ML-KEM fall back
+#                  to the other component providers. Same groups as max.
 #   strict         the three-provider proof (THREE-PROVIDERS.md; default for
 #                  `entrypoint.sh selftest`): adds the ML-KEM provider
 #                  (HYP_MLKEM_PROVIDER, default wolfProvider) to
@@ -60,6 +66,16 @@ hyp_prepare_cnf() {
     cp "$HYBRID_CNF" "$ACTIVE_CNF.tmp"
     case "${HYP_STEERING}" in
     max) ;;
+    wolfprov)
+        if [ ! -e "${MODULES}/wolfprov.so" ]; then
+            echo "FAIL: HYP_STEERING=wolfprov, but ${MODULES}/wolfprov.so is absent" >&2
+            rm -f "$ACTIVE_CNF.tmp"; return 1
+        fi
+        sed -i -E "s/^(component-providers *=.*)\$/\1 wolfprov/" "$ACTIVE_CNF.tmp"
+        cat >>"$ACTIVE_CNF.tmp" <<EOF
+alg2-propquery = ?provider=wolfprov
+EOF
+        ;;
     strict)
         prov="${HYP_MLKEM_PROVIDER:-wolfprov}"
         if [ "$prov" = "wolfprov" ] && [ ! -e "${MODULES}/wolfprov.so" ]; then
@@ -78,7 +94,7 @@ alg2-propquery = provider=${prov}
 alg3-propquery = provider=oqsprovider
 EOF
         ;;
-    *)  echo "FAIL: HYP_STEERING must be 'max' or 'strict' (got '${HYP_STEERING}')" >&2
+    *)  echo "FAIL: HYP_STEERING must be 'max', 'wolfprov' or 'strict' (got '${HYP_STEERING}')" >&2
         rm -f "$ACTIVE_CNF.tmp"
         return 1 ;;
     esac

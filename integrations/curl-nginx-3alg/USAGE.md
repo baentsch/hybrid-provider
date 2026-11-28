@@ -118,7 +118,7 @@ side cannot be proven and every group fails.
 
 | variable | values | used by | effect |
 |----------|--------|---------|--------|
-| `HYP_STEERING` | `max` (default) / `strict` (default for `selftest`) | server, client | `max`: the active config is the shipped `openssl.cnf`, no component pins; every group whose components exist (44 here); `connect.sh` reports which provider served each component. `strict`: adds the ML-KEM provider to `component-providers` and pins every component slot (the three-provider proof); only groups whose components the pinned providers serve (10 here), and every component must come from its pinned provider. |
+| `HYP_STEERING` | `max` (default) / `wolfprov` / `strict` (default for `selftest`) | server, client | `max`: the active config is the shipped `openssl.cnf`, no component pins; every group whose components exist (44 here); `connect.sh` reports which provider served each component. `wolfprov`: adds wolfProvider to `component-providers` and prefers it for the second slot (`?provider=wolfprov`), so ML-KEM comes from wolfProvider instead of the default provider; same groups as `max` (see [README.md](README.md#try-it), step 4). `strict`: adds the ML-KEM provider to `component-providers` and pins every component slot (the three-provider proof); only groups whose components the pinned providers serve (10 here), and every component must come from its pinned provider. |
 | `HYP_MLKEM_PROVIDER` | `wolfprov` (default) / `default` | server, client | with `HYP_STEERING=strict` only: the provider `alg2` is pinned to (any provider that serves ML-KEM). If `wolfprov` and its module is missing, it falls back to `default`. The oqsprovider build here has no standalone ML-KEM, so `oqsprovider` would offer no ML-KEM groups. |
 | `HYP_SERVER_GROUPS` | group list (`:` or space separated) | server | offer exactly these instead of the derived list |
 | `HYP_PORT` | port (default `4433`) | server, client | listen / connect port |
@@ -139,6 +139,11 @@ docker run --rm --network container:hyp hyp-3alg connect.sh
 docker exec -it hyp bash            # into the running server container
 docker run --rm -it hyp-3alg bash   # or a fresh one without a server
 ```
+
+An interactive shell starts with `demo-help`'s overview (run it again any
+time); in a fresh container it also says how to start the servers. Shells run
+as the unprivileged user `demo`, as do the servers; use `docker exec -u root`
+for a root shell.
 
 | path | what |
 |------|------|
