@@ -16,8 +16,8 @@
  *
  * Each combo is exercised in BOTH CMS SignerInfo modes (matching the concat
  * coverage), with no caller digest, so CMS takes the key's mandatory digest --
- * the composite's prehash PH, as draft-ietf-lamps-cms-composite-sigs-05 Table 1
- * requires for the SignerInfo digestAlgorithm:
+ * the composite's prehash PH, as draft-ietf-lamps-cms-composite-sigs-05
+ * sec. 3.4 (Table 1) requires for the SignerInfo digestAlgorithm:
  *  - with signed attributes: the messageDigest attribute must be PH(content)
  *    (64 bytes for SHAKE256), and CMS signs the attributes via the streaming
  *    digest-sign path;
@@ -50,6 +50,14 @@
 #include "composite_prov.h"
 #include "cert_util.h"   /* hybrid_test_cert_set_cn */
 #include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
+#include "key_util.h"    /* hybrid_test_mandatory_digest/_other_digest */
+
+/* The two RFC 5652 sec. 5.4 SignerInfo modes. */
+typedef enum { SI_SIGNED_ATTRS, SI_NOATTR } SIGNER_MODE;
+
+/* CMS_signed_get0_data_by_OBJ(3) lastpos below -2: fail unless exactly one
+ * such attribute, holding exactly one value. */
+#define ATTR_EXACTLY_ONE (-3)
 
 static int tests, passed, failed, skipped;
 
@@ -150,7 +158,7 @@ static int signs_content(OSSL_LIB_CTX *libctx, EVP_PKEY *pkey,
  * attribute PH(content) at PH's length?
  */
 static int digest_is_ph(OSSL_LIB_CTX *libctx, EVP_PKEY *pkey,
-                        CMS_SignerInfo *si, int noattr,
+                        CMS_SignerInfo *si, SIGNER_MODE mode,
                         const unsigned char *content, size_t contentlen)
 {
     char ph[64] = "";
@@ -162,13 +170,13 @@ static int digest_is_ph(OSSL_LIB_CTX *libctx, EVP_PKEY *pkey,
     const ASN1_OCTET_STRING *got;
     int ok = 0;
 
-    if (EVP_PKEY_get_default_digest_name(pkey, ph, sizeof(ph)) != 2)
+    if (!hybrid_test_mandatory_digest(pkey, ph, sizeof(ph)))
         return 0;
     CMS_SignerInfo_get0_algs(si, NULL, NULL, &dig, NULL);
     if (dig == NULL || OBJ_obj2nid(dig->algorithm) != OBJ_txt2nid(ph)
             || dig->parameter != NULL)          /* parameters MUST be absent */
         return 0;
-    if (noattr)
+    if (mode == SI_NOATTR)
         return 1;
     if ((md = EVP_MD_fetch(libctx, ph, NULL)) == NULL
             || (mc = EVP_MD_CTX_new()) == NULL
@@ -176,7 +184,7 @@ static int digest_is_ph(OSSL_LIB_CTX *libctx, EVP_PKEY *pkey,
             || EVP_DigestUpdate(mc, content, contentlen) <= 0)
         goto end;
     if ((EVP_MD_get_flags(md) & EVP_MD_FLAG_XOF) != 0) {
-        wantlen = COMPOSITE_XOF_PH_BYTES;   /* SHAKE256: 64 bytes, sec. 3.3 */
+        wantlen = COMPOSITE_XOF_PH_BYTES;   /* SHAKE256: 64 bytes, sec. 3.4 */
         if (EVP_DigestFinalXOF(mc, want, wantlen) <= 0)
             goto end;
     } else {
@@ -187,7 +195,7 @@ static int digest_is_ph(OSSL_LIB_CTX *libctx, EVP_PKEY *pkey,
         wantlen = l;
     }
     got = CMS_signed_get0_data_by_OBJ(si, OBJ_nid2obj(NID_pkcs9_messageDigest),
-                                      -3, V_ASN1_OCTET_STRING);
+                                      ATTR_EXACTLY_ONE, V_ASN1_OCTET_STRING);
     ok = got != NULL && hybrid_asn1_string_length(got) == wantlen
          && memcmp(ASN1_STRING_get0_data(got), want, wantlen) == 0;
 end:
@@ -198,16 +206,16 @@ end:
 
 /*
  * A digest other than PH must be refused in both SignerInfo modes, never
- * signed (cms-composite-sigs-05 sec. 3.3: digestAlgorithm MUST be PH). The
+ * signed (cms-composite-sigs-05 sec. 3.4: digestAlgorithm MUST be PH). The
  * wrong digest is the realistic one: SHA-256 for the SHA-512 combos, else
  * SHA-512.
  */
 static void check_wrong_digest(OSSL_LIB_CTX *libctx,
-                               const COMPOSITE_SIG_INFO *info, int noattr)
+                               const COMPOSITE_SIG_INFO *info,
+                               SIGNER_MODE mode)
 {
     const char *alg = info->name;
-    const char *wrong = OPENSSL_strcasecmp(info->prehash, "SHA512") == 0
-                            ? "SHA256" : "SHA512";
+    const char *wrong = hybrid_test_other_digest(info->prehash);
     EVP_MD *md = EVP_MD_fetch(libctx, wrong, NULL);
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
@@ -219,7 +227,7 @@ static void check_wrong_digest(OSSL_LIB_CTX *libctx,
 
     tests++;
     printf("  %-28s CMS refuses %s (%s) ... ", alg, wrong,
-           noattr ? "-noattr" : "signed attrs");
+           mode == SI_NOATTR ? "-noattr" : "signed attrs");
     fflush(stdout);
     if (!make_cert(libctx, alg, &pkey, &cert)) {
         printf("SKIP (components unavailable)\n");
@@ -231,7 +239,8 @@ static void check_wrong_digest(OSSL_LIB_CTX *libctx,
     signed_ok = cms != NULL
         && md != NULL
         && CMS_add1_signer(cms, cert, pkey, md,
-                           CMS_BINARY | (noattr ? CMS_NOATTR : 0)) != NULL
+                           CMS_BINARY
+                               | (mode == SI_NOATTR ? CMS_NOATTR : 0)) != NULL
         && CMS_final(cms, in, NULL, flags) > 0;
     ERR_clear_error();
     if (signed_ok) {
@@ -251,7 +260,7 @@ done:
 
 /* mode: 0 = with signed attributes, 1 = CMS_NOATTR (no signed attributes).
  */
-static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr)
+static void check(OSSL_LIB_CTX *libctx, const char *alg, SIGNER_MODE mode)
 {
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
@@ -267,12 +276,13 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr)
      * embedded, so verification is supplied the content and a wrong one is cleanly
      * rejected (the tamper check). */
     unsigned int flags = CMS_BINARY | CMS_PARTIAL | CMS_DETACHED;
-    unsigned int signer_flags = CMS_BINARY | (noattr ? CMS_NOATTR : 0);
+    unsigned int signer_flags = CMS_BINARY
+                                | (mode == SI_NOATTR ? CMS_NOATTR : 0);
 
     tests++;
     printf("  %-28s CMS sign/verify (%s) ... ",
-           alg, noattr ? "Table 1 digest, -noattr"
-                       : "Table 1 digest, signed attrs");
+           alg, mode == SI_NOATTR ? "Table 1 digest, -noattr"
+                                  : "Table 1 digest, signed attrs");
     fflush(stdout);
 
     if (!make_cert(libctx, alg, &pkey, &cert)) {
@@ -282,8 +292,8 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr)
     }
 
     /* Sign with no caller digest: CMS takes the key's mandatory digest, the
-     * composite's prehash PH (cms-composite-sigs-05 Table 1). The propq is
-     * left NULL, not "provider=hybrid": CMS applies it to *every* fetch,
+     * composite's prehash PH (cms-composite-sigs-05 sec. 3.4, Table 1). The
+     * propq is left NULL, not "provider=hybrid": CMS applies it to every fetch,
      * including the generic digest, which the composite provider does not
      * implement. The signature is bound to the composite key via `pkey`, so
      * it stays composite regardless. */
@@ -295,17 +305,17 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr)
             || CMS_final(cms, in, NULL, flags) <= 0)
         goto fail;
     /* digestAlgorithm MUST be PH; with signed attributes the messageDigest
-     * attribute MUST be PH(content), 64 bytes for SHAKE256 (sec. 3.3). */
+     * attribute MUST be PH(content), 64 bytes for SHAKE256 (secs. 3.3, 3.4). */
     /* -noattr: the SignerInfo signature is Composite-Sign over the content
      * itself (sec. 3.3), however CMS computed it (here via external prehash).
      * Check it through the message route, not through CMS. */
-    if (noattr && !signs_content(libctx, pkey, si, content,
+    if (mode == SI_NOATTR && !signs_content(libctx, pkey, si, content,
                                  sizeof(content) - 1)) {
         printf("FAIL (-noattr signature does not verify over the content)\n");
         failed++;
         goto done;
     }
-    if (!digest_is_ph(libctx, pkey, si, noattr, content, sizeof(content) - 1)) {
+    if (!digest_is_ph(libctx, pkey, si, mode, content, sizeof(content) - 1)) {
         printf("FAIL (digestAlgorithm / messageDigest is not the Table 1 "
                "digest)\n");
         failed++;
@@ -486,10 +496,10 @@ int main(void)
         const COMPOSITE_SIG_INFO *info = &composite_sig_table[i];
 
         if (info->tier == COMPOSITE_TIER_STANDARD || have_oqs) {
-            check(ctx, info->name, 0);   /* signed attrs */
-            check(ctx, info->name, 1);   /* CMS_NOATTR */
-            check_wrong_digest(ctx, info, 0);
-            check_wrong_digest(ctx, info, 1);
+            check(ctx, info->name, SI_SIGNED_ATTRS);
+            check(ctx, info->name, SI_NOATTR);
+            check_wrong_digest(ctx, info, SI_SIGNED_ATTRS);
+            check_wrong_digest(ctx, info, SI_NOATTR);
 #ifdef OSSL_SIGNATURE_PARAM_SIGNATURE
             check_message_api(ctx, info->name);            /* issue #109 API */
 #endif

@@ -12,11 +12,13 @@
 
 /*
  * Key and operation helpers shared by the table-driven negative/dispatch tests
- * (hybrid_op_neg_test, hybrid_dispatch_test). Every fetch pins the hybrid
+ * (hybrid_op_neg_test, hybrid_dispatch_test) and the composite digest checks
+ * (composite_cms_test, composite_kat_test). Every fetch pins the hybrid
  * provider via HYBRID_TEST_PROPQ; every helper clears the error queue so a
  * probe that fails by design leaves nothing behind for the next check.
  */
 #include <stdio.h>
+#include <string.h>
 #include <openssl/evp.h>
 #include <openssl/err.h>
 
@@ -122,6 +124,27 @@ static inline int hybrid_test_decaps(OSSL_LIB_CTX *ctx, EVP_PKEY *k,
     EVP_PKEY_CTX_free(c);
     ERR_clear_error();
     return r;
+}
+
+/* EVP_PKEY_get_default_digest_name(3) returns 2 when the digest it names is
+ * mandatory for the key. */
+#define HYBRID_TEST_DIGEST_MANDATORY 2
+
+/* 1 iff `k` names a real mandatory digest into buf (a composite's prehash PH).
+ * An md-less key (the hybrids) reports "UNDEF" instead. */
+static inline int hybrid_test_mandatory_digest(EVP_PKEY *k, char *buf,
+                                               size_t buflen)
+{
+    return EVP_PKEY_get_default_digest_name(k, buf, buflen)
+               == HYBRID_TEST_DIGEST_MANDATORY
+           && buf[0] != '\0' && strcmp(buf, "UNDEF") != 0;
+}
+
+/* The realistic wrong digest for a composite prehash `ph`: SHA-256 for the
+ * SHA-512 combos, else SHA-512. `ph` is a composite_sig_table prehash name. */
+static inline const char *hybrid_test_other_digest(const char *ph)
+{
+    return strcmp(ph, "SHA512") == 0 ? "SHA256" : "SHA512";
 }
 
 #endif /* HYBRID_TEST_KEY_UTIL_H */

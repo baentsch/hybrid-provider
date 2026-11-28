@@ -162,7 +162,10 @@ end:
     return r;
 }
 
-static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
+/* Which family a check_sig row is: the wire formats and digest rules differ. */
+typedef enum { SIG_FAMILY_HYBRID, SIG_FAMILY_COMPOSITE } SIG_FAMILY;
+
+static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, SIG_FAMILY fam)
 {
     EVP_PKEY *k = NULL, *pub = NULL, *empty = NULL;
     EVP_MD_CTX *m = NULL;
@@ -204,7 +207,7 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
      * fails); a composite signature may be shorter than its bound (variable
      * ECDSA DER), so it is offered half the bound, always below the fixed PQ
      * part plus any classical signature. */
-    small = is_hybrid ? maxlen - 1 : maxlen / 2;
+    small = fam == SIG_FAMILY_HYBRID ? maxlen - 1 : maxlen / 2;
     EXPECT(EVP_DigestSign(m, sig, &small, msg, sizeof(msg)) <= 0,
            "sign into a too-small buffer");
     ERR_clear_error();
@@ -225,7 +228,7 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
     memcpy(bad, sig, siglen);
     bad[siglen - 1] ^= 0x01;
     EXPECT(!VERIFIES(pub, bad, siglen), "bit-flipped signature");
-    if (is_hybrid) {
+    if (fam == SIG_FAMILY_HYBRID) {
         /* Hybrid wire format: UINT32(len1) || sig1 || sig2. */
         memcpy(bad, sig, siglen);
         put_be32(bad, 0xFFFFFFFFu);
@@ -265,7 +268,7 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
         ERR_clear_error();
         /* Refusing is fail-closed for a hybrid (a component cannot honour
          * it); composite binds it into M' itself, so must sign. */
-        EXPECT(bound || is_hybrid, "composite refused a context string");
+        EXPECT(bound || fam == SIG_FAMILY_HYBRID, "composite refused a context string");
         if (bound) {
             EXPECT(hybrid_test_verify(ctx, pub, sig, cslen, msg, sizeof(msg),
                                       pa),
@@ -376,19 +379,18 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
     /* S6: the digests are fixed by the algorithm, so a caller digest must be
      * refused, not silently overridden. A composite names its prehash PH as the
      * mandatory digest and accepts exactly that one (cms-composite-sigs-05
-     * Table 1: CMS passes it as the SignerInfo digestAlgorithm), and refuses
-     * the realistic wrong one (SHA-256 for SHA-512 combos, else SHA-512). A
-     * hybrid accepts none. */
+     * sec. 3.4, Table 1: CMS passes it as the SignerInfo digestAlgorithm), and
+     * refuses the realistic wrong one (SHA-256 for SHA-512 combos, else
+     * SHA-512). A hybrid accepts none. */
     {
-        char ph[64] = "";
         const char *bad = "SHA256";
+#ifdef HYBRID_COMPOSITE
+        char ph[64] = "";
 
-        if (!is_hybrid) {
-            EXPECT(EVP_PKEY_get_default_digest_name(k, ph, sizeof(ph)) == 2
-                   && ph[0] != '\0' && strcmp(ph, "UNDEF") != 0,
+        if (fam == SIG_FAMILY_COMPOSITE) {
+            EXPECT(hybrid_test_mandatory_digest(k, ph, sizeof(ph)),
                    "composite names no mandatory digest");
-            if (OPENSSL_strcasecmp(ph, "SHA512") != 0)
-                bad = "SHA512";
+            bad = hybrid_test_other_digest(ph);
             EVP_MD_CTX_reset(m);
             EXPECT(EVP_DigestSignInit_ex(m, NULL, ph, ctx, PROPQ, k, NULL) > 0,
                    "sign-init refused the composite's own prehash");
@@ -397,6 +399,7 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, int is_hybrid)
                                            NULL) > 0,
                    "verify-init refused the composite's own prehash");
         }
+#endif
         EVP_MD_CTX_reset(m);
         EXPECT(EVP_DigestSignInit_ex(m, NULL, bad, ctx, PROPQ, k, NULL) <= 0,
                "sign-init accepted an explicit digest");
@@ -569,12 +572,12 @@ int main(void)
     printf("operation negatives: sign/verify + encaps/decaps misuse\n");
     printf("========================================================\n");
     for (i = 0; i < HYBRID_SIG_ALG_COUNT; i++)
-        check_sig(ctx, hybrid_sig_table[i].hybrid_name, 1);
+        check_sig(ctx, hybrid_sig_table[i].hybrid_name, SIG_FAMILY_HYBRID);
     for (i = 0; i < HYBRID_KEM_ALG_COUNT; i++)
         check_kem(ctx, hybrid_kem_table[i].hybrid_name);
 #ifdef HYBRID_COMPOSITE
     for (i = 0; i < COMPOSITE_SIG_ALG_COUNT; i++)
-        check_sig(ctx, composite_sig_table[i].name, 0);
+        check_sig(ctx, composite_sig_table[i].name, SIG_FAMILY_COMPOSITE);
     for (i = 0; i < COMPOSITE_KEM_ALG_COUNT; i++)
         check_kem(ctx, composite_kem_table[i].name);
 #endif

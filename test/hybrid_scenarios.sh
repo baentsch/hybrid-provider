@@ -662,7 +662,7 @@ sig_cert_one() {
         no "$alg  (cert signature algorithm mismatch)"; return
     fi
     # CMS sign + verify. An algorithm whose signature takes a digest param (the
-    # composites: it must be their prehash, cms-composite-sigs-05 Table 1)
+    # composites: it must be their prehash, cms-composite-sigs-05 sec. 3.4)
     # names it as the key's mandatory digest, so CMS picks it unprompted; any
     # failure there is real. Hashless hybrids have none: name one for the
     # SignedAttributes messageDigest.

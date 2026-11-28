@@ -144,20 +144,27 @@ int composite_build_mprime(const COMPOSITE_SIG_INFO *info,
                                        outlen);
 }
 
+/* What sign()/verify() are handed: the message M, or ph = PH(M) computed by
+ * the caller (draft-19 "External Pre-hashing"). */
+typedef enum {
+    COMPOSITE_INPUT_MESSAGE,
+    COMPOSITE_INPUT_PREHASH
+} COMPOSITE_INPUT;
+
 /*
- * M' from the caller's input: the message itself, or (prehashed) ph = PH(M)
+ * M' from the caller's input: the message itself, or ph = PH(M)
  * computed outside -- draft-19 "External Pre-hashing", compliant as it yields
  * the same output. A ph must be exactly PH's length.
  */
 static int composite_mprime(const COMPOSITE_SIG_INFO *info,
-                            OSSL_LIB_CTX *libctx, int prehashed,
+                            OSSL_LIB_CTX *libctx, COMPOSITE_INPUT input,
                             const unsigned char *in, size_t inlen,
                             const unsigned char *ctx, size_t ctxlen,
                             unsigned char **out, size_t *outlen)
 {
     size_t want;
 
-    if (!prehashed)
+    if (input == COMPOSITE_INPUT_MESSAGE)
         return composite_build_mprime(info, libctx, in, inlen, ctx, ctxlen,
                                       out, outlen);
     want = composite_ph_len(info, libctx);
@@ -273,7 +280,7 @@ end:
     return ret;
 }
 
-static int composite_sign_ex(int prehashed,
+static int composite_sign_ex(COMPOSITE_INPUT input,
                    const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                    OSSL_LIB_CTX *libctx, const char *alg2_propq,
                    const char *trad_propq, const unsigned char *msg,
@@ -284,7 +291,7 @@ static int composite_sign_ex(int prehashed,
     size_t mplen = 0, pqlen = 0, tradlen = 0;
     int ret = 0;
 
-    if (!composite_mprime(info, libctx, prehashed, msg, msglen, ctx, ctxlen,
+    if (!composite_mprime(info, libctx, input, msg, msglen, ctx, ctxlen,
                           &mp, &mplen)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "composite sign: message prehash (M') failed");
@@ -316,7 +323,7 @@ end:
     return ret;
 }
 
-static int composite_verify_ex(int prehashed,
+static int composite_verify_ex(COMPOSITE_INPUT input,
                    const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                      OSSL_LIB_CTX *libctx, const char *alg2_propq,
                      const char *trad_propq, const unsigned char *msg,
@@ -341,7 +348,7 @@ static int composite_verify_ex(int prehashed,
                        "the %d-byte PQ component", siglen, pqfixed);
         return 0;                          /* need room for both components */
     }
-    if (!composite_mprime(info, libctx, prehashed, msg, msglen, ctx, ctxlen,
+    if (!composite_mprime(info, libctx, input, msg, msglen, ctx, ctxlen,
                           &mp, &mplen)) {
         ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
                        "composite verify: message prehash (M') failed");
@@ -372,8 +379,9 @@ int composite_sign(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq, EVP_PKEY *trad,
                    size_t msglen, const unsigned char *ctx, size_t ctxlen,
                    unsigned char **sig, size_t *siglen)
 {
-    return composite_sign_ex(0, info, pq, trad, libctx, alg2_propq, trad_propq,
-                             msg, msglen, ctx, ctxlen, sig, siglen);
+    return composite_sign_ex(COMPOSITE_INPUT_MESSAGE, info, pq, trad, libctx,
+                             alg2_propq, trad_propq, msg, msglen, ctx, ctxlen,
+                             sig, siglen);
 }
 
 int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq,
@@ -383,9 +391,9 @@ int composite_verify(const COMPOSITE_SIG_INFO *info, EVP_PKEY *pq,
                      size_t msglen, const unsigned char *ctx, size_t ctxlen,
                      const unsigned char *sig, size_t siglen)
 {
-    return composite_verify_ex(0, info, pq, trad, libctx, alg2_propq,
-                               trad_propq, msg, msglen, ctx, ctxlen, sig,
-                               siglen);
+    return composite_verify_ex(COMPOSITE_INPUT_MESSAGE, info, pq, trad, libctx,
+                               alg2_propq, trad_propq, msg, msglen, ctx, ctxlen,
+                               sig, siglen);
 }
 
 /* --- Provider signature dispatch (wraps the combiner over a COMPOSITE_KEY) --- */
@@ -403,10 +411,10 @@ typedef struct {
     /* Caller context string, bound into M' (inline: a struct copy dups it). */
     unsigned char ctxstr[COMPOSITE_SIG_CTX_MAX];
     size_t ctxstrlen;
-    /* Set by sign_init/verify_init: sign()/verify() then take ph = PH(M), as
-     * EVP_PKEY_sign() hands a digest (CMS -noattr signs that way). The
-     * message inits clear it: there sign()/verify() take the message. */
-    int prehashed;
+    /* PREHASH after sign_init/verify_init: sign()/verify() then take
+     * ph = PH(M), as EVP_PKEY_sign() hands a digest (CMS -noattr signs that
+     * way). Every other init sets MESSAGE. */
+    COMPOSITE_INPUT input;
 } COMPOSITE_SIGCTX;
 
 static void *composite_sig_newctx(void *provctx, const char *propq)
@@ -504,7 +512,7 @@ static int composite_sig_apply_params(COMPOSITE_SIGCTX *c,
 #endif
 }
 
-/* CMS composite sigs (draft-ietf-lamps-cms-composite-sigs-05 3.3, Table 1):
+/* CMS composite sigs (draft-ietf-lamps-cms-composite-sigs-05 sec. 3.4, Table 1):
  * the SignerInfo digestAlgorithm MUST be the composite's own prehash, and the
  * CMS layer hands it to us as mdname. Accept none, or exactly PH; refuse any
  * other digest instead of signing a message the verifier would mis-hash. */
@@ -540,7 +548,7 @@ static int composite_sig_sign_init(void *vctx, const char *mdname, void *vkey,
     if (!composite_sig_check_digest(k, mdname))
         return 0;
     c->key = k;
-    c->prehashed = 0;
+    c->input = COMPOSITE_INPUT_MESSAGE;
     hybrid_msg_accum_reset(&c->stream);
     return composite_sig_apply_params(c, params);
 }
@@ -559,14 +567,15 @@ static int composite_sig_verify_init(void *vctx, const char *mdname, void *vkey,
     if (!composite_sig_check_digest(k, mdname))
         return 0;
     c->key = k;
-    c->prehashed = 0;
+    c->input = COMPOSITE_INPUT_MESSAGE;
     hybrid_msg_accum_reset(&c->stream);
     return composite_sig_apply_params(c, params);
 }
 
-static int composite_sig_do_sign(void *vctx, int prehashed, unsigned char *sig,
-                                 size_t *siglen, size_t sigsize,
-                                     const unsigned char *tbs, size_t tbslen)
+static int composite_sig_do_sign(void *vctx, COMPOSITE_INPUT input,
+                                 unsigned char *sig, size_t *siglen,
+                                 size_t sigsize, const unsigned char *tbs,
+                                 size_t tbslen)
 {
     COMPOSITE_SIGCTX *c = vctx;
     COMPOSITE_KEY *k = c->key;
@@ -579,7 +588,7 @@ static int composite_sig_do_sign(void *vctx, int prehashed, unsigned char *sig,
                 + (size_t)EVP_PKEY_get_size(k->trad_key);
         return 1;
     }
-    if (!composite_sign_ex(prehashed, k->info, k->pq_key, k->trad_key,
+    if (!composite_sign_ex(input, k->info, k->pq_key, k->trad_key,
                            k->libctx, k->alg2_propq, k->trad_propq, tbs, tbslen,
                            c->ctxstr, c->ctxstrlen, &tmp, &tlen))
         return 0;                            /* composite_sign already raised */
@@ -600,7 +609,8 @@ static int composite_sig_digest_sign(void *vctx, unsigned char *sig,
                                      size_t *siglen, size_t sigsize,
                                      const unsigned char *tbs, size_t tbslen)
 {
-    return composite_sig_do_sign(vctx, 0, sig, siglen, sigsize, tbs, tbslen);
+    return composite_sig_do_sign(vctx, COMPOSITE_INPUT_MESSAGE, sig, siglen,
+                                 sigsize, tbs, tbslen);
 }
 
 /* EVP_PKEY_sign(): ph after sign_init, the message after sign_message_init. */
@@ -610,7 +620,7 @@ static int composite_sig_sign(void *vctx, unsigned char *sig, size_t *siglen,
 {
     COMPOSITE_SIGCTX *c = vctx;
 
-    return composite_sig_do_sign(vctx, c->prehashed, sig, siglen, sigsize,
+    return composite_sig_do_sign(vctx, c->input, sig, siglen, sigsize,
                                  tbs, tbslen);
 }
 
@@ -621,8 +631,9 @@ static int composite_sig_digest_verify(void *vctx, const unsigned char *sig,
     COMPOSITE_SIGCTX *c = vctx;
     COMPOSITE_KEY *k = c->key;
 
-    return composite_verify_ex(0, k->info, k->pq_key, k->trad_key, k->libctx,
-                               k->alg2_propq, k->trad_propq, tbs, tbslen,
+    return composite_verify_ex(COMPOSITE_INPUT_MESSAGE, k->info, k->pq_key,
+                               k->trad_key, k->libctx, k->alg2_propq,
+                               k->trad_propq, tbs, tbslen,
                                c->ctxstr, c->ctxstrlen, sig, siglen);
 }
 
@@ -634,7 +645,7 @@ static int composite_sig_verify(void *vctx, const unsigned char *sig,
     COMPOSITE_SIGCTX *c = vctx;
     COMPOSITE_KEY *k = c->key;
 
-    return composite_verify_ex(c->prehashed, k->info, k->pq_key, k->trad_key,
+    return composite_verify_ex(c->input, k->info, k->pq_key, k->trad_key,
                                k->libctx, k->alg2_propq, k->trad_propq, tbs,
                                tbslen, c->ctxstr, c->ctxstrlen, sig, siglen);
 }
@@ -650,7 +661,7 @@ static int composite_sig_raw_sign_init(void *vctx, void *vkey,
 {
     if (!composite_sig_sign_init(vctx, NULL, vkey, params))
         return 0;
-    ((COMPOSITE_SIGCTX *)vctx)->prehashed = 1;
+    ((COMPOSITE_SIGCTX *)vctx)->input = COMPOSITE_INPUT_PREHASH;
     return 1;
 }
 
@@ -659,7 +670,7 @@ static int composite_sig_raw_verify_init(void *vctx, void *vkey,
 {
     if (!composite_sig_verify_init(vctx, NULL, vkey, params))
         return 0;
-    ((COMPOSITE_SIGCTX *)vctx)->prehashed = 1;
+    ((COMPOSITE_SIGCTX *)vctx)->input = COMPOSITE_INPUT_PREHASH;
     return 1;
 }
 

@@ -218,7 +218,7 @@ standardized ML-DSA tier and the experimental tier — a self-signed cert →
 `SignedData` sign → verify round-trip plus a tampered-content negative, in **both**
 SignerInfo modes (signed attributes and `-noattr`), from OpenSSL 3.5. No digest is
 passed: CMS takes the key's mandatory digest, the composite's prehash, and the test
-checks it is the `draft-ietf-lamps-cms-composite-sigs-05` Table 1 digest, that the
+checks it is the `draft-ietf-lamps-cms-composite-sigs-05` §3.4 Table 1 digest, that the
 `messageDigest` attribute is the prehash of the content, that a `-noattr`
 signature verifies over the raw content outside CMS (`-noattr` signs by external
 prehash), and that a signer naming another digest is refused. The draft's Appendix B example is

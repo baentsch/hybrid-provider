@@ -142,7 +142,7 @@ binding `draft-ietf-lamps-cms-composite-sigs-05` — in both SignerInfo modes
 (signed attributes and `-noattr`), the signature counterpart to the composite
 ML-KEM KEMRI coverage in §2.4. Each composite key names its prehash `PH` as its
 mandatory digest, so CMS uses it as the SignerInfo `digestAlgorithm` (the
-draft's Table 1: SHA-256 for the three `*-SHA256` combos, SHAKE256 at 64 bytes
+draft's §3.4 Table 1: SHA-256 for the three `*-SHA256` combos, SHAKE256 at 64 bytes
 for `mldsa87_ed448`, SHA-512 otherwise) and refuses any other digest. With
 signed attributes CMS hands the composite the encoded attributes; with
 `-noattr` it hashes the content with `PH` and the composite signs that hash —
@@ -183,7 +183,7 @@ over `PH(m)`, a signature made over `PH(m)` verifies over `m`, and a wrong-lengt
 prehash or a digest other than `PH` is refused (`composite_kat_test` K8).
 CMS (`-05`): the draft's Appendix B SignedData verifies under the draft-19
 `x5c`, and fails with a flipped signature byte (K9). For every combo, in both
-SignerInfo modes, `digestAlgorithm` is the Table 1 digest with absent
+SignerInfo modes, `digestAlgorithm` is the §3.4 Table 1 digest with absent
 parameters, the `messageDigest` attribute is `PH(content)` at `PH`'s length, a
 `-noattr` signature verifies over the raw content outside CMS, tampered content
 is rejected, and the other common digest (SHA-256 for SHA-512 combos, else

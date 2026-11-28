@@ -142,7 +142,7 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 — Provider-level composite signatures through EVP by name (`provider=hybrid`): keygen/sign/verify per combo.
 #### 26. composite_cms_test
 
-— Composite signatures as CMS SignedData (signed attrs + `-noattr`) per combo with the CMS draft's Table 1 digest: `digestAlgorithm` and `messageDigest` checked, a `-noattr` signature verified over the raw content outside CMS, a signer naming another digest refused; plus the direct message-signature API round-trip.
+— Composite signatures as CMS SignedData (signed attrs + `-noattr`) per combo with the CMS draft's §3.4 Table 1 digest: `digestAlgorithm` and `messageDigest` checked, a `-noattr` signature verified over the raw content outside CMS, a signer naming another digest refused; plus the direct message-signature API round-trip.
 #### 27. composite_kat_test
 
 — draft-19 reference KAT interop for composite signatures (cross-impl vs lamps-wg/draft-composite-sigs), covering every vector field: `s`, `sWithContext` under the draft's `ctx` (and that ctx is bound), `sk` import, a fresh signature by `sk`, `sk_pkcs8` decode, the self-signed `x5c`, external prehashing over `PH(m)` (K8), and the CMS draft's Appendix B SignedData under the `mldsa65_ecdsa_p256` `x5c` (K9); 3.5+ only.

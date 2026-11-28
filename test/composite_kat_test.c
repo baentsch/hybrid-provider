@@ -46,6 +46,7 @@
 #include "hybrid_asn1_compat.h"
 #include "composite_prov.h"   /* composite_sig_table: map KAT name -> PQ component */
 #include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
+#include "key_util.h"    /* hybrid_test_other_digest */
 
 static int tests, passed, failed, skipped;
 
@@ -233,21 +234,14 @@ static int prehash(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
     return r;
 }
 
-/*
- * A real digest that is not `ph`: SHA-256 for the SHA-512 combos, else
- * SHA-512 -- the realistic wrong choice for each combo.
- */
-static const char *other_digest(const char *ph)
-{
-    return OPENSSL_strcasecmp(ph, "SHA512") == 0 ? "SHA256" : "SHA512";
-}
+typedef enum { PH_VERIFY, PH_SIGN } PH_OP;
 
 /*
  * Raw EVP_PKEY_sign/verify over ph = PH(M) (draft-19 "External Pre-hashing"):
- * op 0 = verify sig, 1 = sign into *sig. digest (optional) is set as the
- * signature digest param the way EVP_SignFinal_ex does.
+ * PH_VERIFY checks *sig, PH_SIGN signs into *sig. digest (optional) is set as
+ * the signature digest param the way EVP_SignFinal_ex does.
  */
-static int ph_op(OSSL_LIB_CTX *ctx, EVP_PKEY *key, int op, const char *digest,
+static int ph_op(OSSL_LIB_CTX *ctx, EVP_PKEY *key, PH_OP op, const char *digest,
                  const unsigned char *ph, size_t phlen,
                  const unsigned char *cs, size_t cslen,
                  unsigned char **sig, size_t *siglen)
@@ -264,10 +258,11 @@ static int ph_op(OSSL_LIB_CTX *ctx, EVP_PKEY *key, int op, const char *digest,
                    OSSL_SIGNATURE_PARAM_CONTEXT_STRING, (void *)cs, cslen);
     *q = OSSL_PARAM_construct_end();
     if (pc == NULL
-            || (op ? EVP_PKEY_sign_init(pc) : EVP_PKEY_verify_init(pc)) <= 0
+            || (op == PH_SIGN ? EVP_PKEY_sign_init(pc)
+                              : EVP_PKEY_verify_init(pc)) <= 0
             || EVP_PKEY_CTX_set_params(pc, p) <= 0)
         goto end;
-    if (op) {
+    if (op == PH_SIGN) {
         r = EVP_PKEY_sign(pc, NULL, siglen, ph, phlen) > 0
             && (*sig = OPENSSL_malloc(*siglen)) != NULL
             && EVP_PKEY_sign(pc, *sig, siglen, ph, phlen) > 0;
@@ -280,26 +275,66 @@ end:
     return r;
 }
 
-/* K9 input: the CMS draft's Appendix B example, signed by this tcId's x5c. */
+/*
+ * K9 input: the CMS draft's Appendix B example, signed by one combo's x5c. The
+ * combo is read from the file (its SignerInfo signatureAlgorithm OID), so the
+ * vendored file alone pins the draft revision and its signer.
+ */
 static const char *appb_file;
-static const char APPB_ALG[] = "mldsa65_ecdsa_p256";
+static char appb_oid[64];
 static int appb_done;
 
-/* 1 iff the Appendix B SignedData verifies under signer cert x (tamper=0), or
- * still verifies after one signature byte is flipped (tamper=1). */
-static int appb_verifies(OSSL_LIB_CTX *ctx, X509 *x, int tamper)
+typedef enum { APPB_AS_IS, APPB_TAMPERED } APPB_COPY;
+
+static CMS_ContentInfo *appb_read(OSSL_LIB_CTX *ctx)
 {
     BIO *b = BIO_new_file(appb_file, "r");
     CMS_ContentInfo *cms = CMS_ContentInfo_new_ex(ctx, NULL);
+
+    if (b == NULL || cms == NULL
+            || PEM_read_bio_CMS(b, &cms, NULL, NULL) == NULL) {
+        CMS_ContentInfo_free(cms);
+        cms = NULL;
+    }
+    BIO_free(b);
+    return cms;
+}
+
+/* The numeric OID of the example's (single) signer into appb_oid; 0 if the
+ * file can't be read or doesn't hold exactly one SignerInfo. */
+static int appb_load_oid(OSSL_LIB_CTX *ctx)
+{
+    CMS_ContentInfo *cms = appb_read(ctx);
+    STACK_OF(CMS_SignerInfo) *sis = cms != NULL ? CMS_get0_SignerInfos(cms)
+                                                : NULL;
+    X509_ALGOR *sigalg = NULL;
+    int ok = 0;
+
+    if (sis != NULL && sk_CMS_SignerInfo_num(sis) == 1) {
+        CMS_SignerInfo_get0_algs(sk_CMS_SignerInfo_value(sis, 0), NULL, NULL,
+                                 NULL, &sigalg);
+        ok = sigalg != NULL
+             && OBJ_obj2txt(appb_oid, sizeof(appb_oid), sigalg->algorithm, 1)
+                > 0;
+    }
+    CMS_ContentInfo_free(cms);
+    ERR_clear_error();
+    return ok;
+}
+
+/* 1 iff the Appendix B SignedData verifies under signer cert x: as vendored,
+ * or (APPB_TAMPERED) with one signature byte flipped. */
+static int appb_verifies(OSSL_LIB_CTX *ctx, X509 *x, APPB_COPY copy)
+{
+    CMS_ContentInfo *cms = appb_read(ctx);
     STACK_OF(X509) *certs = sk_X509_new_null();
     X509_STORE *store = X509_STORE_new();
     int r = 0;
 
-    if (b == NULL || cms == NULL || certs == NULL || store == NULL
-            || PEM_read_bio_CMS(b, &cms, NULL, NULL) == NULL
+    if (cms == NULL || certs == NULL || store == NULL
             || !sk_X509_push(certs, x) || X509_STORE_add_cert(store, x) <= 0)
         goto end;
-    if (tamper) {
+    if (copy == APPB_TAMPERED) {
         CMS_SignerInfo *si =
             sk_CMS_SignerInfo_value(CMS_get0_SignerInfos(cms), 0);
         ASN1_OCTET_STRING *sig = si != NULL ? CMS_SignerInfo_get0_signature(si)
@@ -317,7 +352,6 @@ end:
     X509_STORE_free(store);
     sk_X509_free(certs);
     CMS_ContentInfo_free(cms);
-    BIO_free(b);
     return r;
 }
 
@@ -403,27 +437,31 @@ static void check(OSSL_LIB_CTX *ctx, const KAT *k,
         int got;
 
         EXPECT(prehash(ctx, info, msg, msglen, ph, &phlen), "K8: PH(m)");
-        EXPECT(ph_op(ctx, pub, 0, info->prehash, ph, phlen, NULL, 0, &s,
-                     &slen), "K8: s does not verify over PH(m)");
-        EXPECT(ph_op(ctx, pub, 0, NULL, ph, phlen, cs, cslen, &sc, &sclen),
+        EXPECT(ph_op(ctx, pub, PH_VERIFY, info->prehash, ph, phlen, NULL, 0,
+                     &s, &slen), "K8: s does not verify over PH(m)");
+        EXPECT(ph_op(ctx, pub, PH_VERIFY, NULL, ph, phlen, cs, cslen, &sc,
+                     &sclen),
                "K8: sWithContext does not verify over PH(m) under ctx");
-        got = ph_op(ctx, prv, 1, info->prehash, ph, phlen, cs, cslen, &phsig,
-                    &phsiglen);
+        got = ph_op(ctx, prv, PH_SIGN, info->prehash, ph, phlen, cs, cslen,
+                    &phsig, &phsiglen);
         EXPECT(got && verifies(ctx, pub, phsig, phsiglen, msg, msglen, cs,
                                cslen),
                "K8: a PH(m) signature does not verify over m");
         OPENSSL_free(phsig);
-        EXPECT(!ph_op(ctx, pub, 0, NULL, ph, phlen - 1, NULL, 0, &s, &slen),
+        EXPECT(!ph_op(ctx, pub, PH_VERIFY, NULL, ph, phlen - 1, NULL, 0, &s,
+                      &slen),
                "K8: a short ph verified");
-        EXPECT(!ph_op(ctx, pub, 0, other_digest(info->prehash), ph, phlen,
+        EXPECT(!ph_op(ctx, pub, PH_VERIFY,
+                      hybrid_test_other_digest(info->prehash), ph, phlen,
                       NULL, 0, &s, &slen),
                "K8: a digest other than PH accepted");
     }
     /* K9 */
-    if (appb_file != NULL && strcmp(k->name, APPB_ALG) == 0) {
+    if (appb_oid[0] != '\0' && info->oid != NULL
+            && strcmp(info->oid, appb_oid) == 0) {
         appb_done = 1;
-        EXPECT(appb_verifies(ctx, x, 0), "K9: Appendix B SignedData");
-        EXPECT(!appb_verifies(ctx, x, 1),
+        EXPECT(appb_verifies(ctx, x, APPB_AS_IS), "K9: Appendix B SignedData");
+        EXPECT(!appb_verifies(ctx, x, APPB_TAMPERED),
                "K9: Appendix B verified with a flipped signature byte");
     }
 end:
@@ -465,6 +503,11 @@ int main(int argc, char **argv)
     }
     ERR_clear_error();
     appb_file = argc > 2 ? argv[2] : NULL;
+    if (appb_file != NULL && !appb_load_oid(ctx)) {
+        fprintf(stderr, "cannot read one signer from %s\n", appb_file);
+        hybrid_test_libctx_free(ctx);
+        return 1;
+    }
 
     if ((f = fopen(katfile, "r")) == NULL) {
         fprintf(stderr, "cannot open KAT file: %s\n", katfile);
@@ -545,7 +588,8 @@ int main(int argc, char **argv)
     fclose(f);
 
     if (appb_file != NULL && !appb_done)
-        printf("  NOTE: K9 (CMS Appendix B) not run: %s skipped\n", APPB_ALG);
+        printf("  NOTE: K9 (CMS Appendix B) not run: no row with OID %s\n",
+               appb_oid);
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 

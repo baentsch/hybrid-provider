@@ -758,7 +758,7 @@ drive the component contexts directly.
 A composite signature hashes the message with a fixed prehash `PH` before
 building `M'`, and draft-19 allows that step to run outside the signer
 ("External Pre-hashing") as long as the output is the same. The CMS binding
-(`draft-ietf-lamps-cms-composite-sigs-05` §3.3) requires the SignerInfo
+(`draft-ietf-lamps-cms-composite-sigs-05` §3.1, §3.4) requires the SignerInfo
 `digestAlgorithm` to be `PH`. So a composite key reports `PH` as its mandatory
 digest (`OSSL_PKEY_PARAM_MANDATORY_DIGEST`), unlike the hybrids, which report
 none (`UNDEF`). OpenSSL's CMS layer then:

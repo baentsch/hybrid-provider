@@ -137,8 +137,8 @@ static int composite_get_params(void *vkey, OSSL_PARAM params[])
             return 0;
     }
     /* Mandatory digest = PH: CMS then puts it in digestAlgorithm and passes
-     * it to the signature (cms-composite-sigs-05 Table 1), which accepts only
-     * PH. */
+     * it to the signature (cms-composite-sigs-05 sec. 3.4, Table 1), which
+     * accepts only PH. */
     p = OSSL_PARAM_locate(params, OSSL_PKEY_PARAM_MANDATORY_DIGEST);
     if (p != NULL && !OSSL_PARAM_set_utf8_string(p, k->info->prehash))
         return 0;

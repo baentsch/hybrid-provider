@@ -62,7 +62,7 @@
 #define COMPOSITE_SIG_CTX_MAX HYBRID_SIG_CTX_MAX
 /* draft-19 uses SHAKE256 with a fixed 64-byte (512-bit) output for the one XOF
  * prehash (the Ed448 combo); a fixed-length digest just uses its natural size.
- * cms-composite-sigs-05 sec. 3.3 fixes the same 64 bytes for messageDigest. */
+ * cms-composite-sigs-05 sec. 3.4 fixes the same 64 bytes for messageDigest. */
 #define COMPOSITE_XOF_PH_BYTES 64
 
 /* The PQ private split length is discovered at runtime from the component
