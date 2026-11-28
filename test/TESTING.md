@@ -173,6 +173,9 @@ TLS-share `ENCODED_PUBLIC_KEY` exchange path for the OQS-legacy ML-KEM hybrids;
 #### 43. hybrid_alloc_fail_test
 
 — Allocation-failure injection: each provider-site allocation (keygen, operation round-trip, key file, provider load) is failed in turn; the run must fail closed (no corrupted signature verifies, no signature verifies under another context string, no wrong secret) with no provider block leaked. Signature rows that bind context strings also sign under one through a copied operation context.
+#### 44. hybrid_oqs_digest_compat_test
+
+— oqsprovider digest compatibility (`oqsprovider-digest-compat`), each provider in its own library context. For every hybrid oqsprovider serves, both directions: digest-sign naming SHA-256/-384/-512 and SHA3-256 crosses under the same digest and fails under another, raw `EVP_PKEY_sign` crosses, the message path still crosses. With the lever off a named digest is refused (init and `set_signature_md`), and on 3.4+ the raw path does not cross. Rows oqsprovider doesn't serve sign H(m) self-consistently. The lever is switched by the env var and (3.5+) the config key.
 
 ### Benchmarks (guard-only smoke under `ctest`)
 

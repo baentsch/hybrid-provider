@@ -17,11 +17,16 @@
  *   - md-less (every PQ signature and EdDSA): signs the raw message via
  *     EVP_DigestSign with a NULL digest.
  * Verify requires BOTH components to pass.
+ *
+ * A caller-named digest is refused, unless the oqsprovider digest-compatibility
+ * lever is on (HYBRID_CONF_OQS_DIGEST_COMPAT): see hybrid_sig_set_md and
+ * hybrid_sig_raw_input.
  */
 
 #include "hybrid_prov.h"
 #include "hybrid_msg_accum.h"
 #include <assert.h>
+#include <openssl/crypto.h>
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 #include <openssl/proverr.h>
@@ -52,6 +57,18 @@
 #endif
 
 /*
+ * What a digest-taking (ECDSA/RSA) component is handed. MESSAGE: it hashes its
+ * input with the level digest first (the default everywhere). PREHASHED: the
+ * input is already a digest and is signed as is (raw EVP_PKEY_sign in
+ * oqsprovider compatibility mode on OpenSSL 3.4+, see hybrid_sig_raw_input).
+ * md-less components always sign their input as is.
+ */
+typedef enum {
+    HYBRID_SIG_IN_MESSAGE,
+    HYBRID_SIG_IN_PREHASHED
+} HYBRID_SIG_INPUT;
+
+/*
  * The operation context carries no libctx of its own: the component sign/verify
  * below source their library context and property queries from the key
  * (key->libctx / HYBRID_KEY_*_PROPQ), captured from the provider's component
@@ -78,11 +95,27 @@ typedef struct {
      * the accumulated message in final(). Freed in freectx, deep-copied in dupctx.
      */
     HYBRID_MSG_ACCUM stream;
+    /* oqsprovider digest compatibility, copied from the provider instance. The
+     * provider's own libctx, where a caller-named digest is fetched (the
+     * component context may hold no digests). */
+    int oqs_compat;
+    OSSL_LIB_CTX *libctx;
+    /* Compat mode only: the caller's digest, from digest-sign init or the
+     * digest ctx-param. Digest-sign then signs H(message). Owned. */
+    EVP_MD *md;
+    HYBRID_SIG_INPUT input;
 } HYBRID_SIG_CTX;
 
 static void *hybrid_sig_newctx(void *provctx, const char *propq)
 {
-    return OPENSSL_zalloc(sizeof(HYBRID_SIG_CTX));
+    HYBRID_PROV_CTX *pc = provctx;
+    HYBRID_SIG_CTX *ctx = OPENSSL_zalloc(sizeof(HYBRID_SIG_CTX));
+
+    if (ctx != NULL && pc != NULL) {
+        ctx->oqs_compat = pc->oqs_digest_compat;
+        ctx->libctx = pc->libctx;
+    }
+    return ctx;
 }
 
 static void hybrid_sig_freectx(void *vctx)
@@ -92,6 +125,7 @@ static void hybrid_sig_freectx(void *vctx)
     if (ctx != NULL) {
         OPENSSL_free(ctx->ctxstr);
         hybrid_msg_accum_reset(&ctx->stream);
+        EVP_MD_free(ctx->md);
     }
     OPENSSL_free(ctx);
 }
@@ -107,7 +141,13 @@ static void *hybrid_sig_dupctx(void *vctx)
     /* Deep-copy the owned buffers so each ctx frees its own copy. Drop the
      * aliases first so a partial-copy error path frees only what it allocated. */
     ret->ctxstr = NULL;
+    ret->md = NULL;
     hybrid_msg_accum_init(&ret->stream);
+    if (ctx->md != NULL) {
+        if (!EVP_MD_up_ref(ctx->md))
+            goto err;
+        ret->md = ctx->md;
+    }
     if (ctx->ctxstr != NULL
             && (ret->ctxstr = OPENSSL_memdup(ctx->ctxstr, ctx->ctxstrlen)) == NULL)
         goto err;
@@ -120,19 +160,61 @@ err:
 }
 
 /*
- * Apply the settable ctx-params (issue #46). Currently just the signature
- * context string, which init and set_ctx_params both route through here so a
- * caller may supply it either in the *_init params or via a later
- * EVP_PKEY_CTX_set_params. An empty/absent value clears any stored string.
+ * A caller-named digest (digest-sign init, or the digest ctx-param). Refused by
+ * default: each component's digest is fixed by the algorithm. In oqsprovider
+ * compatibility mode it is accepted, as oqsprovider accepts any fetchable
+ * digest with a NID, and digest-sign then signs H(message). An empty name is
+ * none.
+ */
+static int hybrid_sig_set_md(HYBRID_SIG_CTX *ctx, const char *mdname)
+{
+    EVP_MD *md;
+
+    if (mdname == NULL || mdname[0] == '\0')
+        return 1;
+    if (!ctx->oqs_compat)
+        return hybrid_sig_no_explicit_digest(mdname, "hybrid");
+    md = EVP_MD_fetch(ctx->libctx, mdname, NULL);
+    if (md == NULL || EVP_MD_get_type(md) == NID_undef) {
+        EVP_MD_free(md);
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DIGEST,
+                       "digest %s cannot be used for a hybrid signature",
+                       mdname);
+        return 0;
+    }
+    EVP_MD_free(ctx->md);
+    ctx->md = md;
+    return 1;
+}
+
+/*
+ * Apply the settable ctx-params (issue #46): the signature context string, and
+ * a caller digest (refused unless in oqsprovider compatibility mode). Init and
+ * set_ctx_params both route through here, so a caller may supply either in the
+ * *_init params or via a later EVP_PKEY_CTX_set_params. An empty context string
+ * clears any stored one.
  */
 static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
                                     const OSSL_PARAM params[])
 {
+    const OSSL_PARAM *p;
+
     if (params == NULL)
         return 1;
+    p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_DIGEST);
+    if (p != NULL) {
+        const char *mdname = NULL;
+
+        if (!OSSL_PARAM_get_utf8_string_ptr(p, &mdname)) {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_INVALID_DATA,
+                           "signature digest must be a UTF8 string");
+            return 0;
+        }
+        if (!hybrid_sig_set_md(ctx, mdname))
+            return 0;
+    }
 #ifdef HYBRID_HAVE_CTX_STR
-    const OSSL_PARAM *p =
-        OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
+    p = OSSL_PARAM_locate_const(params, OSSL_SIGNATURE_PARAM_CONTEXT_STRING);
 
     if (p != NULL) {
         void *buf = NULL;
@@ -171,61 +253,86 @@ static int hybrid_sig_apply_params(HYBRID_SIG_CTX *ctx,
     return 1;
 }
 
+/*
+ * Every init: a key with the material `op` needs, then a fresh digest/input
+ * state (an init never inherits the previous operation's digest), then the
+ * caller's digest and params.
+ */
+static int hybrid_sig_init(HYBRID_SIG_CTX *ctx, HYBRID_KEY *key, int op,
+                           HYBRID_SIG_INPUT input, const char *mdname,
+                           const OSSL_PARAM params[])
+{
+    if (op == EVP_PKEY_OP_SIGN) {
+        if (key == NULL || !hybrid_have_prvkey(key)) {
+            ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PRIVATE_KEY,
+                           "hybrid signing requires a private key");
+            return 0;
+        }
+    } else if (key == NULL || !hybrid_have_pubkey(key)) {
+        ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PUBLIC_KEY,
+                       "hybrid verification requires a public key");
+        return 0;
+    }
+    ctx->key = key;
+    ctx->op = op;
+    ctx->input = input;
+    EVP_MD_free(ctx->md);
+    ctx->md = NULL;
+    return hybrid_sig_set_md(ctx, mdname)
+           && hybrid_sig_apply_params(ctx, params);
+}
+
 static int
 hybrid_sig_digest_sign_init(void *vctx, const char *mdname,
                              void *vkey, const OSSL_PARAM params[])
 {
-    HYBRID_SIG_CTX *ctx = vctx;
-    HYBRID_KEY *key = vkey;
-
-    if (!hybrid_sig_no_explicit_digest(mdname, "hybrid"))
-        return 0;
-    if (key == NULL || !hybrid_have_prvkey(key)) {
-        ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PRIVATE_KEY,
-                       "hybrid signing requires a private key");
-        return 0;
-    }
-    ctx->key = key;
-    ctx->op = EVP_PKEY_OP_SIGN;
-    return hybrid_sig_apply_params(ctx, params);
+    return hybrid_sig_init(vctx, vkey, EVP_PKEY_OP_SIGN, HYBRID_SIG_IN_MESSAGE,
+                           mdname, params);
 }
 
 static int
 hybrid_sig_digest_verify_init(void *vctx, const char *mdname,
                                void *vkey, const OSSL_PARAM params[])
 {
-    HYBRID_SIG_CTX *ctx = vctx;
-    HYBRID_KEY *key = vkey;
+    return hybrid_sig_init(vctx, vkey, EVP_PKEY_OP_VERIFY,
+                           HYBRID_SIG_IN_MESSAGE, mdname, params);
+}
 
-    if (!hybrid_sig_no_explicit_digest(mdname, "hybrid"))
-        return 0;
-    if (key == NULL || !hybrid_have_pubkey(key)) {
-        ERR_raise_data(ERR_LIB_PROV, PROV_R_NOT_A_PUBLIC_KEY,
-                       "hybrid verification requires a public key");
-        return 0;
-    }
-    ctx->key = key;
-    ctx->op = EVP_PKEY_OP_VERIFY;
-    return hybrid_sig_apply_params(ctx, params);
+/*
+ * What raw EVP_PKEY_sign/verify input is. By default the message, signed as by
+ * digest-sign. In oqsprovider compatibility mode on OpenSSL 3.4+ (built and
+ * running), an already-hashed value: oqsprovider's digest-taking component then
+ * signs it without hashing it again, and its md-less component signs it as is.
+ */
+static HYBRID_SIG_INPUT hybrid_sig_raw_input(const HYBRID_SIG_CTX *ctx)
+{
+#ifdef HYBRID_HAVE_MSG_SIG
+    if (ctx->oqs_compat
+            && OpenSSL_version_num() >= HYBRID_OQS_PREHASHED_RAW_FROM)
+        return HYBRID_SIG_IN_PREHASHED;
+#else
+    (void)ctx;
+#endif
+    return HYBRID_SIG_IN_MESSAGE;
 }
 
 /*
  * Raw (non-digest) signature init. EVP_PKEY_sign_init()/EVP_PKEY_verify_init()
  * dispatch here; without these entries the raw one-shot SIGN/VERIFY below are
- * unreachable via the public EVP API. The digest is chosen internally by NIST
- * level, so there is no mdname to honour — defer to the digest-init helpers,
- * exactly as the message-signature init wrappers do.
+ * unreachable via the public EVP API.
  */
 static int
 hybrid_sig_sign_init(void *vctx, void *vkey, const OSSL_PARAM params[])
 {
-    return hybrid_sig_digest_sign_init(vctx, NULL, vkey, params);
+    return hybrid_sig_init(vctx, vkey, EVP_PKEY_OP_SIGN,
+                           hybrid_sig_raw_input(vctx), NULL, params);
 }
 
 static int
 hybrid_sig_verify_init(void *vctx, void *vkey, const OSSL_PARAM params[])
 {
-    return hybrid_sig_digest_verify_init(vctx, NULL, vkey, params);
+    return hybrid_sig_init(vctx, vkey, EVP_PKEY_OP_VERIFY,
+                           hybrid_sig_raw_input(vctx), NULL, params);
 }
 
 /*
@@ -307,10 +414,11 @@ static int comp_sig_len_ok(const HYBRID_SIG_COMP *c, size_t got)
 }
 
 /*
- * Digest-taking sign/verify over a pre-computed digest via EVP_PKEY_sign/verify
- * (ECDSA DER, or RSA PKCS#1 v1.5). For signing, sig/siglen receive the signature
- * (bounded by c->max_sig); for verify, sig/siglen are the input. Returns 1 on
- * success.
+ * Digest-taking sign/verify via EVP_PKEY_sign/verify (ECDSA DER, or RSA PKCS#1
+ * v1.5): over md(tbs), or with md NULL over tbs itself as an already-hashed
+ * value (HYBRID_SIG_IN_PREHASHED; no signature digest is set, as oqsprovider
+ * does). For signing, sig/siglen receive the signature (bounded by c->max_sig);
+ * for verify, sig/siglen are the input. Returns 1 on success.
  */
 static int hybrid_sig_digest_taking_op(const HYBRID_KEY *key,
                         const HYBRID_SIG_COMP *c, int sign, const EVP_MD *md,
@@ -319,12 +427,18 @@ static int hybrid_sig_digest_taking_op(const HYBRID_KEY *key,
                         const OSSL_PROVIDER **prov)
 {
     EVP_PKEY_CTX *pctx = NULL;
-    unsigned char dig[EVP_MAX_MD_SIZE];
-    unsigned int diglen = sizeof(dig);
+    unsigned char digbuf[EVP_MAX_MD_SIZE];
+    unsigned int diglen = sizeof(digbuf);
+    const unsigned char *dig = tbs;
+    size_t dlen = tbslen;
     int ret = 0;
 
-    if (!EVP_Digest(tbs, tbslen, dig, &diglen, md, NULL))
-        return 0;
+    if (md != NULL) {
+        if (!EVP_Digest(tbs, tbslen, digbuf, &diglen, md, NULL))
+            return 0;
+        dig = digbuf;
+        dlen = diglen;
+    }
 
     pctx = EVP_PKEY_CTX_new_from_pkey(key->libctx, c->pkey, c->propq);
     if (pctx == NULL)
@@ -333,16 +447,16 @@ static int hybrid_sig_digest_taking_op(const HYBRID_KEY *key,
         goto end;
     if (c->is_rsa && EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) <= 0)
         goto end;
-    if (EVP_PKEY_CTX_set_signature_md(pctx, md) <= 0)
+    if (md != NULL && EVP_PKEY_CTX_set_signature_md(pctx, md) <= 0)
         goto end;
 
     if (sign) {
         *siglen = c->max_sig;
-        if (EVP_PKEY_sign(pctx, sig, siglen, dig, diglen) <= 0
+        if (EVP_PKEY_sign(pctx, sig, siglen, dig, dlen) <= 0
                 || !comp_sig_len_ok(c, *siglen))
             goto end;
     } else {
-        if (EVP_PKEY_verify(pctx, sig, *siglen, dig, diglen) <= 0)
+        if (EVP_PKEY_verify(pctx, sig, *siglen, dig, dlen) <= 0)
             goto end;
     }
     *prov = EVP_PKEY_CTX_get0_provider(pctx);
@@ -460,18 +574,21 @@ static int hybrid_sig_component_op(HYBRID_SIG_CTX *ctx, const HYBRID_KEY *key,
 
     if (c->digest_taking)
         return hybrid_sig_digest_taking_op(key, c, sign,
-                                           classical_md(info->nist_level),
+                                           ctx->input == HYBRID_SIG_IN_PREHASHED
+                                               ? NULL
+                                               : classical_md(info->nist_level),
                                            tbs, tbslen, sig, slen, prov);
     return hybrid_sig_mdless_op(ctx, key, c, sign, tbs, tbslen, sig, slen,
                                 prov);
 }
 
 /*
- * One-shot sign:
+ * One-shot sign of tbs as handed (the message, or for raw sign in compat mode a
+ * hash, see ctx->input):
  *   sig = ENCODE_UINT32(classical_len) || classical_sig || pq_sig
  */
 static int
-hybrid_sig_digest_sign(void *vctx,
+hybrid_sig_sign(void *vctx,
                         unsigned char *sig, size_t *siglen,
                         size_t sigsize,
                         const unsigned char *tbs, size_t tbslen)
@@ -541,7 +658,7 @@ hybrid_sig_digest_sign(void *vctx,
  * One-shot verify: split at the 4-byte classical length; both parts must pass.
  */
 static int
-hybrid_sig_digest_verify(void *vctx,
+hybrid_sig_verify(void *vctx,
                           const unsigned char *sig, size_t siglen,
                           const unsigned char *tbs, size_t tbslen)
 {
@@ -603,6 +720,58 @@ hybrid_sig_digest_verify(void *vctx,
     return 1;
 }
 
+/*
+ * H(tbs) with the compat-mode caller digest, into buf (EVP_MAX_MD_SIZE).
+ */
+static int hybrid_sig_hash_input(const HYBRID_SIG_CTX *ctx,
+                                 const unsigned char *tbs, size_t tbslen,
+                                 unsigned char *buf, size_t *buflen)
+{
+    unsigned int l = 0;
+
+    if (!EVP_Digest(tbs, tbslen, buf, &l, ctx->md, NULL)) {
+        ERR_raise_data(ERR_LIB_PROV, ERR_R_EVP_LIB,
+                       "hashing the message with %s failed",
+                       EVP_MD_get0_name(ctx->md));
+        return 0;
+    }
+    *buflen = l;
+    return 1;
+}
+
+/*
+ * Digest-sign/verify (EVP_DigestSign/Verify). With a caller digest (compat mode
+ * only) the hybrid signs H(message) in place of the message, as oqsprovider
+ * does; otherwise the message itself.
+ */
+static int
+hybrid_sig_digest_sign(void *vctx, unsigned char *sig, size_t *siglen,
+                       size_t sigsize, const unsigned char *tbs, size_t tbslen)
+{
+    HYBRID_SIG_CTX *ctx = vctx;
+    unsigned char h[EVP_MAX_MD_SIZE];
+    size_t hlen = 0;
+
+    if (ctx->md == NULL || sig == NULL)
+        return hybrid_sig_sign(vctx, sig, siglen, sigsize, tbs, tbslen);
+    return hybrid_sig_hash_input(ctx, tbs, tbslen, h, &hlen)
+           && hybrid_sig_sign(vctx, sig, siglen, sigsize, h, hlen);
+}
+
+static int
+hybrid_sig_digest_verify(void *vctx, const unsigned char *sig, size_t siglen,
+                         const unsigned char *tbs, size_t tbslen)
+{
+    HYBRID_SIG_CTX *ctx = vctx;
+    unsigned char h[EVP_MAX_MD_SIZE];
+    size_t hlen = 0;
+
+    if (ctx->md == NULL)
+        return hybrid_sig_verify(vctx, sig, siglen, tbs, tbslen);
+    return hybrid_sig_hash_input(ctx, tbs, tbslen, h, &hlen)
+           && hybrid_sig_verify(vctx, sig, siglen, h, hlen);
+}
+
 #ifdef HYBRID_HAVE_MSG_SIG
 /*
  * Message-signature API. Unlike digest-sign, these entry points sign
@@ -646,8 +815,8 @@ hybrid_sig_sign_message_final(void *vctx, unsigned char *sig, size_t *siglen,
 {
     HYBRID_SIG_CTX *ctx = vctx;
 
-    return hybrid_sig_digest_sign(vctx, sig, siglen, sigsize,
-                                  ctx->stream.msg, ctx->stream.msglen);
+    return hybrid_sig_sign(vctx, sig, siglen, sigsize, ctx->stream.msg,
+                           ctx->stream.msglen);
 }
 
 /*
@@ -665,25 +834,42 @@ hybrid_sig_verify_message_final(void *vctx)
                        "OSSL_SIGNATURE_PARAM_SIGNATURE ctx-param)");
         return 0;
     }
-    return hybrid_sig_digest_verify(vctx, ctx->stream.sigbuf,
-                                    ctx->stream.sigbuflen,
-                                    ctx->stream.msg, ctx->stream.msglen);
+    return hybrid_sig_verify(vctx, ctx->stream.sigbuf, ctx->stream.sigbuflen,
+                             ctx->stream.msg, ctx->stream.msglen);
 }
 #endif /* HYBRID_HAVE_MSG_SIG */
+
+/* The digest param is settable only in oqsprovider compatibility mode; by
+ * default it is refused (hybrid_sig_set_md). */
+#ifdef HYBRID_HAVE_CTX_STR
+# ifdef HYBRID_HAVE_MSG_SIG
+#  define HYBRID_SIG_SETTABLE_COMMON                                          \
+    OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING, NULL, 0),    \
+    OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_SIGNATURE, NULL, 0),
+# else
+#  define HYBRID_SIG_SETTABLE_COMMON                                          \
+    OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING, NULL, 0),
+# endif
+#else
+# define HYBRID_SIG_SETTABLE_COMMON
+#endif
 
 static const OSSL_PARAM *hybrid_sig_settable_ctx_params(void *vctx,
                                                           void *provctx)
 {
     static const OSSL_PARAM params[] = {
-#ifdef HYBRID_HAVE_CTX_STR
-        OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING, NULL, 0),
-# ifdef HYBRID_HAVE_MSG_SIG
-        OSSL_PARAM_octet_string(OSSL_SIGNATURE_PARAM_SIGNATURE, NULL, 0),
-# endif
-#endif
+        HYBRID_SIG_SETTABLE_COMMON
         OSSL_PARAM_END
     };
-    return params;
+    static const OSSL_PARAM compat_params[] = {
+        HYBRID_SIG_SETTABLE_COMMON
+        OSSL_PARAM_utf8_string(OSSL_SIGNATURE_PARAM_DIGEST, NULL, 0),
+        OSSL_PARAM_END
+    };
+    const HYBRID_PROV_CTX *pc = provctx;
+
+    (void)vctx;
+    return pc != NULL && pc->oqs_digest_compat ? compat_params : params;
 }
 
 static int hybrid_sig_set_ctx_params(void *vctx, const OSSL_PARAM params[])
@@ -757,21 +943,21 @@ const OSSL_DISPATCH hybrid_sig_functions[] = {
     { OSSL_FUNC_SIGNATURE_DIGEST_VERIFY,
       (void (*)(void))hybrid_sig_digest_verify },
     /*
-     * Raw one-shot API (EVP_PKEY_sign/verify). sign/verify reuse the digest-sign
-     * one-shot, which already signs the raw message; their *_INIT entries make
-     * that path reachable via EVP_PKEY_sign_init/verify_init (issue #79).
+     * Raw one-shot API (EVP_PKEY_sign/verify): the one-shot core over the input
+     * as handed, never hashed with a caller digest (see hybrid_sig_raw_input).
+     * Their *_INIT entries make the path reachable (issue #79).
      */
     { OSSL_FUNC_SIGNATURE_SIGN_INIT,
       (void (*)(void))hybrid_sig_sign_init },
     { OSSL_FUNC_SIGNATURE_SIGN,
-      (void (*)(void))hybrid_sig_digest_sign },
+      (void (*)(void))hybrid_sig_sign },
     { OSSL_FUNC_SIGNATURE_VERIFY_INIT,
       (void (*)(void))hybrid_sig_verify_init },
     { OSSL_FUNC_SIGNATURE_VERIFY,
-      (void (*)(void))hybrid_sig_digest_verify },
+      (void (*)(void))hybrid_sig_verify },
 #ifdef HYBRID_HAVE_MSG_SIG
-    /* Message-signature API: one-shot + streaming. sign/verify reuse
-     * the digest-sign one-shot, which already signs the raw message. */
+    /* Message-signature API: one-shot + streaming over the message. A caller
+     * digest is never applied here (nor by oqsprovider's message API). */
     { OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_INIT,
       (void (*)(void))hybrid_sig_sign_message_init },
     { OSSL_FUNC_SIGNATURE_SIGN_MESSAGE_UPDATE,

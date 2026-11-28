@@ -29,7 +29,8 @@ it is loaded.
 
 **Digests.** A composite signature fixes its own prehash (SHA-256, SHA-512 or
 SHAKE256, per combo) and accepts that digest or none; a hybrid signature
-accepts none. In CMS, pass no digest for a composite signer (`openssl cms -sign`
+accepts none, unless [oqsprovider digest compatibility](#oqsprovider-digest-compatibility-oqsprovider-digest-compat)
+is on. In CMS, pass no digest for a composite signer (`openssl cms -sign`
 without `-md`, or `CMS_add1_signer(..., NULL, ...)`): CMS then uses the prehash,
 as `draft-ietf-lamps-cms-composite-sigs-05` requires, and any other digest is
 refused. A hybrid signer needs one named (`-md sha256`). Composite certificates
@@ -122,9 +123,10 @@ implements them.
 ## Configuration
 
 The hybrid provider's settings — `alg<N>-propquery`, `component-providers`,
-`component-path`, `cede-to-default` — live in its section of an `openssl.cnf`
-and have **no command-line equivalent** (only `cede-to-default` also has an
-environment override, see [Environment variables](#environment-variables)).
+`component-path`, `cede-to-default`, `oqsprovider-digest-compat` — live in its
+section of an `openssl.cnf` and have **no command-line equivalent** (only
+`cede-to-default` and `oqsprovider-digest-compat` also have an environment
+override, see [Environment variables](#environment-variables)).
 
 The provider still works without a cnf. Loaded on the command line (`openssl …
 -provider default -provider oqsprovider -provider hybrid`, or by any application
@@ -339,6 +341,47 @@ verifies both states across the whole inventory; detection only ever affects
 identifiers the default provider actually serves, so anything unique to this
 provider is never withdrawn.
 
+### oqsprovider digest compatibility (`oqsprovider-digest-compat`)
+
+Off by default. The hybrid signatures share oqsprovider's wire format, and
+signatures made through the message path (no digest named) verify in either
+provider. Two calling modes differ:
+
+| Mode | oqsprovider | This provider, by default |
+|---|---|---|
+| `EVP_DigestSign*` naming a digest | signs H(message) with that digest in place of the message | refuses the digest |
+| raw `EVP_PKEY_sign`/`EVP_PKEY_verify`, OpenSSL 3.4+ | treats the input as already hashed: the ECDSA/RSA component signs it without hashing again | signs the input as the message |
+
+No spec defines either format. oqsprovider's README describes the raw-path
+change (its "3.4 and greater" section). The digest-sign behaviour is not
+documented there: the lever matches oqsprovider's observed behaviour, as
+`hybrid_oqs_digest_compat_test` checks against it. Turn the lever on only to
+exchange such signatures with oqsprovider. The provider then behaves as oqsprovider does in
+both modes, and also accepts the `digest` signature parameter
+(`EVP_PKEY_CTX_set_signature_md`), which by default is refused:
+
+```ini
+[hybrid_sect]
+module                    = /path/to/hybrid.so
+activate                  = 1
+oqsprovider-digest-compat = yes
+```
+
+```sh
+HYBRID_OQSPROVIDER_DIGEST_COMPAT=1 ./your-app   # same effect; set wins over config
+```
+
+- The digest must be fetchable from the application's library context.
+- Callers that name no digest are unaffected: the message API, CMS (it passes
+  none for these keys) and the CLI's X.509 signing (`req`, `x509` and `ca` drop
+  `-sha256` and the like for them).
+- The provider-private rows, which oqsprovider doesn't serve, follow the same
+  rule: a named digest means the hybrid signs H(message). There is no
+  oqsprovider counterpart to check them against.
+- `hybrid_oqs_digest_compat_test` crosses every hybrid oqsprovider serves, both
+  ways, for several digests and the raw path, and checks that with the lever
+  off a named digest is still refused.
+
 ## Only operable algorithms are advertised
 
 A hybrid combines two components — typically a classical and a PQ one, each
@@ -399,13 +442,15 @@ set per process. Some servers clear the environment of their worker processes
 
 ## Environment variables
 
-The provider reads two environment variables, both detailed in the sections
-above: `HYBRID_CEDE_TO_DEFAULT` at load time, `HYBRID_LOG` whenever it logs. (Benchmark/test knobs — `BENCH_*`, `HYBRID_BENCH_GUARD_ONLY`,
+The provider reads three environment variables, all detailed in the sections
+above: `HYBRID_CEDE_TO_DEFAULT` and `HYBRID_OQSPROVIDER_DIGEST_COMPAT` at load
+time, `HYBRID_LOG` whenever it logs. (Benchmark/test knobs — `BENCH_*`, `HYBRID_BENCH_GUARD_ONLY`,
 `COMPOSITE_TRAD_PROPQ` — are documented in [TESTING.md](TESTING.md) instead.)
 
 | Variable | Effect | Details |
 |---|---|---|
 | `HYBRID_CEDE_TO_DEFAULT` | Boolean; overrides the `cede-to-default` config key. `0`/`no`/`off`/`false` keeps the default provider's algorithms present alongside the hybrid provider's own (coexist mode). Set wins over config. | [Ceding to the default provider](#ceding-to-the-default-provider-cede-to-default) above |
+| `HYBRID_OQSPROVIDER_DIGEST_COMPAT` | Boolean; overrides the `oqsprovider-digest-compat` config key. `1`/`yes`/`on`/`true` makes the hybrid signatures handle a named digest and raw `EVP_PKEY_sign` as oqsprovider does. Set wins over config. | [oqsprovider digest compatibility](#oqsprovider-digest-compatibility-oqsprovider-digest-compat) above |
 | `HYBRID_LOG` | Diagnostic lines to stderr. `caps`: each advertisement dropped and why. `ops`: per operation, the provider that actually served each component. Comma-combinable; `1` (any other value) = all; unset/empty/`0` = off. | [Only operable algorithms are advertised](#only-operable-algorithms-are-advertised), [Which provider served it](#which-provider-served-it-hybrid_logops) above |
 
 `OPENSSL_MODULES` (OpenSSL's standard module-search-path variable, not specific to
@@ -413,5 +458,5 @@ this provider) locates `hybrid.so` when it is not on the default path; without
 `component-path` it is also the private component context's search path.
 
 In a privileged process (setuid/setgid or file capabilities) the provider ignores
-all of these variables, as OpenSSL does for its own: use the `cede-to-default` and
-`component-path` config keys instead (`HYBRID_LOG` then stays off).
+all of these variables, as OpenSSL does for its own: use the `cede-to-default`,
+`oqsprovider-digest-compat` and `component-path` config keys instead (`HYBRID_LOG` then stays off).

@@ -90,7 +90,9 @@ default actually serves; foreign key I/O is not shadowed; and repeated load
 failure returns rather than hanging), concurrency / `fork()` / teardown stress
 (`hybrid_threads_test`, below), the full cross-version matrix vs
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider)
-(`hybrid_matrix_test`), the coverage guard asserting every hybrid
+(`hybrid_matrix_test`), the `oqsprovider-digest-compat` lever crossed with
+oqsprovider on the digest-sign and raw paths (`hybrid_oqs_digest_compat_test`),
+the coverage guard asserting every hybrid
 [oqsprovider](https://github.com/open-quantum-safe/oqs-provider) advertises is
 also served here (`hybrid_coverage_test`), the X-Wing KAT interop check that
 decapsulates the `draft-connolly-cfrg-xwing-kem` reference ciphertexts and

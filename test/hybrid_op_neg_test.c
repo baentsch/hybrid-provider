@@ -381,9 +381,14 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, SIG_FAMILY fam)
      * mandatory digest and accepts exactly that one (cms-composite-sigs-05
      * sec. 3.4, Table 1: CMS passes it as the SignerInfo digestAlgorithm), and
      * refuses the realistic wrong one (SHA-256 for SHA-512 combos, else
-     * SHA-512). A hybrid accepts none. */
+     * SHA-512). A hybrid accepts none (unless the oqsprovider-digest-compat
+     * lever is on; this suite runs with it off). Both refuse it at init and,
+     * on the raw path, as the digest ctx-param. */
     {
         const char *bad = "SHA256";
+        EVP_MD *badmd = NULL;
+        EVP_PKEY_CTX *rc = NULL;
+        int refused;
 #ifdef HYBRID_COMPOSITE
         char ph[64] = "";
 
@@ -407,6 +412,13 @@ static void check_sig(OSSL_LIB_CTX *ctx, const char *alg, SIG_FAMILY fam)
         EXPECT(EVP_DigestVerifyInit_ex(m, NULL, bad, ctx, PROPQ, pub,
                                        NULL) <= 0,
                "verify-init accepted an explicit digest");
+        badmd = EVP_MD_fetch(ctx, bad, NULL);
+        rc = EVP_PKEY_CTX_new_from_pkey(ctx, k, PROPQ);
+        refused = badmd != NULL && rc != NULL && EVP_PKEY_sign_init(rc) > 0
+                  && EVP_PKEY_CTX_set_signature_md(rc, badmd) <= 0;
+        EVP_PKEY_CTX_free(rc);
+        EVP_MD_free(badmd);
+        EXPECT(refused, "raw sign accepted an explicit digest as ctx-param");
     }
     ERR_clear_error();
 
