@@ -27,6 +27,63 @@ EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(libctx, "mldsa44_ecdsa_p256", NUL
 Application code selects the provider by property query (`?provider=hybrid`) once
 it is loaded.
 
+**Digests.** A composite signature fixes its own prehash (SHA-256, SHA-512 or
+SHAKE256, per combo) and accepts that digest or none; a hybrid signature
+accepts none. In CMS, pass no digest for a composite signer (`openssl cms -sign`
+without `-md`, or `CMS_add1_signer(..., NULL, ...)`): CMS then uses the prehash,
+as `draft-ietf-lamps-cms-composite-sigs-05` requires, and any other digest is
+refused. A hybrid signer needs one named (`-md sha256`). Composite certificates
+verify only under a property query that can also fetch the prehash digest, so
+prefer `?provider=hybrid` over `provider=hybrid`.
+
+**Signing a precomputed prehash (composites).** An application that already
+holds ph = PH(M) passes it to the raw signature API. `EVP_PKEY_sign_init` and
+`EVP_PKEY_verify_init` mean the input is ph. `EVP_DigestSign*` and
+`EVP_PKEY_sign_message_init` take the message M. This is draft-19's "External
+Pre-hashing": the signature is the same as signing M.
+
+```c
+/* PH is the key's mandatory digest. */
+char phname[64];
+EVP_PKEY_get_default_digest_name(pkey, phname, sizeof(phname));
+
+EVP_MD *md = EVP_MD_fetch(libctx, phname, NULL);
+EVP_MD_CTX *mc = EVP_MD_CTX_new();
+unsigned char ph[64];
+unsigned int l;
+size_t phlen;
+
+EVP_DigestInit_ex(mc, md, NULL);
+EVP_DigestUpdate(mc, msg, msglen);
+if (EVP_MD_get_flags(md) & EVP_MD_FLAG_XOF) {   /* SHAKE256: 64 bytes */
+    phlen = 64;
+    EVP_DigestFinalXOF(mc, ph, phlen);
+} else {
+    EVP_DigestFinal_ex(mc, ph, &l);
+    phlen = l;
+}
+
+EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_from_pkey(libctx, pkey,
+                                                "?provider=hybrid");
+EVP_PKEY_sign_init(pctx);
+EVP_PKEY_sign(pctx, NULL, &siglen, ph, phlen);   /* size query */
+EVP_PKEY_sign(pctx, sig, &siglen, ph, phlen);
+/* verify: EVP_PKEY_verify_init(vctx), then
+ *         EVP_PKEY_verify(vctx, sig, siglen, ph, phlen) */
+```
+
+- Composites only. A hybrid key reports `UNDEF` as its mandatory digest: it has
+  no prehash, and `EVP_MD_fetch` returns NULL for that name.
+- ph must be exactly PH's output length: 32 bytes for SHA-256, 64 for SHA-512
+  and SHAKE256. The provider can't tell which function produced it, so a wrong
+  hash of the right length gives a signature that won't verify.
+- Naming the digest is optional (`EVP_PKEY_CTX_set_signature_md`). Any digest
+  other than PH is refused.
+- A context string is set as usual (`OSSL_SIGNATURE_PARAM_CONTEXT_STRING`, at
+  init or via `EVP_PKEY_CTX_set_params`).
+- `openssl cms -sign -noattr` signs this way. `composite_kat_test` (K8) checks
+  the path against the draft-19 vectors.
+
 ## Mixing sub-algorithms from different providers
 
 The hybrid provider fetches sub-algorithms through the EVP layer, so they can

@@ -18,6 +18,11 @@
  *   K6. `sk_pkcs8` decodes to the same key: public equals `pk`, and the raw
  *       private export equals `sk` byte-for-byte.
  *   K7. `x5c` decodes, carries `pk`, and its self-signature verifies.
+ *   K8. External prehash: `s`/`sWithContext` verify over PH(m), a PH(m)
+ *       signature verifies over m, a short ph / other digest is refused.
+ *   K9. cms-composite-sigs-05 Appendix B (argv[2]): the SignedData example
+ *       verifies under the mldsa65_ecdsa_p256 `x5c`; a flipped signature
+ *       byte does not.
  *
  * Verifying reference signatures proves our combiner byte-compatible with the
  * reference across the whole construction — prefix, per-algorithm label,
@@ -36,8 +41,12 @@
 #include <openssl/err.h>
 #include <openssl/decoder.h>
 #include <openssl/x509.h>
+#include <openssl/pem.h>   /* before cms.h: it declares PEM_read_bio_CMS */
+#include <openssl/cms.h>
+#include "hybrid_asn1_compat.h"
 #include "composite_prov.h"   /* composite_sig_table: map KAT name -> PQ component */
 #include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
+#include "key_util.h"    /* hybrid_test_other_digest */
 
 static int tests, passed, failed, skipped;
 
@@ -202,6 +211,150 @@ static EVP_PKEY *decode_p8(OSSL_LIB_CTX *ctx, const char *name,
     return key;
 }
 
+/* ph = PH(msg) for this combo: SHAKE256 at 64 bytes, else the natural size. */
+static int prehash(OSSL_LIB_CTX *ctx, const COMPOSITE_SIG_INFO *info,
+                   const unsigned char *msg, size_t msglen,
+                   unsigned char *ph, size_t *phlen)
+{
+    EVP_MD *md = EVP_MD_fetch(ctx, info->prehash, NULL);
+    EVP_MD_CTX *mc = EVP_MD_CTX_new();
+    unsigned int l = 0;
+    int r = md != NULL && mc != NULL && EVP_DigestInit_ex2(mc, md, NULL) > 0
+            && EVP_DigestUpdate(mc, msg, msglen) > 0;
+
+    if (r && (EVP_MD_get_flags(md) & EVP_MD_FLAG_XOF) != 0) {
+        *phlen = COMPOSITE_XOF_PH_BYTES;
+        r = EVP_DigestFinalXOF(mc, ph, *phlen) > 0;
+    } else if (r) {
+        r = EVP_DigestFinal_ex(mc, ph, &l) > 0;
+        *phlen = l;
+    }
+    EVP_MD_CTX_free(mc);
+    EVP_MD_free(md);
+    return r;
+}
+
+typedef enum { PH_VERIFY, PH_SIGN } PH_OP;
+
+/*
+ * Raw EVP_PKEY_sign/verify over ph = PH(M) (draft-19 "External Pre-hashing"):
+ * PH_VERIFY checks *sig, PH_SIGN signs into *sig. digest (optional) is set as
+ * the signature digest param the way EVP_SignFinal_ex does.
+ */
+static int ph_op(OSSL_LIB_CTX *ctx, EVP_PKEY *key, PH_OP op, const char *digest,
+                 const unsigned char *ph, size_t phlen,
+                 const unsigned char *cs, size_t cslen,
+                 unsigned char **sig, size_t *siglen)
+{
+    EVP_PKEY_CTX *pc = EVP_PKEY_CTX_new_from_pkey(ctx, key, PROPQ);
+    OSSL_PARAM p[3], *q = p;
+    int r = 0;
+
+    if (digest != NULL)
+        *q++ = OSSL_PARAM_construct_utf8_string(OSSL_SIGNATURE_PARAM_DIGEST,
+                                                (char *)digest, 0);
+    if (cs != NULL)
+        *q++ = OSSL_PARAM_construct_octet_string(
+                   OSSL_SIGNATURE_PARAM_CONTEXT_STRING, (void *)cs, cslen);
+    *q = OSSL_PARAM_construct_end();
+    if (pc == NULL
+            || (op == PH_SIGN ? EVP_PKEY_sign_init(pc)
+                              : EVP_PKEY_verify_init(pc)) <= 0
+            || EVP_PKEY_CTX_set_params(pc, p) <= 0)
+        goto end;
+    if (op == PH_SIGN) {
+        r = EVP_PKEY_sign(pc, NULL, siglen, ph, phlen) > 0
+            && (*sig = OPENSSL_malloc(*siglen)) != NULL
+            && EVP_PKEY_sign(pc, *sig, siglen, ph, phlen) > 0;
+    } else {
+        r = EVP_PKEY_verify(pc, *sig, *siglen, ph, phlen) == 1;
+    }
+end:
+    ERR_clear_error();
+    EVP_PKEY_CTX_free(pc);
+    return r;
+}
+
+/*
+ * K9 input: the CMS draft's Appendix B example, signed by one combo's x5c. The
+ * combo is read from the file (its SignerInfo signatureAlgorithm OID), so the
+ * vendored file alone pins the draft revision and its signer.
+ */
+static const char *appb_file;
+static char appb_oid[64];
+static int appb_done;
+
+typedef enum { APPB_AS_IS, APPB_TAMPERED } APPB_COPY;
+
+static CMS_ContentInfo *appb_read(OSSL_LIB_CTX *ctx)
+{
+    BIO *b = BIO_new_file(appb_file, "r");
+    CMS_ContentInfo *cms = CMS_ContentInfo_new_ex(ctx, NULL);
+
+    if (b == NULL || cms == NULL
+            || PEM_read_bio_CMS(b, &cms, NULL, NULL) == NULL) {
+        CMS_ContentInfo_free(cms);
+        cms = NULL;
+    }
+    BIO_free(b);
+    return cms;
+}
+
+/* The numeric OID of the example's (single) signer into appb_oid; 0 if the
+ * file can't be read or doesn't hold exactly one SignerInfo. */
+static int appb_load_oid(OSSL_LIB_CTX *ctx)
+{
+    CMS_ContentInfo *cms = appb_read(ctx);
+    STACK_OF(CMS_SignerInfo) *sis = cms != NULL ? CMS_get0_SignerInfos(cms)
+                                                : NULL;
+    X509_ALGOR *sigalg = NULL;
+    int ok = 0;
+
+    if (sis != NULL && sk_CMS_SignerInfo_num(sis) == 1) {
+        CMS_SignerInfo_get0_algs(sk_CMS_SignerInfo_value(sis, 0), NULL, NULL,
+                                 NULL, &sigalg);
+        ok = sigalg != NULL
+             && OBJ_obj2txt(appb_oid, sizeof(appb_oid), sigalg->algorithm, 1)
+                > 0;
+    }
+    CMS_ContentInfo_free(cms);
+    ERR_clear_error();
+    return ok;
+}
+
+/* 1 iff the Appendix B SignedData verifies under signer cert x: as vendored,
+ * or (APPB_TAMPERED) with one signature byte flipped. */
+static int appb_verifies(OSSL_LIB_CTX *ctx, X509 *x, APPB_COPY copy)
+{
+    CMS_ContentInfo *cms = appb_read(ctx);
+    STACK_OF(X509) *certs = sk_X509_new_null();
+    X509_STORE *store = X509_STORE_new();
+    int r = 0;
+
+    if (cms == NULL || certs == NULL || store == NULL
+            || !sk_X509_push(certs, x) || X509_STORE_add_cert(store, x) <= 0)
+        goto end;
+    if (copy == APPB_TAMPERED) {
+        CMS_SignerInfo *si =
+            sk_CMS_SignerInfo_value(CMS_get0_SignerInfos(cms), 0);
+        ASN1_OCTET_STRING *sig = si != NULL ? CMS_SignerInfo_get0_signature(si)
+                                            : NULL;
+
+        if (sig == NULL || hybrid_asn1_string_length(sig) == 0)
+            goto end;
+        ((unsigned char *)ASN1_STRING_get0_data(sig))[0] ^= 1;
+    }
+    /* The signature is the subject, not the example cert's validity window. */
+    r = CMS_verify(cms, certs, store, NULL, NULL,
+                   CMS_BINARY | CMS_NO_SIGNER_CERT_VERIFY) > 0;
+end:
+    ERR_clear_error();
+    X509_STORE_free(store);
+    sk_X509_free(certs);
+    CMS_ContentInfo_free(cms);
+    return r;
+}
+
 static void check(OSSL_LIB_CTX *ctx, const KAT *k,
                   const unsigned char *msg, size_t msglen,
                   const unsigned char *cs, size_t cslen)
@@ -263,14 +416,54 @@ static void check(OSSL_LIB_CTX *ctx, const KAT *k,
     EXPECT(EVP_PKEY_eq(p8, pub) == 1, "K6: sk_pkcs8 public key != pk");
     EXPECT(priv_equals(p8, KAT_FIELD(k, KAT_SK)), "K6: sk_pkcs8 private != sk");
     /* K7 */
-    /* Decode in the test's libctx, where the hybrid provider is loaded. */
+    /* Decode in the test's libctx, where the hybrid provider is loaded. No
+     * propq: verify maps the signature OID to (PH, key) and fetches PH under
+     * it, and the hybrid provider serves no digests. */
     q = k->v[KAT_X5C];
-    EXPECT((x = X509_new_ex(ctx, PROPQ)) != NULL
+    EXPECT((x = X509_new_ex(ctx, NULL)) != NULL
            && d2i_X509(&x, &q, (long)k->len[KAT_X5C]) != NULL
            && q == k->v[KAT_X5C] + k->len[KAT_X5C], "K7: x5c decode");
     EXPECT(EVP_PKEY_eq(X509_get0_pubkey(x), pub) == 1,
            "K7: x5c public key != pk");
     EXPECT(X509_verify(x, pub) == 1, "K7: x5c self-signature");
+    /* K8: external prehash (draft-19), the route CMS takes: s and
+     * sWithContext verify over ph = PH(m); a ph signature verifies over m;
+     * a wrong-length ph or a digest other than PH is refused. */
+    {
+        unsigned char ph[EVP_MAX_MD_SIZE], *phsig = NULL;
+        unsigned char *s = k->v[KAT_S], *sc = k->v[KAT_SWC];
+        size_t phlen = 0, slen = k->len[KAT_S], sclen = k->len[KAT_SWC];
+        size_t phsiglen = 0;
+        int got;
+
+        EXPECT(prehash(ctx, info, msg, msglen, ph, &phlen), "K8: PH(m)");
+        EXPECT(ph_op(ctx, pub, PH_VERIFY, info->prehash, ph, phlen, NULL, 0,
+                     &s, &slen), "K8: s does not verify over PH(m)");
+        EXPECT(ph_op(ctx, pub, PH_VERIFY, NULL, ph, phlen, cs, cslen, &sc,
+                     &sclen),
+               "K8: sWithContext does not verify over PH(m) under ctx");
+        got = ph_op(ctx, prv, PH_SIGN, info->prehash, ph, phlen, cs, cslen,
+                    &phsig, &phsiglen);
+        EXPECT(got && verifies(ctx, pub, phsig, phsiglen, msg, msglen, cs,
+                               cslen),
+               "K8: a PH(m) signature does not verify over m");
+        OPENSSL_free(phsig);
+        EXPECT(!ph_op(ctx, pub, PH_VERIFY, NULL, ph, phlen - 1, NULL, 0, &s,
+                      &slen),
+               "K8: a short ph verified");
+        EXPECT(!ph_op(ctx, pub, PH_VERIFY,
+                      hybrid_test_other_digest(info->prehash), ph, phlen,
+                      NULL, 0, &s, &slen),
+               "K8: a digest other than PH accepted");
+    }
+    /* K9 */
+    if (appb_oid[0] != '\0' && info->oid != NULL
+            && strcmp(info->oid, appb_oid) == 0) {
+        appb_done = 1;
+        EXPECT(appb_verifies(ctx, x, APPB_AS_IS), "K9: Appendix B SignedData");
+        EXPECT(!appb_verifies(ctx, x, APPB_TAMPERED),
+               "K9: Appendix B verified with a flipped signature byte");
+    }
 end:
     if (ok) {
         printf("PASS\n");
@@ -309,6 +502,12 @@ int main(int argc, char **argv)
         return 1;
     }
     ERR_clear_error();
+    appb_file = argc > 2 ? argv[2] : NULL;
+    if (appb_file != NULL && !appb_load_oid(ctx)) {
+        fprintf(stderr, "cannot read one signer from %s\n", appb_file);
+        hybrid_test_libctx_free(ctx);
+        return 1;
+    }
 
     if ((f = fopen(katfile, "r")) == NULL) {
         fprintf(stderr, "cannot open KAT file: %s\n", katfile);
@@ -317,7 +516,8 @@ int main(int argc, char **argv)
     }
 
     printf("composite (LAMPS) KAT interop vs draft-19 reference vectors\n");
-    printf("(K1-K7: s, sWithContext+ctx binding, sk, sk_pkcs8, x5c)\n");
+    printf("(K1-K9: s, sWithContext+ctx binding, sk, sk_pkcs8, x5c, external "
+           "prehash, CMS Appendix B)\n");
     printf("==========================================================\n");
     while ((n = getline(&line, &cap, f)) > 0) {
         char *save, *t, *tok[KAT_COLS + 1] = { NULL };
@@ -387,6 +587,9 @@ int main(int argc, char **argv)
     free(line);
     fclose(f);
 
+    if (appb_file != NULL && !appb_done)
+        printf("  NOTE: K9 (CMS Appendix B) not run: no row with OID %s\n",
+               appb_oid);
     printf("\nResults: %d/%d passed, %d failed, %d skipped\n",
            passed, tests, failed, skipped);
 

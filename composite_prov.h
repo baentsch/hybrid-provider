@@ -60,6 +60,10 @@
 /* Caller context string bound into M': len(ctx) is a single octet (draft-19),
  * so at most 255 bytes, as for ML-DSA. */
 #define COMPOSITE_SIG_CTX_MAX HYBRID_SIG_CTX_MAX
+/* draft-19 uses SHAKE256 with a fixed 64-byte (512-bit) output for the one XOF
+ * prehash (the Ed448 combo); a fixed-length digest just uses its natural size.
+ * cms-composite-sigs-05 sec. 3.4 fixes the same 64 bytes for messageDigest. */
+#define COMPOSITE_XOF_PH_BYTES 64
 
 /* The PQ private split length is discovered at runtime from the component
  * algorithm (info->pq_priv_param on a fresh key) — no hardcoded seed size, so a

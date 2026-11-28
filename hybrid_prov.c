@@ -1190,7 +1190,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
                         && cin->tier == COMPOSITE_TIER_STANDARD)
                     continue;
                 (void)c_obj_create(handle, cin->oid, cin->name, cin->name);
-                (void)c_obj_add_sigid(handle, cin->name, "", cin->name);
+                (void)c_obj_add_sigid(handle, cin->name, cin->prehash,
+                                      cin->name);
             }
         }
         {   /* composite ML-KEM: register the OID<->name mapping only (a KEM is

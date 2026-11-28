@@ -15,19 +15,20 @@
  * tampered content is required to FAIL verification.
  *
  * Each combo is exercised in BOTH CMS SignerInfo modes (matching the concat
- * coverage):
- *  - with signed attributes (the default; SHA-512 messageDigest attribute), and
- *  - without signed attributes (CMS_NOATTR, `openssl cms -sign -noattr`), where
- *    the composite signature is computed directly over the content.
+ * coverage), with no caller digest, so CMS takes the key's mandatory digest --
+ * the composite's prehash PH, as draft-ietf-lamps-cms-composite-sigs-05
+ * sec. 3.4 (Table 1) requires for the SignerInfo digestAlgorithm:
+ *  - with signed attributes: the messageDigest attribute must be PH(content)
+ *    (64 bytes for SHAKE256), and CMS signs the attributes via the streaming
+ *    digest-sign path;
+ *  - without signed attributes (CMS_NOATTR, `openssl cms -sign -noattr`): CMS
+ *    hashes the content with PH and signs ph through EVP_PKEY_sign -- draft-19
+ *    "External Pre-hashing". The SignerInfo signature must then also verify
+ *    over the raw content through the message route, independently of CMS.
+ * Another digest (SHA-256 for SHA-512 combos, else SHA-512) must be refused.
  *
- * md-less CMS content-signing runs through the message-signature EVP API
- * (EVP_PKEY_sign_message_*, 3.4+); the CMS-layer wiring that drives it for
- * attribute-free signing of hashless algorithms landed later — on 3.5.x even
- * native ML-DSA `cms -sign -noattr` fails "provider signature not supported". We
- * probe that capability at runtime (mdless_cms_noattr_supported), not by version,
- * and skip the -noattr cases only where the running library lacks it; the composite
- * provider's own message-signature entry points (issue #109) are proven directly
- * regardless by check_message_api(), which is robust to the base-library gap.
+ * The draft's own example SignedData (Appendix B) is checked against the
+ * draft-19 x5c in composite_kat_test (K9).
  *
  * The combo set is driven off the master composite_sig_table, split by tier: the
  * standardized (ML-DSA) combos use the default provider's ML-DSA (3.5+, and the
@@ -45,9 +46,18 @@
 #include <openssl/bio.h>
 #include <openssl/core_names.h>
 #include <openssl/err.h>
+#include "hybrid_asn1_compat.h"   /* hybrid_asn1_string_length */
 #include "composite_prov.h"
 #include "cert_util.h"   /* hybrid_test_cert_set_cn */
 #include "prov_util.h"   /* hybrid_test_load, hybrid_test_libctx_free */
+#include "key_util.h"    /* hybrid_test_mandatory_digest/_other_digest */
+
+/* The two RFC 5652 sec. 5.4 SignerInfo modes. */
+typedef enum { SI_SIGNED_ATTRS, SI_NOATTR } SIGNER_MODE;
+
+/* CMS_signed_get0_data_by_OBJ(3) lastpos below -2: fail unless exactly one
+ * such attribute, holding exactly one value. */
+#define ATTR_EXACTLY_ONE (-3)
 
 static int tests, passed, failed, skipped;
 
@@ -80,56 +90,6 @@ end:
     EVP_PKEY_free(pkey);
     X509_free(cert);
     return ok;
-}
-
-/*
- * Does this OpenSSL support CMS content-signing (CMS_NOATTR) for a "md-less"
- * signature algorithm — one with no default digest, like ML-DSA, our hybrids and
- * the composite combos? Probed with native ML-DSA-44 (always present with the
- * default provider on 3.5+) rather than hard-coding a version, so the composite
- * `-noattr` expectation tracks whatever the running library actually supports.
- * Mirrors hybrid_cms_test.c's probe exactly (on 3.5.x this is "no"; 3.6+ "yes").
- */
-static int mdless_cms_noattr_supported(OSSL_LIB_CTX *libctx)
-{
-    EVP_PKEY_CTX *g = EVP_PKEY_CTX_new_from_name(libctx, "ML-DSA-44", NULL);
-    EVP_PKEY *pkey = NULL;
-    X509 *cert = NULL;
-    CMS_ContentInfo *cms = NULL;
-    BIO *in = NULL;
-    const unsigned char content[] = "probe";
-    unsigned int flags = CMS_BINARY | CMS_PARTIAL | CMS_DETACHED;
-    int supported = 0;
-
-    if (g == NULL || EVP_PKEY_keygen_init(g) <= 0
-            || EVP_PKEY_keygen(g, &pkey) <= 0)
-        goto end;                                   /* no native ML-DSA: give up */
-    if ((cert = X509_new_ex(libctx, NULL)) == NULL
-            || !X509_set_version(cert, X509_VERSION_3)
-            || !ASN1_INTEGER_set(X509_get_serialNumber(cert), 1)
-            || X509_gmtime_adj(X509_getm_notBefore(cert), 0) == NULL
-            || X509_gmtime_adj(X509_getm_notAfter(cert), 31536000L) == NULL
-            || !X509_set_pubkey(cert, pkey))
-        goto end;
-    if (!hybrid_test_cert_set_cn(cert, "probe")
-            || X509_sign(cert, pkey, NULL) == 0)
-        goto end;
-
-    in = BIO_new_mem_buf(content, sizeof(content) - 1);
-    cms = CMS_sign_ex(NULL, NULL, NULL, in, flags, libctx, NULL);
-    if (cms != NULL
-            && CMS_add1_signer(cms, cert, pkey, EVP_sha512(),
-                               CMS_BINARY | CMS_NOATTR) != NULL
-            && CMS_final(cms, in, NULL, flags) > 0)
-        supported = 1;
-end:
-    ERR_clear_error();
-    BIO_free(in);
-    CMS_ContentInfo_free(cms);
-    EVP_PKEY_free(pkey);
-    X509_free(cert);
-    EVP_PKEY_CTX_free(g);
-    return supported;
 }
 
 /*
@@ -173,10 +133,134 @@ static int cms_to_der(CMS_ContentInfo *cms, unsigned char **der, long *derlen)
     return ok;
 }
 
+/* 1 iff si's signature verifies over content via one-shot message verify. */
+static int signs_content(OSSL_LIB_CTX *libctx, EVP_PKEY *pkey,
+                         CMS_SignerInfo *si, const unsigned char *content,
+                         size_t contentlen)
+{
+    ASN1_OCTET_STRING *sig = CMS_SignerInfo_get0_signature(si);
+    EVP_MD_CTX *m = EVP_MD_CTX_new();
+    int r = sig != NULL && m != NULL
+        && EVP_DigestVerifyInit_ex(m, NULL, NULL, libctx, "provider=hybrid",
+                                   pkey, NULL) > 0
+        && EVP_DigestVerify(m, ASN1_STRING_get0_data(sig),
+                            hybrid_asn1_string_length(sig), content,
+                            contentlen) == 1;
+
+    ERR_clear_error();
+    EVP_MD_CTX_free(m);
+    return r;
+}
+
+/*
+ * Is the SignerInfo's digestAlgorithm the composite's prehash PH (the key's
+ * mandatory digest), and -- with signed attributes -- is the messageDigest
+ * attribute PH(content) at PH's length?
+ */
+static int digest_is_ph(OSSL_LIB_CTX *libctx, EVP_PKEY *pkey,
+                        CMS_SignerInfo *si, SIGNER_MODE mode,
+                        const unsigned char *content, size_t contentlen)
+{
+    char ph[64] = "";
+    X509_ALGOR *dig = NULL;
+    EVP_MD *md = NULL;
+    EVP_MD_CTX *mc = NULL;
+    unsigned char want[EVP_MAX_MD_SIZE];
+    size_t wantlen;
+    const ASN1_OCTET_STRING *got;
+    int ok = 0;
+
+    if (!hybrid_test_mandatory_digest(pkey, ph, sizeof(ph)))
+        return 0;
+    CMS_SignerInfo_get0_algs(si, NULL, NULL, &dig, NULL);
+    if (dig == NULL || OBJ_obj2nid(dig->algorithm) != OBJ_txt2nid(ph)
+            || dig->parameter != NULL)          /* parameters MUST be absent */
+        return 0;
+    if (mode == SI_NOATTR)
+        return 1;
+    if ((md = EVP_MD_fetch(libctx, ph, NULL)) == NULL
+            || (mc = EVP_MD_CTX_new()) == NULL
+            || EVP_DigestInit_ex2(mc, md, NULL) <= 0
+            || EVP_DigestUpdate(mc, content, contentlen) <= 0)
+        goto end;
+    if ((EVP_MD_get_flags(md) & EVP_MD_FLAG_XOF) != 0) {
+        wantlen = COMPOSITE_XOF_PH_BYTES;   /* SHAKE256: 64 bytes, sec. 3.4 */
+        if (EVP_DigestFinalXOF(mc, want, wantlen) <= 0)
+            goto end;
+    } else {
+        unsigned int l = 0;
+
+        if (EVP_DigestFinal_ex(mc, want, &l) <= 0)
+            goto end;
+        wantlen = l;
+    }
+    got = CMS_signed_get0_data_by_OBJ(si, OBJ_nid2obj(NID_pkcs9_messageDigest),
+                                      ATTR_EXACTLY_ONE, V_ASN1_OCTET_STRING);
+    ok = got != NULL && hybrid_asn1_string_length(got) == wantlen
+         && memcmp(ASN1_STRING_get0_data(got), want, wantlen) == 0;
+end:
+    EVP_MD_CTX_free(mc);
+    EVP_MD_free(md);
+    return ok;
+}
+
+/*
+ * A digest other than PH must be refused in both SignerInfo modes, never
+ * signed (cms-composite-sigs-05 sec. 3.4: digestAlgorithm MUST be PH). The
+ * wrong digest is the realistic one: SHA-256 for the SHA-512 combos, else
+ * SHA-512.
+ */
+static void check_wrong_digest(OSSL_LIB_CTX *libctx,
+                               const COMPOSITE_SIG_INFO *info,
+                               SIGNER_MODE mode)
+{
+    const char *alg = info->name;
+    const char *wrong = hybrid_test_other_digest(info->prehash);
+    EVP_MD *md = EVP_MD_fetch(libctx, wrong, NULL);
+    EVP_PKEY *pkey = NULL;
+    X509 *cert = NULL;
+    CMS_ContentInfo *cms = NULL;
+    BIO *in = NULL;
+    const unsigned char content[] = "composite CMS SignedData payload";
+    unsigned int flags = CMS_BINARY | CMS_PARTIAL | CMS_DETACHED;
+    int signed_ok;
+
+    tests++;
+    printf("  %-28s CMS refuses %s (%s) ... ", alg, wrong,
+           mode == SI_NOATTR ? "-noattr" : "signed attrs");
+    fflush(stdout);
+    if (!make_cert(libctx, alg, &pkey, &cert)) {
+        printf("SKIP (components unavailable)\n");
+        skipped++; tests--; ERR_clear_error();
+        goto done;
+    }
+    in = BIO_new_mem_buf(content, sizeof(content) - 1);
+    cms = CMS_sign_ex(NULL, NULL, NULL, in, flags, libctx, NULL);
+    signed_ok = cms != NULL
+        && md != NULL
+        && CMS_add1_signer(cms, cert, pkey, md,
+                           CMS_BINARY
+                               | (mode == SI_NOATTR ? CMS_NOATTR : 0)) != NULL
+        && CMS_final(cms, in, NULL, flags) > 0;
+    ERR_clear_error();
+    if (signed_ok) {
+        printf("FAIL (signed with a digest other than PH)\n");
+        failed++;
+    } else {
+        printf("PASS\n");
+        passed++;
+    }
+done:
+    BIO_free(in);
+    CMS_ContentInfo_free(cms);
+    EVP_PKEY_free(pkey);
+    X509_free(cert);
+    EVP_MD_free(md);
+}
+
 /* mode: 0 = with signed attributes, 1 = CMS_NOATTR (no signed attributes).
- * noattr_supported: whether this OpenSSL supports md-less CMS content-signing. */
-static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
-                  int noattr_supported)
+ */
+static void check(OSSL_LIB_CTX *libctx, const char *alg, SIGNER_MODE mode)
 {
     EVP_PKEY *pkey = NULL;
     X509 *cert = NULL;
@@ -184,6 +268,7 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
     BIO *in = NULL, *good = NULL, *bad = NULL;
     X509_STORE *store = NULL;
     STACK_OF(X509) *certs = NULL;
+    CMS_SignerInfo *si = NULL;
     unsigned char *der = NULL;
     long derlen = 0;
     const unsigned char content[] = "composite CMS SignedData payload";
@@ -191,21 +276,13 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
      * embedded, so verification is supplied the content and a wrong one is cleanly
      * rejected (the tamper check). */
     unsigned int flags = CMS_BINARY | CMS_PARTIAL | CMS_DETACHED;
-    unsigned int signer_flags = CMS_BINARY | (noattr ? CMS_NOATTR : 0);
-
-    /* The base library cannot content-sign an md-less algorithm here (< 3.6);
-     * native ML-DSA fails identically. Skip rather than record a false failure —
-     * the composite message-signature API itself is proven by check_message_api. */
-    if (noattr && !noattr_supported) {
-        printf("  %-28s CMS sign/verify (sha512, -noattr) ... SKIP "
-               "(no md-less CMS content-signing in this OpenSSL)\n", alg);
-        skipped++;
-        return;
-    }
+    unsigned int signer_flags = CMS_BINARY
+                                | (mode == SI_NOATTR ? CMS_NOATTR : 0);
 
     tests++;
     printf("  %-28s CMS sign/verify (%s) ... ",
-           alg, noattr ? "sha512, -noattr" : "sha512, signed attrs");
+           alg, mode == SI_NOATTR ? "Table 1 digest, -noattr"
+                                  : "Table 1 digest, signed attrs");
     fflush(stdout);
 
     if (!make_cert(libctx, alg, &pkey, &cert)) {
@@ -214,18 +291,36 @@ static void check(OSSL_LIB_CTX *libctx, const char *alg, int noattr,
         goto done;
     }
 
-    /* Sign: SignedData with SHA-512 message digest, signed with the composite key.
-     * The propq is left NULL, not "provider=hybrid": CMS applies it to *every*
-     * fetch, including the generic SHA-512 message digest, which the composite
-     * provider does not implement. The signature is bound to the composite key via
-     * `pkey`, so it stays composite regardless. */
+    /* Sign with no caller digest: CMS takes the key's mandatory digest, the
+     * composite's prehash PH (cms-composite-sigs-05 sec. 3.4, Table 1). The
+     * propq is left NULL, not "provider=hybrid": CMS applies it to every fetch,
+     * including the generic digest, which the composite provider does not
+     * implement. The signature is bound to the composite key via `pkey`, so
+     * it stays composite regardless. */
     in = BIO_new_mem_buf(content, sizeof(content) - 1);
     cms = CMS_sign_ex(NULL, NULL, NULL, in, flags, libctx, NULL);
     if (cms == NULL
-            || CMS_add1_signer(cms, cert, pkey, EVP_sha512(),
-                               signer_flags) == NULL
+            || (si = CMS_add1_signer(cms, cert, pkey, NULL,
+                                     signer_flags)) == NULL
             || CMS_final(cms, in, NULL, flags) <= 0)
         goto fail;
+    /* digestAlgorithm MUST be PH; with signed attributes the messageDigest
+     * attribute MUST be PH(content), 64 bytes for SHAKE256 (secs. 3.3, 3.4). */
+    /* -noattr: the SignerInfo signature is Composite-Sign over the content
+     * itself (sec. 3.3), however CMS computed it (here via external prehash).
+     * Check it through the message route, not through CMS. */
+    if (mode == SI_NOATTR && !signs_content(libctx, pkey, si, content,
+                                 sizeof(content) - 1)) {
+        printf("FAIL (-noattr signature does not verify over the content)\n");
+        failed++;
+        goto done;
+    }
+    if (!digest_is_ph(libctx, pkey, si, mode, content, sizeof(content) - 1)) {
+        printf("FAIL (digestAlgorithm / messageDigest is not the Table 1 "
+               "digest)\n");
+        failed++;
+        goto done;
+    }
     /* Round-trip through DER (exercises the CMS encode/decode path too). */
     if (!cms_to_der(cms, &der, &derlen))
         goto fail;
@@ -377,7 +472,7 @@ int main(void)
 {
     OSSL_LIB_CTX *ctx = OSSL_LIB_CTX_new();
     const char *mods = getenv("OPENSSL_MODULES");
-    int have_oqs, noattr_supported;
+    int have_oqs;
     size_t i;
 
     if (mods != NULL)
@@ -390,12 +485,9 @@ int main(void)
     }
     have_oqs = hybrid_test_load(ctx, "oqsprovider") != NULL;
     ERR_clear_error();
-    noattr_supported = mdless_cms_noattr_supported(ctx);
 
     printf("composite signatures in CMS SignedData\n");
     printf("=======================================\n");
-    printf("  md-less CMS content-signing (-noattr) supported by this "
-           "OpenSSL: %s\n", noattr_supported ? "yes" : "no");
     /* Drive the whole composite inventory from the master table. The standardized
      * (ML-DSA) combos run against the default provider; the experimental ones need
      * oqsprovider and are skipped without it. Each combo additionally self-skips if
@@ -404,8 +496,10 @@ int main(void)
         const COMPOSITE_SIG_INFO *info = &composite_sig_table[i];
 
         if (info->tier == COMPOSITE_TIER_STANDARD || have_oqs) {
-            check(ctx, info->name, 0, noattr_supported);   /* signed attrs */
-            check(ctx, info->name, 1, noattr_supported);   /* CMS_NOATTR */
+            check(ctx, info->name, SI_SIGNED_ATTRS);
+            check(ctx, info->name, SI_NOATTR);
+            check_wrong_digest(ctx, info, SI_SIGNED_ATTRS);
+            check_wrong_digest(ctx, info, SI_NOATTR);
 #ifdef OSSL_SIGNATURE_PARAM_SIGNATURE
             check_message_api(ctx, info->name);            /* issue #109 API */
 #endif

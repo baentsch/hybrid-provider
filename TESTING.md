@@ -216,15 +216,14 @@ The composite **signature** family gets the `SignedData` counterpart in
 concat family and of the KEMRI test above): per composite combo — both the
 standardized ML-DSA tier and the experimental tier — a self-signed cert →
 `SignedData` sign → verify round-trip plus a tampered-content negative, in **both**
-SignerInfo modes (signed attributes and `-noattr`). Unlike KEMRI, this needed a
-small provider addition: the composite signer now implements the
-message-signature EVP API (`sign_message`/`verify_message_*`), which is what
-OpenSSL's md-less CMS content-signing (`cms -sign -noattr`) drives — mirroring the
-concat family's wiring. The `-noattr` cases self-skip below the base library's
-md-less CMS content-signing floor (native ML-DSA fails identically on 3.5.x; the
-path works from **3.6.0**), probed at runtime rather than by version; the provider
-entry points themselves are proven regardless by a direct streaming round-trip, so
-there is real coverage on 3.5.x too. Signing binds to the composite key
+SignerInfo modes (signed attributes and `-noattr`), from OpenSSL 3.5. No digest is
+passed: CMS takes the key's mandatory digest, the composite's prehash, and the test
+checks it is the `draft-ietf-lamps-cms-composite-sigs-05` §3.4 Table 1 digest, that the
+`messageDigest` attribute is the prehash of the content, that a `-noattr`
+signature verifies over the raw content outside CMS (`-noattr` signs by external
+prehash), and that a signer naming another digest is refused. The draft's Appendix B example is
+verified in `composite_kat_test` (K9). The direct streaming message-signature
+round-trip stays as coverage of that API. Signing binds to the composite key
 (`provider=hybrid` at keygen), so a co-loaded oqsprovider cannot shadow it.
 
 Cross-implementation interop for the composite KEM lives in **opt-in harnesses**
