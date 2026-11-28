@@ -731,7 +731,10 @@ such signatures cross between the two providers:
 - **The message API** never applies a caller digest, in either provider.
 
 The lever is a provider-instance setting read at init, like `cede-to-default`.
-It changes calling modes no spec defines, so it is off by default.
+It changes calling modes no spec defines, so it is off by default. Only the
+raw-path change is documented by oqsprovider (its README, "3.4 and greater");
+the digest-sign behaviour is reproduced from oqsprovider's observed behaviour,
+which the interop test pins.
 `hybrid_oqs_digest_compat_test` crosses each mode with oqsprovider, each
 provider in its own library context.
 

@@ -91,7 +91,9 @@
  *     hashed, so the digest-taking (ECDSA/RSA) component signs it without
  *     hashing it again.
  * With the lever on, this provider behaves the same, so each provider verifies
- * the other's signatures in those modes. No spec defines either format. Callers
+ * the other's signatures in those modes. No spec defines either format;
+ * oqsprovider documents only the raw-path change, so the digest-sign mode
+ * matches its observed behaviour (hybrid_oqs_digest_compat_test). Callers
  * that name no digest (the message API, CMS, X.509 signing) are unaffected.
  * Config key "oqsprovider-digest-compat = yes" or the environment variable
  * HYBRID_OQSPROVIDER_DIGEST_COMPAT=1; the env var, when set, wins. Same

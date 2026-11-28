@@ -352,8 +352,11 @@ provider. Two calling modes differ:
 | `EVP_DigestSign*` naming a digest | signs H(message) with that digest in place of the message | refuses the digest |
 | raw `EVP_PKEY_sign`/`EVP_PKEY_verify`, OpenSSL 3.4+ | treats the input as already hashed: the ECDSA/RSA component signs it without hashing again | signs the input as the message |
 
-No spec defines either format. Turn the lever on only to exchange such
-signatures with oqsprovider. The provider then behaves as oqsprovider does in
+No spec defines either format. oqsprovider's README describes the raw-path
+change (its "3.4 and greater" section). The digest-sign behaviour is not
+documented there: the lever matches oqsprovider's observed behaviour, as
+`hybrid_oqs_digest_compat_test` checks against it. Turn the lever on only to
+exchange such signatures with oqsprovider. The provider then behaves as oqsprovider does in
 both modes, and also accepts the `digest` signature parameter
 (`EVP_PKEY_CTX_set_signature_md`), which by default is refused:
 
