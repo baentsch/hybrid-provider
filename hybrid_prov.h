@@ -80,6 +80,29 @@
 #define HYBRID_CONF_CEDE_TO_DEFAULT     "cede-to-default"
 #define HYBRID_ENV_CEDE_TO_DEFAULT      "HYBRID_CEDE_TO_DEFAULT"
 
+/*
+ * oqsprovider digest compatibility, OFF by default. Normally a hybrid signature
+ * refuses a caller-named digest (hybrid_sig_no_explicit_digest), and
+ * EVP_PKEY_sign() signs its input as the message. oqsprovider's hybrids differ
+ * in two ways:
+ *   - digest-sign (EVP_DigestSign* naming a digest): they sign H(message) in
+ *     place of the message;
+ *   - raw EVP_PKEY_sign/verify on OpenSSL 3.4+: they treat the input as already
+ *     hashed, so the digest-taking (ECDSA/RSA) component signs it without
+ *     hashing it again.
+ * With the lever on, this provider behaves the same, so each provider verifies
+ * the other's signatures in those modes. No spec defines either format. Callers
+ * that name no digest (the message API, CMS, X.509 signing) are unaffected.
+ * Config key "oqsprovider-digest-compat = yes" or the environment variable
+ * HYBRID_OQSPROVIDER_DIGEST_COMPAT=1; the env var, when set, wins. Same
+ * booleans as cede-to-default.
+ */
+#define HYBRID_CONF_OQS_DIGEST_COMPAT   "oqsprovider-digest-compat"
+#define HYBRID_ENV_OQS_DIGEST_COMPAT    "HYBRID_OQSPROVIDER_DIGEST_COMPAT"
+/* OpenSSL 3.4.0 (OpenSSL_version_num() encoding): from here oqsprovider's raw
+ * EVP_PKEY_sign/verify takes its input as already hashed. */
+#define HYBRID_OQS_PREHASHED_RAW_FROM   0x30400000L
+
 #define HYBRID_MAX_COMPONENT_PROVIDERS  8
 
 /* Provider context */
@@ -118,6 +141,9 @@ typedef struct {
      * rows removed. filter_enabled == 0 means nothing was withdrawn and the
      * static tables are served directly. All owned here, freed at teardown.
      */
+    /* oqsprovider digest compatibility (HYBRID_CONF_OQS_DIGEST_COMPAT),
+     * resolved once at init; immutable thereafter. */
+    int oqs_digest_compat;
     const char **ceded;
     size_t n_ceded;
     int filter_enabled;

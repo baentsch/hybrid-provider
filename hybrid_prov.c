@@ -1098,8 +1098,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
         static const char *const propq_keys[HYBRID_MAX_COMP] =
             HYBRID_CONF_ALGN_PROPQUERY;
         char *propq_vals[HYBRID_MAX_COMP] = { NULL };
-        char *comp = NULL, *comp_path = NULL, *cede = NULL;
-        OSSL_PARAM core_params[HYBRID_MAX_COMP + 4];
+        char *comp = NULL, *comp_path = NULL, *cede = NULL, *oqsmd = NULL;
+        OSSL_PARAM core_params[HYBRID_MAX_COMP + 5];
         unsigned ci;
         int np = 0;
 
@@ -1112,6 +1112,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
             HYBRID_CONF_COMPONENT_PATH, &comp_path, 0);
         core_params[np++] = OSSL_PARAM_construct_utf8_ptr(
             HYBRID_CONF_CEDE_TO_DEFAULT, &cede, 0);
+        core_params[np++] = OSSL_PARAM_construct_utf8_ptr(
+            HYBRID_CONF_OQS_DIGEST_COMPAT, &oqsmd, 0);
         core_params[np] = OSSL_PARAM_construct_end();
 
         if (c_get_params(handle, core_params)) {
@@ -1122,6 +1124,8 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
                     goto err;
             if (cede != NULL)
                 cede_to_default = hybrid_parse_bool(cede, cede_to_default);
+            if (oqsmd != NULL)
+                ctx->oqs_digest_compat = hybrid_parse_bool(oqsmd, 0);
             if (!hybrid_setup_component_ctx(ctx, comp, comp_path))
                 goto err;
         }
@@ -1132,6 +1136,9 @@ int OSSL_provider_init(const OSSL_CORE_HANDLE *handle,
      * enabled — everything the default provider already serves in this context. */
     cede_to_default = hybrid_parse_bool(hybrid_getenv(HYBRID_ENV_CEDE_TO_DEFAULT),
                                         cede_to_default);
+    ctx->oqs_digest_compat =
+        hybrid_parse_bool(hybrid_getenv(HYBRID_ENV_OQS_DIGEST_COMPAT),
+                          ctx->oqs_digest_compat);
     /* Compute this instance's cede tables before returning *provctx. */
     if (!hybrid_apply_cede(ctx, cede_to_default))
         goto err;

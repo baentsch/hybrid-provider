@@ -613,6 +613,18 @@ set_tests_properties(hybrid_matrix_test PROPERTIES
     ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
 )
 
+# oqsprovider digest compatibility (oqsprovider-digest-compat): digest-sign
+# naming a digest and raw EVP_PKEY_sign/verify cross with oqsprovider in both
+# directions with the lever on; with it off a named digest is refused. Each
+# provider in its own libctx. Skipped wholesale without oqsprovider.
+add_executable(hybrid_oqs_digest_compat_test test/hybrid_oqs_digest_compat_test.c)
+target_include_directories(hybrid_oqs_digest_compat_test PRIVATE ${OPENSSL_INCLUDE_DIR} ${CMAKE_SOURCE_DIR})
+target_link_libraries(hybrid_oqs_digest_compat_test PRIVATE OpenSSL::Crypto)
+add_test(NAME hybrid_oqs_digest_compat_test COMMAND hybrid_oqs_digest_compat_test)
+set_tests_properties(hybrid_oqs_digest_compat_test PROPERTIES
+    ENVIRONMENT "OPENSSL_MODULES=${CMAKE_BINARY_DIR}"
+)
+
 # Coverage guard: every hybrid oqsprovider advertises must be in our tables
 # (inverse of the matrix test; catches whole families omitted from the list).
 add_executable(hybrid_coverage_test test/hybrid_coverage_test.c)

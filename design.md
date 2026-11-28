@@ -710,6 +710,31 @@ Both sub-signatures are over the same `tbs` (to-be-signed) data.
 4. Return success only if BOTH pass
 ```
 
+### Caller digests and oqsprovider compatibility
+
+Each component's digest is fixed by the algorithm, so by default a hybrid
+refuses a caller-named digest: at digest-sign init and as the `digest` ctx-param
+(`hybrid_sig_set_md`). The raw `EVP_PKEY_sign` path signs its input as the
+message, like digest-sign.
+
+oqsprovider's hybrids take a named digest and sign H(message) in place of the
+message, and on OpenSSL 3.4+ treat raw `EVP_PKEY_sign` input as already hashed.
+The opt-in lever `oqsprovider-digest-compat` (see USAGE.md) reproduces both, so
+such signatures cross between the two providers:
+
+- **Digest-sign** (`hybrid_sig_digest_sign`/`_verify`): hash the message with
+  the caller's digest, then run the unchanged one-shot over the hash. The
+  digest-taking component hashes again with its level digest.
+- **Raw** (`hybrid_sig_raw_input`): from OpenSSL 3.4.0, built and running, the
+  input is `HYBRID_SIG_IN_PREHASHED`. The digest-taking component then signs it
+  as is, with no signature digest set. The md-less component is unchanged.
+- **The message API** never applies a caller digest, in either provider.
+
+The lever is a provider-instance setting read at init, like `cede-to-default`.
+It changes calling modes no spec defines, so it is off by default.
+`hybrid_oqs_digest_compat_test` crosses each mode with oqsprovider, each
+provider in its own library context.
+
 ### One-shot vs streaming
 
 The provider implements the one-shot `digest_sign` / `digest_verify` dispatch

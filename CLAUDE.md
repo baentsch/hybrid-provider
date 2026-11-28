@@ -114,6 +114,7 @@ hybrid-provider/
     ├── hybrid_coexist_test.c      ← provider coexistence
     ├── hybrid_threads_test.c      ← concurrency/fork/teardown stress (ASan/TSan)
     ├── hybrid_matrix_test.c       ← full cross-version matrix vs oqsprovider
+    ├── hybrid_oqs_digest_compat_test.c ← oqsprovider-digest-compat lever vs oqsprovider
     ├── hybrid_replace_test.c      ← drop-in replacement over PQ-only oqsprovider (OQS_CEDE_HYBRIDS)
     ├── patches/                   ← in-repo oqsprovider patches (cede-hybrids lever)
     ├── composite_test.c           ← composite sig provider via EVP: keygen/sign/verify/tamper
