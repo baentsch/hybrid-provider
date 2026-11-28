@@ -224,6 +224,9 @@ jobs:
       # sigs. The EXPERIMENTAL composite signatures (raw private key, no seed API)
       # also run here — composite_sig_test/composite_test exercise them and self-skip
       # the standardized rows, proving composite works below 3.5 for that tier.
+      # hybrid_oqs_digest_compat_test crosses the oqsprovider-digest-compat lever
+      # with oqsprovider, whose raw-sign behaviour changes at 3.4.0: this leg and
+      # the weekly 3.2 leg are its two sides of that boundary.
       # Benchmarks are excluded from this gating subset (see -LE bench above); the
       # pre-3.5 composition guard is covered by the weekly leg.
       - name: Test — pre-3.5 subset (drop-in over PQ-only oqsprovider)
@@ -231,7 +234,7 @@ jobs:
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|hybrid_interop_test|hybrid_kem_encode_test'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|hybrid_interop_test|hybrid_kem_encode_test|hybrid_oqs_digest_compat_test'
 
   # --------------------------------------------------------------- sanitize ---
   # Memory-safety audit automation (issue #42): build the provider + tests with
@@ -763,7 +766,7 @@ jobs:
           export ASAN_OPTIONS="abort_on_error=1:detect_leaks=1:strict_string_checks=1"
           export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
           ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|hybrid_leakcheck_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|hybrid_interop_test|hybrid_kem_encode_test'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|hybrid_leakcheck_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|hybrid_interop_test|hybrid_kem_encode_test|hybrid_oqs_digest_compat_test'
 
   # ----------------------------------------------------------------- weekly ---
   # Exhaustive per-OpenSSL-version floor matrix against bleeding-edge liboqs +
@@ -871,7 +874,7 @@ jobs:
         working-directory: build
         run: |
           LD_LIBRARY_PATH="$PREFIX/lib64" ctest --output-on-failure --parallel "$(nproc)" --test-load "$(nproc)" \
-            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|hybrid_interop_test|hybrid_kem_encode_test'
+            -R 'hybrid_replace_test|hybrid_oqs_test|hybrid_compctx_test|hybrid_capability_test|hybrid_bench|hybrid_sizes_test|hybrid_threads_test|composite_sig_test|composite_test|composite_sig_bench|composite_kem_bench|hybrid_interop_test|hybrid_kem_encode_test|hybrid_oqs_digest_compat_test'
 
       # One tracking issue PER OpenSSL leg (the legs fail for different reasons — a
       # build break on the 3.0 floor is not the master test failure), deduped by
