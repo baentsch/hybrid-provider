@@ -62,7 +62,7 @@ fewer; see [THREE-PROVIDERS.md](THREE-PROVIDERS.md).)
 |---|---|---|
 | `/opt/pq/ssl/openssl-stock.cnf` | **stock**: default + oqsprovider | `openssl-stock.cnf` |
 | `/opt/pq/ssl/openssl.cnf` | **hybrid**, as shipped; also the image's default `OPENSSL_CONF` | `openssl.cnf` |
-| `/tmp/hyp/openssl-active.cnf` | **hybrid, as in use**: written at container start from `openssl.cnf`; only the `alg2-propquery` line differs, per `HYP_STEERING` / `HYP_MLKEM_PROVIDER` | (generated) |
+| `/tmp/hyp/openssl-active.cnf` | **hybrid, as in use**, written at container start: identical to `openssl.cnf` by default; with `HYP_STEERING=strict` it adds wolfProvider and the three-provider pins | (generated) |
 
 | program | `OPENSSL_CONF` | serves / offers the hybrid groups via |
 |---|---|---|
@@ -70,13 +70,9 @@ fewer; see [THREE-PROVIDERS.md](THREE-PROVIDERS.md).)
 | nginx on port **4434** | `/opt/pq/ssl/openssl-stock.cnf` | oqsprovider |
 | curl in `interop.sh` | `openssl-active.cnf` for `hyb`, `openssl-stock.cnf` for `oqs`, per pairing | either |
 | curl and `openssl s_client` in `connect.sh` | `/tmp/hyp/openssl-active.cnf` | hybrid-provider |
-| curl, `openssl` typed in your shell | `/opt/pq/ssl/openssl.cnf`, unless you set it | hybrid-provider, with the shipped strict pins |
+| curl, `openssl` typed in your shell | `/opt/pq/ssl/openssl.cnf`, unless you set it | hybrid-provider (same as the 4433 server, by default) |
 
-The last row matters when you experiment by hand: the shipped `openssl.cnf`
-still pins the second component to wolfProvider (`provider=wolfprov`), so in
-your shell it offers fewer groups than the server (e.g. no HQC or Frodo
-hybrids). Set `OPENSSL_CONF` explicitly, as in step 3 below. The nginx configs
-the entrypoint generates are next to the active one:
+The nginx configs the entrypoint generates are next to the active one:
 `/tmp/hyp/nginx.conf` (4433) and `/tmp/hyp/nginx-oqs.conf` (4434).
 
 **1. See the configuration difference.** It's the whole change:
@@ -85,23 +81,28 @@ the entrypoint generates are next to the active one:
 diff -u /opt/pq/ssl/openssl-stock.cnf /opt/pq/ssl/openssl.cnf
 ```
 
-The part that replaces oqsprovider's hybrids is small: load `hybrid` instead of
-`oqsprovider`, and tell it where to find its component providers:
+```diff
+ [prov_sect]
+ default     = default_sect
+-oqsprovider = pq_sect
++hybrid      = pq_sect
 
-```ini
-[prov_sect]
-default = default_sect
-hybrid  = hybrid_sect              # instead of: oqsprovider = oqsprovider_sect
+ [default_sect]
+ activate = 1
 
-[hybrid_sect]
-module   = /opt/pq/lib64/ossl-modules/hybrid.so
-activate = 1
-component-providers = default oqsprovider wolfprov
-component-path      = /opt/pq/lib64/ossl-modules
+ [pq_sect]
+-module   = /opt/pq/lib64/ossl-modules/oqsprovider.so
++module   = /opt/pq/lib64/ossl-modules/hybrid.so
+ activate = 1
++component-providers = default oqsprovider
++component-path      = /opt/pq/lib64/ossl-modules
 ```
 
-The rest of the diff (`wolfprov` in `component-providers`, the
-`alg<N>-propquery` lines, `Groups`) is only there for the three-provider group.
+Load `hybrid` instead of `oqsprovider`, and tell it which providers to take the
+hybrids' components from. oqsprovider is still there, but only underneath, as
+a component source; the application never sees it. The active config the
+server uses is the same file (`diff -u /opt/pq/ssl/openssl-stock.cnf
+/tmp/hyp/openssl-active.cnf` shows the same four lines).
 
 **2. Run the interop check.**
 

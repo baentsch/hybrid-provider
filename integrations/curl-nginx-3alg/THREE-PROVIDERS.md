@@ -14,27 +14,32 @@ provisional), whose components each come from a different provider:
 
 ## How the config does it
 
-In [`openssl.cnf`](openssl.cnf), the application context loads only
-`default + hybrid`. The hybrid provider then builds its **own private component
-context** with `default + oqsprovider + wolfprov` (`component-providers`), and
-fetches each component of a group from that context under a per-component
-property query:
+The shipped [`openssl.cnf`](openssl.cnf) is the plain drop-in: the
+application context loads only `default + hybrid`, and the hybrid provider
+builds its **own private component context** from `component-providers`
+(`default oqsprovider`), taking each component from whichever of them has it.
+So by default the headline group already combines three algorithms, from two
+providers: X25519 and ML-KEM-768 from default, HQC-192 from oqsprovider.
+
+The three-provider proof is `HYP_STEERING=strict`, the default for `selftest`.
+The entrypoint then writes the active config (`/tmp/hyp/openssl-active.cnf`)
+with wolfProvider added to the component providers and one provider pinned per
+component slot, by a property query each:
 
 ```ini
 component-providers = default oqsprovider wolfprov
-component-path      = /opt/pq/lib64/ossl-modules
-alg1-propquery = provider=default         # X25519      from the default provider
-alg2-propquery = provider=wolfprov        # ML-KEM-768  from wolfProvider
-alg3-propquery = provider=oqsprovider     # HQC-192     from oqsprovider
+...
+alg1-propquery = provider=default
+alg2-propquery = provider=wolfprov
+alg3-propquery = provider=oqsprovider
 ```
 
-The strict form `provider=<name>` makes a group disappear if the named provider
-can't serve its component; `?provider=<name>` is only a preference
-(`HYP_STEERING=max`, the image's default, so that every group is offered; see
-[USAGE.md](USAGE.md#environment-variables)). `selftest` defaults to
-`HYP_STEERING=strict`, so the pins above are enforced. The slots are
-positional: `alg2` pins the second component of *every* group, so with
-wolfProvider (ML-KEM only) strict steering leaves the ML-KEM-based groups.
+A pin `provider=<name>` makes a group disappear if the named provider can't
+serve its component (`?provider=<name>` would only be a preference). The slots
+are positional: `alg2` pins the second component of *every* group, so with
+wolfProvider (ML-KEM only) strict steering leaves only the ML-KEM-based groups.
+`HYP_MLKEM_PROVIDER` picks the provider for `alg2`; see
+[USAGE.md](USAGE.md#environment-variables).
 
 ## Proving which provider served each component
 

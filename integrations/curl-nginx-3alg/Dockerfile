@@ -7,7 +7,9 @@
 #     ML-KEM-768  <- wolfProvider
 #     HQC-192     <- oqsprovider
 #
-# composed by hybrid-provider through nothing but openssl.cnf.
+# composed by hybrid-provider through nothing but openssl.cnf (HYP_STEERING=strict,
+# the selftest default). By default the image shows the plain drop-in for
+# oqsprovider's own hybrids instead: see README.md and interop.sh.
 #
 # This file is intentionally kept as close as possible to the upstream
 # open-quantum-safe/oqs-demos "nginx" and "curl" Dockerfiles. Blocks taken

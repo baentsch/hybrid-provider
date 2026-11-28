@@ -32,8 +32,8 @@ prepare_server() {
     hr "component steering: HYP_STEERING=${HYP_STEERING} (active openssl.cnf)"
     grep -E '^(component-providers|alg[0-9]+-propquery)' "$ACTIVE_CNF" | sed 's/^/    /'
 
-    hr "config-only change: diff stock vs hybrid openssl.cnf"
-    diff -u "$STOCK_CNF" "$HYBRID_CNF" | sed 's/^/    /'
+    hr "config-only change: diff stock vs active hybrid openssl.cnf"
+    diff -u "$STOCK_CNF" "$ACTIVE_CNF" | sed 's/^/    /'
 
     if [ -n "${HYP_SERVER_GROUPS:-}" ]; then
         groups=$(echo "$HYP_SERVER_GROUPS" | tr ': ' '\n\n' | grep -v '^$')

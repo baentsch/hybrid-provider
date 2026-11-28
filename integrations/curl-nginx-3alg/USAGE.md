@@ -50,11 +50,11 @@ without any cnf. Nothing is hardcoded. Two things deliberately keep groups out:
 
 - **Ceded groups.** Groups the default provider already serves natively are
   left to it (cede-to-default), so they are not part of this demo.
-- **Steering** (`HYP_STEERING`, below). `alg<N>-propquery` is positional:
-  `alg2` names the provider for the second component of *every* group. The
-  default `max` only prefers it, so all 44 groups are offered. `strict` (the
-  default for `selftest`) pins it to wolfProvider, which only has ML-KEM; that
-  leaves the 10 ML-KEM-based groups.
+- **Steering** (`HYP_STEERING`, below). By default (`max`) nothing is pinned,
+  so all 44 groups are offered. `strict` (the default for `selftest`) pins one
+  provider per component slot; the slots are positional, so with the second
+  slot pinned to wolfProvider, which only has ML-KEM, that leaves the 10
+  ML-KEM-based groups.
 
 The startup output shows the component steering, the `diff` between the stock
 and the hybrid `openssl.cnf` (the entire functional change), and the offered
@@ -102,11 +102,12 @@ names the provider that **actually** ran each component:
 A missing line means the hybrid provider did not run that side, so the lines
 also prove that the hybrid provider served the group itself. Components are
 listed in slot order (`alg1` first) and compared with the `alg<N>-propquery`
-pins:
-- **`HYP_STEERING=strict`:** a component from any other provider is a FAIL.
-- **`max`:** a preference that was not honoured is noted and the group is
-  reported as `OK*`, e.g. `alg2 preferred wolfprov, served by oqsprovider` for
-  the Frodo/BIKE/HQC groups, which wolfProvider cannot serve.
+lines in the active config, if any:
+- **pin** (`provider=<name>`, as `HYP_STEERING=strict` writes): a component from
+  any other provider is a FAIL.
+- **preference** (`?provider=<name>`, if you add one by hand): a preference
+  that was not honoured is noted and the group is reported as `OK*`.
+- **none** (the default, `max`): the components are only reported.
 
 A group is OK when every available source reports exactly the offered group and
 the provenance lines are present and consistent with the pins. The server must
@@ -117,8 +118,8 @@ side cannot be proven and every group fails.
 
 | variable | values | used by | effect |
 |----------|--------|---------|--------|
-| `HYP_STEERING` | `max` (default) / `strict` (default for `selftest`) | server, client | `max`: `alg2-propquery = ?provider=<ML-KEM provider>`, a preference; every group whose components exist (44 here); a component served by another provider is reported (`OK*`). `strict`: `provider=` pin; only groups whose second component that provider serves (10 here), and every component must come from its pinned provider. |
-| `HYP_MLKEM_PROVIDER` | `wolfprov` (default) / `default` | server, client | which provider `alg2` names (any provider in `component-providers` that serves ML-KEM). If `wolfprov` and its module is missing, it falls back to `default` and drops `wolfprov` from `component-providers`. The oqsprovider build here has no standalone ML-KEM, so `oqsprovider` would offer no ML-KEM groups. |
+| `HYP_STEERING` | `max` (default) / `strict` (default for `selftest`) | server, client | `max`: the active config is the shipped `openssl.cnf`, no component pins; every group whose components exist (44 here); `connect.sh` reports which provider served each component. `strict`: adds the ML-KEM provider to `component-providers` and pins every component slot (the three-provider proof); only groups whose components the pinned providers serve (10 here), and every component must come from its pinned provider. |
+| `HYP_MLKEM_PROVIDER` | `wolfprov` (default) / `default` | server, client | with `HYP_STEERING=strict` only: the provider `alg2` is pinned to (any provider that serves ML-KEM). If `wolfprov` and its module is missing, it falls back to `default`. The oqsprovider build here has no standalone ML-KEM, so `oqsprovider` would offer no ML-KEM groups. |
 | `HYP_SERVER_GROUPS` | group list (`:` or space separated) | server | offer exactly these instead of the derived list |
 | `HYP_PORT` | port (default `4433`) | server, client | listen / connect port |
 | `HYP_OQS_PORT` | port (default `4434`), `0` = off | server, `interop.sh` | the second nginx, under the stock cnf, where oqsprovider serves its own hybrids (see [Interop with oqsprovider's own hybrids](#interop-with-oqsproviders-own-hybrids)) |
@@ -143,7 +144,7 @@ docker run --rm -it hyp-3alg bash   # or a fresh one without a server
 |------|------|
 | `/opt/pq` | the shared OpenSSL install (prefix); `bin/openssl`, `bin/curl` |
 | `/opt/pq/lib64/ossl-modules` | provider modules: `hybrid.so`, `oqsprovider.so`, `wolfprov.so` |
-| `/opt/pq/ssl/openssl.cnf` | the hybrid config as shipped (also `OPENSSL_CONF`) |
+| `/opt/pq/ssl/openssl.cnf` | the hybrid config as shipped (also `OPENSSL_CONF`): the plain drop-in |
 | `/tmp/hyp/openssl-active.cnf` | the config in use, after `HYP_STEERING` / `HYP_MLKEM_PROVIDER` |
 | `/tmp/hyp/server-groups`, `/tmp/hyp/nginx.conf` | the offered groups and the generated nginx config |
 | `/tmp/hyp/oqs-server-groups`, `/tmp/hyp/nginx-oqs.conf` | the same for the oqsprovider interop server (port 4434) |
@@ -222,17 +223,20 @@ prints it first (from `/opt/pq/demo/upstream.txt`):
 
 ## Changing the provider split
 
-The split is pure configuration. Edit the `alg*-propquery` lines in
-`/opt/pq/ssl/openssl.cnf` (or mount your own over it) to re-route a component
-slot to any loaded provider, e.g. `alg2-propquery = provider=default` sources the
-second component from the default provider. The providers available to the
+The split is pure configuration. Add `alg<N>-propquery` lines to `[pq_sect]` in
+`/opt/pq/ssl/openssl.cnf` (or mount your own over it) to route a component slot
+to a provider, e.g. `alg2-propquery = provider=default` sources the second
+component from the default provider. The providers available to the
 components are those listed in `component-providers` (loaded into the hybrid
-provider's private context). No rebuild is needed.
+provider's private context). No rebuild is needed. `HYP_STEERING=strict` writes
+such lines for the three-provider proof; see
+[THREE-PROVIDERS.md](THREE-PROVIDERS.md#how-the-config-does-it).
 
-The strict form `provider=<name>` makes a group disappear when that
-provider cannot serve its component. The preference form `?provider=<name>`
-falls back silently to any provider that has the component, so the cnf no
-longer pins which provider served it (`HYP_STEERING=max`, the default).
+The pin form `provider=<name>` makes a group disappear when that provider
+cannot serve its component. The preference form `?provider=<name>` falls back
+to any provider that has the component, so the cnf no longer pins which
+provider served it. Without any `alg<N>-propquery` line (the default), each
+component comes from whichever component provider has it.
 
 ## The scripts
 
