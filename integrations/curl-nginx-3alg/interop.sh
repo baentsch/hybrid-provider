@@ -2,7 +2,12 @@
 # =============================================================================
 # Interop check: the hybrid provider vs. oqsprovider's OWN hybrids, over TLS.
 #
-#   interop.sh [GROUP ...]     default: every group both stacks serve
+#   interop.sh [-v|--verbose] [GROUP ...]   default: every group both stacks serve
+#
+#   -v  per pairing, both sides: stack and config, the group that side actually
+#       negotiated, and which provider served it (for a hyb side: each
+#       component's provider, from the hybrid provider's own log).
+#       Also HYP_VERBOSE=1.
 #
 # Two stacks, chosen purely by openssl.cnf (same curl, same nginx binaries):
 #   hyb  the hybrid cnf (default + hybrid provider; oqsprovider only as a
@@ -32,6 +37,9 @@ hyp_prepare_cnf || exit 1
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+VERBOSE=${HYP_VERBOSE:-0}
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+
 if [ $# -gt 0 ]; then
     GROUPS_LIST=$(printf '%s\n' "$@")
 elif [ -s "$OQS_GROUPS_FILE" ]; then
@@ -53,6 +61,27 @@ declare -A CNF=([hyb]="$ACTIVE_CNF" [oqs]="$STOCK_CNF")
 declare -A PORT=([hyb]="$HYP_PORT" [oqs]="$HYP_OQS_PORT")
 declare -A SLOG=([hyb]="$SERVER_LOG" [oqs]="$OQS_SERVER_LOG")
 declare -A ALOG=([hyb]="$KEM_LOG" [oqs]="$OQS_KEM_LOG")
+declare -A CNFNAME=([hyb]="openssl-active.cnf" [oqs]="openssl-stock.cnf")
+
+# Who served a group on one side, for -v: the hybrid provider's own log line
+# (components with their providers), or oqsprovider on the stock stack.
+served_by() {   # served_by <stack> <hybrid log line, may be empty>
+    if [ "$1" = oqs ]; then echo "oqsprovider (its own hybrid; no hybrid provider loaded)"
+    elif [ -n "$2" ]; then echo "hybrid-provider: $2"
+    else echo "hybrid-provider: <no log line>"; fi
+}
+
+# One side of a pairing, for -v: what it negotiated, or, after a failed
+# handshake, what it offered (client key share) or that nothing was used.
+side() {   # side <client|server> <stack> <negotiated group or ""> <hybrid log line>
+    if [ -n "$3" ]; then
+        echo "group=$3  via $(served_by "$2" "$4")"
+    elif [ "$1" = client ]; then
+        echo "group=<none: handshake failed>  key share offered via $(served_by "$2" "$4")"
+    else
+        echo "group=<none: handshake failed>"
+    fi
+}
 
 # One handshake: pair <group> <client stack> <server stack>.
 # Prints "OK" or "FAIL:<reason>".
@@ -76,6 +105,8 @@ pair() {
 
     # Which stack ran on the client side: hybrid provider lines or none.
     hl=$(grep -c "^hybrid: keygen $g:" "$TMP/curl.log")
+    local ccomp scomp="" sgl
+    ccomp=$(sed -n "s/^hybrid: keygen $g: //p" "$TMP/curl.log" | head -1)
     if [ -z "$why" ]; then
         if [ "$c" = hyb ] && [ "$hl" = 0 ]; then why="client: hybrid provider did not run"
         elif [ "$c" = oqs ] && [ "$hl" != 0 ]; then why="client: hybrid provider ran on the oqs stack"; fi
@@ -87,6 +118,7 @@ pair() {
         for i in 1 2 3 4 5; do      # the copy of nginx's stderr may lag a moment
             tail -c +$((off + 1)) "${SLOG[$s]}" >"$TMP/srv.log"
             n=$(grep -c "^hybrid: encapsulate $g:" "$TMP/srv.log")
+            scomp=$(sed -n "s/^hybrid: encapsulate $g: //p" "$TMP/srv.log" | head -1)
             [ "$s" = oqs ] || [ "$n" != 0 ] && break
             sleep 0.2
         done
@@ -95,6 +127,21 @@ pair() {
         if [ -z "$why" ] && [ -r "${ALOG[$s]}" ] && ! grep -qF "id=${id} " "${ALOG[$s]}"; then
             why="server: request missing from its access log"
         fi
+    fi
+
+    # -v details: the group each side actually used, and who served it.
+    if [ "$VERBOSE" = 1 ]; then
+        sgl=$sg
+        if [ -z "$sgl" ] && [ -r "${ALOG[$s]}" ]; then
+            sgl=$(grep -F "id=${id} " "${ALOG[$s]}" | grep -oE 'curve=[^ ]+' | tail -1 | cut -d= -f2)
+        fi
+        [ "$off" -ge 0 ] || scomp="<server log not readable here>"
+        {
+            printf '           %s>%s client: %s stack (%s)  %s\n' "$c" "$s" "$c" \
+                "${CNFNAME[$c]}" "$(side client "$c" "$cg" "$ccomp")"
+            printf '                   server: %s stack (%s, port %s)  %s\n' "$s" \
+                "${CNFNAME[$s]}" "${PORT[$s]}" "$(side server "$s" "$sgl" "$scomp")"
+        } >"$TMP/v.$c.$s"
     fi
 
     [ -z "$why" ] && echo OK || echo "FAIL:$why"
@@ -134,6 +181,9 @@ for g in $GROUPS_LIST; do
         line="$line $(printf '%-9s' "$v")"
     done
     echo "$line"
+    if [ "$VERBOSE" = 1 ]; then
+        for pr in $PAIRS; do cat "$TMP/v.${pr%:*}.${pr#*:}" 2>/dev/null; done
+    fi
     if [ "$oqs_ok" = 0 ]; then
         echo "         n/a: oqsprovider cannot negotiate this group itself (oqs>oqs: ${R[oqs:oqs]#FAIL:})"
         na_groups="$na_groups $g"

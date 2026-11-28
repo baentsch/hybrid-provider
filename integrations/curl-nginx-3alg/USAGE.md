@@ -172,6 +172,7 @@ curl in all four pairings, offering one group at a time:
 docker run -d --name hyp -p 4433:4433 -p 4434:4434 hyp-3alg
 docker exec hyp interop.sh                         # every shared group
 docker exec hyp interop.sh p384_hqc3 x25519_mlkem512   # or just some
+docker exec hyp interop.sh -v p384_hqc3                # per pairing: what each side used
 
 docker run --rm hyp-3alg interop   # one-shot, exits with the result
 ```
@@ -188,6 +189,13 @@ are baselines; `hyb>oqs` and `oqs>hyb` show that the two implementations of the
 same group name are interchangeable on the wire. Each OK also checks that the
 hybrid provider ran on exactly the `hyb` sides (its `HYBRID_LOG=ops` lines), and
 that the serving nginx logged the request.
+
+`-v` (or `HYP_VERBOSE=1`) adds two lines per pairing, one per side: its stack
+and config, the group that side actually negotiated, and which provider served
+it. For a `hyb` side that is each component with its provider, from the hybrid
+provider's own log (e.g. `EC:P-384@default hqc3@oqsprovider`). After a failed
+handshake, the client line shows the key share it offered and the server line
+`<none: handshake failed>`.
 
 Switching stacks is only a different `OPENSSL_CONF`; curl and nginx are
 unchanged:

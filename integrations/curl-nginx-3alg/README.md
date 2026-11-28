@@ -109,6 +109,7 @@ server uses is the same file (`diff -u /opt/pq/ssl/openssl-stock.cnf
 ```sh
 interop.sh                          # every group both configs serve
 interop.sh p384_hqc3 x448_mlkem768  # or just some
+interop.sh -v p384_hqc3             # plus, per pairing, what each side used
 ```
 
 ```
@@ -124,7 +125,16 @@ RESULT: 146 OK, 0 FAIL (0 of them cross-implementation), 6 n/a of 152 handshakes
 Columns are client>server: `hyb>hyb` and `oqs>oqs` are the baselines, the other
 two are cross-implementation. Each OK also checks that hybrid-provider ran on
 exactly the `hyb` sides. `n/a` means oqsprovider can't negotiate the group even
-with itself (e.g. the BIKE-L1 hybrids in 0.12.0). More in
+with itself (e.g. the BIKE-L1 hybrids in 0.12.0). With `-v`, each pairing
+also shows, for client and server, the stack and config, the group that side
+actually negotiated, and which provider served it:
+
+```
+           hyb>oqs client: hyb stack (openssl-active.cnf)  group=p384_hqc3  via hybrid-provider: EC:P-384@default hqc3@oqsprovider
+                   server: oqs stack (openssl-stock.cnf, port 4434)  group=p384_hqc3  via oqsprovider (its own hybrid; no hybrid provider loaded)
+```
+
+More in
 [USAGE.md](USAGE.md#interop-with-oqsproviders-own-hybrids).
 
 **3. Switch stacks by hand.** Same curl, only `OPENSSL_CONF` changes:
