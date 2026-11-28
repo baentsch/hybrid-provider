@@ -56,10 +56,28 @@ including the Frodo, BIKE and HQC hybrids. `-e HYP_STEERING=strict` instead pins
 components to specific providers, for the three-provider proof, and offers
 fewer; see [THREE-PROVIDERS.md](THREE-PROVIDERS.md).)
 
-| port | config | who serves the hybrid groups |
+### Where the configs are, and who uses which
+
+| file in the image | config | source in this directory |
 |---|---|---|
-| 4433 | hybrid (`/tmp/hyp/openssl-active.cnf`) | hybrid-provider |
-| 4434 | stock (`/opt/pq/ssl/openssl-stock.cnf`) | oqsprovider |
+| `/opt/pq/ssl/openssl-stock.cnf` | **stock**: default + oqsprovider | `openssl-stock.cnf` |
+| `/opt/pq/ssl/openssl.cnf` | **hybrid**, as shipped; also the image's default `OPENSSL_CONF` | `openssl.cnf` |
+| `/tmp/hyp/openssl-active.cnf` | **hybrid, as in use**: written at container start from `openssl.cnf`; only the `alg2-propquery` line differs, per `HYP_STEERING` / `HYP_MLKEM_PROVIDER` | (generated) |
+
+| program | `OPENSSL_CONF` | serves / offers the hybrid groups via |
+|---|---|---|
+| nginx on port **4433** | `/tmp/hyp/openssl-active.cnf` | hybrid-provider |
+| nginx on port **4434** | `/opt/pq/ssl/openssl-stock.cnf` | oqsprovider |
+| curl in `interop.sh` | `openssl-active.cnf` for `hyb`, `openssl-stock.cnf` for `oqs`, per pairing | either |
+| curl and `openssl s_client` in `connect.sh` | `/tmp/hyp/openssl-active.cnf` | hybrid-provider |
+| curl, `openssl` typed in your shell | `/opt/pq/ssl/openssl.cnf`, unless you set it | hybrid-provider, with the shipped strict pins |
+
+The last row matters when you experiment by hand: the shipped `openssl.cnf`
+still pins the second component to wolfProvider (`provider=wolfprov`), so in
+your shell it offers fewer groups than the server (e.g. no HQC or Frodo
+hybrids). Set `OPENSSL_CONF` explicitly, as in step 3 below. The nginx configs
+the entrypoint generates are next to the active one:
+`/tmp/hyp/nginx.conf` (4433) and `/tmp/hyp/nginx-oqs.conf` (4434).
 
 **1. See the configuration difference.** It's the whole change:
 
