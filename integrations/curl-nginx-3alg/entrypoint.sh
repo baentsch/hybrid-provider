@@ -16,6 +16,9 @@
 #   <cmd>     run any other command unchanged (noconf.sh, bash, ...).
 # =============================================================================
 set -u
+# Component steering defaults to max (every group; see hyp-env.sh). selftest is
+# the three-provider provenance proof, so it defaults to strict instead.
+[ "${1:-server}" = selftest ] && export HYP_STEERING="${HYP_STEERING:-strict}"
 . "$(dirname "$0")/hyp-env.sh"
 
 hr() { printf '\n========== %s ==========\n' "$1"; }
@@ -26,7 +29,7 @@ prepare_server() {
     hyp_prepare_cnf || return 1
     export OPENSSL_CONF="$ACTIVE_CNF"
 
-    hr "component steering: HYP_STEERING=${HYP_STEERING:-strict} (active openssl.cnf)"
+    hr "component steering: HYP_STEERING=${HYP_STEERING} (active openssl.cnf)"
     grep -E '^(component-providers|alg[0-9]+-propquery)' "$ACTIVE_CNF" | sed 's/^/    /'
 
     hr "config-only change: diff stock vs hybrid openssl.cnf"

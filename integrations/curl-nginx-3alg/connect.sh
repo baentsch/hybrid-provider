@@ -31,7 +31,7 @@ set -u
 
 hyp_prepare_cnf || exit 1
 export OPENSSL_CONF="$ACTIVE_CNF"
-STEERING_MODE=${HYP_STEERING:-strict}
+STEERING_MODE=${HYP_STEERING}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

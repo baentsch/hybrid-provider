@@ -44,16 +44,17 @@ image is about 70 MB (release) or 85 MB (main). More build options are under
 Start the container; it runs two nginx servers, one per configuration:
 
 ```sh
-docker run -d --name hyp -e HYP_STEERING=max hyp-3alg
+docker run -d --name hyp hyp-3alg
 docker exec -it hyp bash
 ```
 
 (A plain `bash`: a login shell, `bash -l`, resets `PATH` and loses the demo's
 tools.)
 
-(`HYP_STEERING=max` offers every group hybrid-provider can compose; the default
-`strict` mode pins components to specific providers and offers fewer. See
-[THREE-PROVIDERS.md](THREE-PROVIDERS.md).)
+(By default the hybrid server offers every group hybrid-provider can compose,
+including the Frodo, BIKE and HQC hybrids. `-e HYP_STEERING=strict` instead pins
+components to specific providers, for the three-provider proof, and offers
+fewer; see [THREE-PROVIDERS.md](THREE-PROVIDERS.md).)
 
 | port | config | who serves the hybrid groups |
 |---|---|---|
@@ -123,7 +124,7 @@ Each server answers with the group it negotiated, e.g.
 
 Leave the shell and stop the container with `docker rm -f hyp`.
 
-Without a shell: `docker run --rm -e HYP_STEERING=max hyp-3alg interop` runs
+Without a shell: `docker run --rm hyp-3alg interop` runs
 the same check one-shot and exits with its result.
 
 ## Files

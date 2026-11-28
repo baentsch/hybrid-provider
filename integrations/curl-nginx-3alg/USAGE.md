@@ -51,9 +51,10 @@ without any cnf. Nothing is hardcoded. Two things deliberately keep groups out:
 - **Ceded groups.** Groups the default provider already serves natively are
   left to it (cede-to-default), so they are not part of this demo.
 - **Steering** (`HYP_STEERING`, below). `alg<N>-propquery` is positional:
-  `alg2` pins the second component of *every* group. Pinned strictly to
-  wolfProvider, which only has ML-KEM, that leaves the 10 ML-KEM-based groups;
-  `max` mode offers all 44.
+  `alg2` names the provider for the second component of *every* group. The
+  default `max` only prefers it, so all 44 groups are offered. `strict` (the
+  default for `selftest`) pins it to wolfProvider, which only has ML-KEM; that
+  leaves the 10 ML-KEM-based groups.
 
 The startup output shows the component steering, the `diff` between the stock
 and the hybrid `openssl.cnf` (the entire functional change), and the offered
@@ -116,7 +117,7 @@ side cannot be proven and every group fails.
 
 | variable | values | used by | effect |
 |----------|--------|---------|--------|
-| `HYP_STEERING` | `strict` (default) / `max` | server, client | `strict`: `alg2-propquery = provider=<ML-KEM provider>`; only groups whose second component that provider serves (10 here), and every component must come from its pinned provider. `max`: `?provider=` preference; every group whose components exist (44 here); a component served by another provider is reported (`OK*`). |
+| `HYP_STEERING` | `max` (default) / `strict` (default for `selftest`) | server, client | `max`: `alg2-propquery = ?provider=<ML-KEM provider>`, a preference; every group whose components exist (44 here); a component served by another provider is reported (`OK*`). `strict`: `provider=` pin; only groups whose second component that provider serves (10 here), and every component must come from its pinned provider. |
 | `HYP_MLKEM_PROVIDER` | `wolfprov` (default) / `default` | server, client | which provider `alg2` names (any provider in `component-providers` that serves ML-KEM). If `wolfprov` and its module is missing, it falls back to `default` and drops `wolfprov` from `component-providers`. The oqsprovider build here has no standalone ML-KEM, so `oqsprovider` would offer no ML-KEM groups. |
 | `HYP_SERVER_GROUPS` | group list (`:` or space separated) | server | offer exactly these instead of the derived list |
 | `HYP_PORT` | port (default `4433`) | server, client | listen / connect port |
@@ -128,7 +129,7 @@ A client in another container must use the same `HYP_STEERING` /
 `HYP_MLKEM_PROVIDER` as the server, so that it can offer the same groups:
 
 ```sh
-docker run --rm --network container:hyp -e HYP_STEERING=max hyp-3alg connect.sh
+docker run --rm --network container:hyp hyp-3alg connect.sh
 ```
 
 ## Exploring interactively
@@ -162,17 +163,16 @@ curl -v --curves HQCKEM192MLKEM768X25519 --cacert /opt/pq/demo/CA.crt https://lo
 
 The image also runs a **second nginx on port 4434 under the stock cnf**: default
 plus oqsprovider, no hybrid provider, so there oqsprovider serves its own hybrid
-groups. It offers the groups both stacks serve, derived at start (e.g. 38 with
-`HYP_STEERING=max` and 8 with the default `strict`, in an image built against
-`main`). `interop.sh` connects with
+groups. It offers the groups both stacks serve, derived at start (e.g. 38 by
+default and 8 with `HYP_STEERING=strict`, in an image built against `main`). `interop.sh` connects with
 curl in all four pairings, offering one group at a time:
 
 ```sh
-docker run -d --name hyp -p 4433:4433 -p 4434:4434 -e HYP_STEERING=max hyp-3alg
+docker run -d --name hyp -p 4433:4433 -p 4434:4434 hyp-3alg
 docker exec hyp interop.sh                         # every shared group
 docker exec hyp interop.sh p384_hqc3 x25519_mlkem512   # or just some
 
-docker run --rm -e HYP_STEERING=max hyp-3alg interop   # one-shot, exits with the result
+docker run --rm hyp-3alg interop   # one-shot, exits with the result
 ```
 
 ```
@@ -229,10 +229,10 @@ second component from the default provider. The providers available to the
 components are those listed in `component-providers` (loaded into the hybrid
 provider's private context). No rebuild is needed.
 
-The default strict form `provider=<name>` makes a group disappear when that
+The strict form `provider=<name>` makes a group disappear when that
 provider cannot serve its component. The preference form `?provider=<name>`
 falls back silently to any provider that has the component, so the cnf no
-longer says which provider served it (see `HYP_STEERING=max`).
+longer pins which provider served it (`HYP_STEERING=max`, the default).
 
 ## The scripts
 

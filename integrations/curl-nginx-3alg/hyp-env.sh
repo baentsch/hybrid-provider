@@ -42,16 +42,21 @@ OQS_KEM_LOG=${NGINX_PREFIX}/logs/kem-access-oqs.log
 #
 # HYP_STEERING picks how that pin is written. alg<N>-propquery is positional:
 # alg2 pins the 2nd component of EVERY group, not just the ML-KEM ones.
-#   strict (default)  alg2 = provider=<name>: only groups whose 2nd component
+#   max (default)     alg2 = ?provider=<name>: preferred, else any provider, so
+#                     every group whose components exist is offered (incl. the
+#                     Frodo/BIKE/HQC hybrids, whose 2nd component only
+#                     oqsprovider has); which provider served a non-preferred
+#                     component is reported but not pinned.
+#   strict            alg2 = provider=<name>: only groups whose 2nd component
 #                     that provider serves (with wolfprov: the ML-KEM ones);
-#                     every component's provider is provable.
-#   max               alg2 = ?provider=<name>: preferred, else any provider, so
-#                     every group whose components exist is offered; which
-#                     provider served a non-preferred component is not provable.
+#                     every component's provider is provable. Default for
+#                     `entrypoint.sh selftest`, the three-provider proof.
+export HYP_STEERING="${HYP_STEERING:-max}"
+
 hyp_prepare_cnf() {
     local prov q
     [ -s "$ACTIVE_CNF" ] && return 0
-    case "${HYP_STEERING:-strict}" in
+    case "${HYP_STEERING}" in
         strict) q="provider=" ;;
         max)    q="?provider=" ;;
         *)      echo "FAIL: HYP_STEERING must be 'strict' or 'max' (got '${HYP_STEERING}')" >&2

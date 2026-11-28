@@ -30,8 +30,10 @@ alg3-propquery = provider=oqsprovider     # HQC-192     from oqsprovider
 
 The strict form `provider=<name>` makes a group disappear if the named provider
 can't serve its component; `?provider=<name>` is only a preference
-(`HYP_STEERING=max`, see [USAGE.md](USAGE.md#environment-variables)). The slots
-are positional: `alg2` pins the second component of *every* group, so with
+(`HYP_STEERING=max`, the image's default, so that every group is offered; see
+[USAGE.md](USAGE.md#environment-variables)). `selftest` defaults to
+`HYP_STEERING=strict`, so the pins above are enforced. The slots are
+positional: `alg2` pins the second component of *every* group, so with
 wolfProvider (ML-KEM only) strict steering leaves the ML-KEM-based groups.
 
 ## Proving which provider served each component
