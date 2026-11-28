@@ -18,7 +18,8 @@
 # A missing line means the hybrid provider did not run that side, so the lines
 # also prove the hybrid provider served the group itself. Under
 # HYP_STEERING=strict every component must come from the provider its
-# alg<N>-propquery pins; under max, a preference that was not honoured is noted.
+# alg<N>-propquery pins; under max (no pins) the components are only reported,
+# and a ?provider= preference added by hand that was not honoured is noted.
 #
 # Env: HYP_HOST/HYP_PORT (default 127.0.0.1:4433); HYP_STEERING and
 #      HYP_MLKEM_PROVIDER as for the server (a client in another container must
@@ -31,7 +32,7 @@ set -u
 
 hyp_prepare_cnf || exit 1
 export OPENSSL_CONF="$ACTIVE_CNF"
-STEERING_MODE=${HYP_STEERING:-strict}
+STEERING_MODE=${HYP_STEERING}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -146,6 +147,6 @@ done
 
 echo
 echo "steering: HYP_STEERING=${STEERING_MODE}; active cnf: ${STEERING:-<none>}"
-[ "$noted" = 0 ] || echo "OK* = served as negotiated, but a preferred provider was not the one used (HYP_STEERING=max)"
+[ "$noted" = 0 ] || echo "OK* = served as negotiated, but a preferred provider (?provider=) was not the one used"
 echo "RESULT: ${pass} OK (${noted} of them OK*), ${fail} FAIL of $((pass + fail)) groups at ${HYP_HOST}:${HYP_PORT}"
 [ "$fail" = 0 ] && [ "$pass" -gt 0 ]

@@ -25,38 +25,79 @@ SERVER_LOG=${HYP_STATE}/server.log                # nginx stderr: HYBRID_LOG lin
 HYP_HOST=${HYP_HOST:-127.0.0.1}
 HYP_PORT=${HYP_PORT:-4433}
 
-# Build the active config once per container (idempotent), picking the ML-KEM
-# source (HYP_MLKEM_PROVIDER, default wolfProvider). If the wolfProvider module
-# is missing, fall back to the default provider, and drop wolfprov from
-# component-providers too: a listed provider that cannot load keeps the hybrid
-# provider from activating at all.
-#
-# HYP_STEERING picks how that pin is written. alg<N>-propquery is positional:
-# alg2 pins the 2nd component of EVERY group, not just the ML-KEM ones.
-#   strict (default)  alg2 = provider=<name>: only groups whose 2nd component
-#                     that provider serves (with wolfprov: the ML-KEM ones);
-#                     every component's provider is provable.
-#   max               alg2 = ?provider=<name>: preferred, else any provider, so
-#                     every group whose components exist is offered; which
-#                     provider served a non-preferred component is not provable.
+# Second server for the interop check (interop.sh): nginx under the STOCK cnf,
+# so oqsprovider serves its OWN hybrids there, not the hybrid provider.
+# HYP_OQS_PORT=0 disables it.
+HYP_OQS_PORT=${HYP_OQS_PORT:-4434}
+OQS_GROUPS_FILE=${HYP_STATE}/oqs-server-groups
+OQS_NGINX_CONF=${HYP_STATE}/nginx-oqs.conf
+OQS_SERVER_LOG=${HYP_STATE}/server-oqs.log
+OQS_KEM_LOG=${NGINX_PREFIX}/logs/kem-access-oqs.log
+
+# Build the active config once per container (idempotent). HYP_STEERING:
+#   max (default)  an exact copy of the shipped openssl.cnf: the pure drop-in
+#                  for oqsprovider's hybrids. No component pins, so every group
+#                  whose components exist is offered (incl. the Frodo/BIKE/HQC
+#                  hybrids), each component from whichever component provider
+#                  has it; connect.sh reports which one did.
+#   wolfprov       second source for ML-KEM: adds wolfProvider to
+#                  component-providers and prefers it for the 2nd component
+#                  slot (alg2-propquery = ?provider=wolfprov), so every ML-KEM
+#                  half comes from wolfProvider instead of OpenSSL's default
+#                  provider; groups whose 2nd component is not ML-KEM fall back
+#                  to the other component providers. Same groups as max.
+#   strict         the three-provider proof (THREE-PROVIDERS.md; default for
+#                  `entrypoint.sh selftest`): adds the ML-KEM provider
+#                  (HYP_MLKEM_PROVIDER, default wolfProvider) to
+#                  component-providers and pins every component slot to one
+#                  provider. alg<N>-propquery is positional (alg2 = the 2nd
+#                  component of EVERY group), so only groups whose components
+#                  the pinned providers serve are offered (with wolfprov: the
+#                  ML-KEM ones), and every component's provider is provable.
+#                  If the wolfProvider module is missing, ML-KEM comes from the
+#                  default provider instead (a listed provider that cannot load
+#                  keeps the hybrid provider from activating at all).
+export HYP_STEERING="${HYP_STEERING:-max}"
+
 hyp_prepare_cnf() {
-    local prov q
+    local prov
     [ -s "$ACTIVE_CNF" ] && return 0
-    case "${HYP_STEERING:-strict}" in
-        strict) q="provider=" ;;
-        max)    q="?provider=" ;;
-        *)      echo "FAIL: HYP_STEERING must be 'strict' or 'max' (got '${HYP_STEERING}')" >&2
-                return 1 ;;
-    esac
     mkdir -p "$HYP_STATE"
     cp "$HYBRID_CNF" "$ACTIVE_CNF.tmp"
-    prov="${HYP_MLKEM_PROVIDER:-wolfprov}"
-    if [ "$prov" = "wolfprov" ] && [ ! -e "${MODULES}/wolfprov.so" ]; then
-        echo "NOTE: ${MODULES}/wolfprov.so absent -> sourcing ML-KEM from the default provider instead" >&2
-        prov=default
-        sed -i -E 's/^(component-providers *=.*)[[:space:]]wolfprov\b/\1/' "$ACTIVE_CNF.tmp"
-    fi
-    sed -i "s|^alg2-propquery = .*|alg2-propquery = ${q}${prov}|" "$ACTIVE_CNF.tmp"
+    case "${HYP_STEERING}" in
+    max) ;;
+    wolfprov)
+        if [ ! -e "${MODULES}/wolfprov.so" ]; then
+            echo "FAIL: HYP_STEERING=wolfprov, but ${MODULES}/wolfprov.so is absent" >&2
+            rm -f "$ACTIVE_CNF.tmp"; return 1
+        fi
+        sed -i -E "s/^(component-providers *=.*)\$/\1 wolfprov/" "$ACTIVE_CNF.tmp"
+        cat >>"$ACTIVE_CNF.tmp" <<EOF
+alg2-propquery = ?provider=wolfprov
+EOF
+        ;;
+    strict)
+        prov="${HYP_MLKEM_PROVIDER:-wolfprov}"
+        if [ "$prov" = "wolfprov" ] && [ ! -e "${MODULES}/wolfprov.so" ]; then
+            echo "NOTE: ${MODULES}/wolfprov.so absent -> sourcing ML-KEM from the default provider instead" >&2
+            prov=default
+        fi
+        grep -qE "^component-providers *=.*[[:space:]]${prov}([[:space:]]|\$)" "$ACTIVE_CNF.tmp" \
+            || sed -i -E "s/^(component-providers *=.*)\$/\1 ${prov}/" "$ACTIVE_CNF.tmp"
+        # [pq_sect] is the last section, so appended lines belong to it.
+        cat >>"$ACTIVE_CNF.tmp" <<EOF
+# --- added for HYP_STEERING=strict (three-provider proof, THREE-PROVIDERS.md):
+# one provider per component slot; for HQCKEM192MLKEM768X25519 these are
+# alg1 = X25519, alg2 = ML-KEM-768, alg3 = HQC-192.
+alg1-propquery = provider=default
+alg2-propquery = provider=${prov}
+alg3-propquery = provider=oqsprovider
+EOF
+        ;;
+    *)  echo "FAIL: HYP_STEERING must be 'max', 'wolfprov' or 'strict' (got '${HYP_STEERING}')" >&2
+        rm -f "$ACTIVE_CNF.tmp"
+        return 1 ;;
+    esac
     mv "$ACTIVE_CNF.tmp" "$ACTIVE_CNF"
 }
 
@@ -72,6 +113,16 @@ hyp_hybrid_groups() {
     comm -23 \
         <(OPENSSL_CONF="$ACTIVE_CNF" "$OPENSSL" list -tls-groups 2>/dev/null | tr ':' '\n' | sort -u) \
         <(OPENSSL_CONF=/dev/null "$OPENSSL" list -tls-groups 2>/dev/null | tr ':' '\n' | sort -u) \
+        | grep -v '^$'
+}
+
+# Groups for the interop check: hybrid groups the hybrid provider serves
+# under the active cnf AND oqsprovider serves under the stock cnf, i.e. the
+# same group name implemented twice, independently. Derived, never hardcoded.
+hyp_shared_groups() {
+    comm -12 \
+        <(hyp_hybrid_groups | sort -u) \
+        <(OPENSSL_CONF="$STOCK_CNF" "$OPENSSL" list -tls-groups 2>/dev/null | tr ':' '\n' | sort -u) \
         | grep -v '^$'
 }
 

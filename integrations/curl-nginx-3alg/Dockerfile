@@ -7,7 +7,9 @@
 #     ML-KEM-768  <- wolfProvider
 #     HQC-192     <- oqsprovider
 #
-# composed by hybrid-provider through nothing but openssl.cnf.
+# composed by hybrid-provider through nothing but openssl.cnf (HYP_STEERING=strict,
+# the selftest default). By default the image shows the plain drop-in for
+# oqsprovider's own hybrids instead: see README.md and interop.sh.
 #
 # This file is intentionally kept as close as possible to the upstream
 # open-quantum-safe/oqs-demos "nginx" and "curl" Dockerfiles. Blocks taken
@@ -18,6 +20,8 @@
 # so a reviewer can confirm the functional change is confined to config.
 #
 # Build (context = repo root):   docker build -f integrations/curl-nginx-3alg/Dockerfile -t hyp-3alg .
+#   against liboqs/oqsprovider main instead of their latest matching releases:
+#                                docker build --build-arg UPSTREAM=main -f ... -t hyp-3alg-main .
 # Run the proof:                 docker run --rm hyp-3alg
 # =============================================================================
 
@@ -28,13 +32,24 @@ ARG ALPINE_VERSION=3.21
 #  * OPENSSL 3.6.x  : one build known-good for ALL providers. wolfProvider
 #                     requires >= 3.6.0 for its ML-KEM (PQC) support; 3.6 also
 #                     gives the default provider native X25519 + ML-KEM.
-#  * liboqs/oqsprov main : only main registers the *standalone* HQC KEM under
-#                     the level name `hqc3` (enable_kem) that the 3-alg group
-#                     composes; every stable release still ships HQC either
-#                     disabled (liboqs) or hybrid-only / bit-named (oqsprovider).
+#  * liboqs/oqsprovider: UPSTREAM picks the pair (see below). Both choices
+#                     register the *standalone* HQC KEM under the level name
+#                     `hqc3` (enable_kem) that the 3-alg group composes
+#                     (liboqs >= 0.16.0, oqsprovider >= 0.12.0, oqs-provider #787).
 ARG OPENSSL_TAG=openssl-3.6.5
-ARG LIBOQS_TAG=main
-ARG OQSPROVIDER_TAG=main
+### +++ ADDED: which liboqs/oqsprovider to build +++
+#   UPSTREAM=release (default)  the latest release pair known to match this
+#                               provider's algorithm catalogue (names, OIDs,
+#                               TLS code points): interop.sh should pass.
+#   UPSTREAM=main               both main branches: shows what the next
+#                               releases will change, e.g. moved code points
+#                               (interop.sh then flags the affected groups).
+# LIBOQS_TAG / OQSPROVIDER_TAG, if set, override the pick for that component.
+ARG UPSTREAM=release
+ARG LIBOQS_RELEASE=0.16.0
+ARG OQSPROVIDER_RELEASE=0.12.0
+ARG LIBOQS_TAG=
+ARG OQSPROVIDER_TAG=
 ARG NGINX_VERSION=1.28.0
 ARG CURL_VERSION=8.14.0
 ### +++ ADDED: wolfProvider (supplies the ML-KEM-768 component) +++
@@ -51,6 +66,9 @@ ARG NGINX_PREFIX=/opt/nginx
 # -----------------------------------------------------------------------------
 FROM alpine:${ALPINE_VERSION} AS builder
 ARG OPENSSL_TAG
+ARG UPSTREAM
+ARG LIBOQS_RELEASE
+ARG OQSPROVIDER_RELEASE
 ARG LIBOQS_TAG
 ARG OQSPROVIDER_TAG
 ARG NGINX_VERSION
@@ -68,11 +86,22 @@ RUN apk update && apk --no-cache add \
 ENV MODULES=${INSTALLDIR}/lib64/ossl-modules
 ENV PATH=${INSTALLDIR}/bin:${PATH}
 
-### === oqs-demos: fetch sources ===
+### === oqs-demos: fetch sources (ADDED: liboqs/oqsprovider refs from UPSTREAM,
+### recorded in ${INSTALLDIR}/demo/upstream.txt for interop.sh to report) ===
 WORKDIR /opt
-RUN git clone --depth 1 --branch ${OPENSSL_TAG}      https://github.com/openssl/openssl.git && \
-    git clone --depth 1 --branch ${LIBOQS_TAG}       https://github.com/open-quantum-safe/liboqs && \
-    git clone --depth 1 --branch ${OQSPROVIDER_TAG}  https://github.com/open-quantum-safe/oqs-provider.git && \
+RUN case "${UPSTREAM}" in \
+        release) L="${LIBOQS_TAG:-${LIBOQS_RELEASE}}"; O="${OQSPROVIDER_TAG:-${OQSPROVIDER_RELEASE}}" ;; \
+        main)    L="${LIBOQS_TAG:-main}";              O="${OQSPROVIDER_TAG:-main}" ;; \
+        *)       echo "UPSTREAM must be 'release' or 'main' (got '${UPSTREAM}')" >&2; exit 1 ;; \
+    esac && \
+    git clone --depth 1 --branch ${OPENSSL_TAG}      https://github.com/openssl/openssl.git && \
+    git clone --depth 1 --branch "$L"                https://github.com/open-quantum-safe/liboqs && \
+    git clone --depth 1 --branch "$O"                https://github.com/open-quantum-safe/oqs-provider.git && \
+    mkdir -p ${INSTALLDIR}/demo && \
+    printf 'UPSTREAM=%s\nliboqs=%s (%s)\noqsprovider=%s (%s)\nopenssl=%s\n' \
+        "${UPSTREAM}" "$L" "$(git -C liboqs rev-parse --short HEAD)" \
+        "$O" "$(git -C oqs-provider rev-parse --short HEAD)" "${OPENSSL_TAG}" \
+        >${INSTALLDIR}/demo/upstream.txt && \
     wget -q nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && tar -zxf nginx-${NGINX_VERSION}.tar.gz && rm nginx-${NGINX_VERSION}.tar.gz && \
     wget -q https://curl.se/download/curl-${CURL_VERSION}.tar.gz && tar -zxf curl-${CURL_VERSION}.tar.gz && rm curl-${CURL_VERSION}.tar.gz
 
@@ -164,11 +193,25 @@ COPY integrations/curl-nginx-3alg/nginx.conf         ${NGINX_PREFIX}/conf/nginx-
 COPY integrations/curl-nginx-3alg/hyp-env.sh          ${INSTALLDIR}/bin/hyp-env.sh
 COPY integrations/curl-nginx-3alg/entrypoint.sh      ${INSTALLDIR}/bin/entrypoint.sh
 COPY integrations/curl-nginx-3alg/connect.sh         ${INSTALLDIR}/bin/connect.sh
+### +++ ADDED: interop with oqsprovider's own hybrids (second nginx, interop.sh) +++
+COPY integrations/curl-nginx-3alg/interop.sh         ${INSTALLDIR}/bin/interop.sh
 ### +++ ADDED (opt-in): what works WITHOUT openssl.cnf (`docker run … noconf.sh`) +++
 COPY integrations/curl-nginx-3alg/noconf.sh          ${INSTALLDIR}/bin/noconf.sh
-RUN chmod +x ${INSTALLDIR}/bin/entrypoint.sh ${INSTALLDIR}/bin/connect.sh ${INSTALLDIR}/bin/noconf.sh
+### +++ ADDED: welcome/help for interactive shells +++
+COPY integrations/curl-nginx-3alg/demo-help          ${INSTALLDIR}/bin/demo-help
+RUN chmod +x ${INSTALLDIR}/bin/entrypoint.sh ${INSTALLDIR}/bin/connect.sh ${INSTALLDIR}/bin/interop.sh ${INSTALLDIR}/bin/noconf.sh ${INSTALLDIR}/bin/demo-help
 
 # -----------------------------------------------------------------------------
+### +++ ADDED: drop static libraries before the runtime stage copies the
+### install tree; nothing links against them after this point:
+###   liboqs.a              oqsprovider links it statically, so nothing loads
+###                         it at run time (40-70 MB depending on UPSTREAM)
+###   libcrypto.a, libssl.a everything here links the shared OpenSSL (~14 MB)
+###   libcurl.a             the curl binary is already built +++
+RUN for l in liboqs.a libcrypto.a libssl.a libcurl.a; do \
+        rm -f "${INSTALLDIR}/lib/$l" "${INSTALLDIR}/lib64/$l"; \
+    done
+
 ### === oqs-demos: slim runtime stage ===
 FROM alpine:${ALPINE_VERSION}
 ARG INSTALLDIR
@@ -185,8 +228,22 @@ ENV LD_LIBRARY_PATH=${INSTALLDIR}/lib64
 # nginx (built --with-openssl replacement) needs OPENSSL_CONF set explicitly.
 ENV OPENSSL_CONF=${INSTALLDIR}/ssl/openssl.cnf
 
-EXPOSE 4433
-# server (default): nginx in the foreground; selftest: one-shot CI run;
+### +++ ADDED: run as an unprivileged user (both servers listen above 1024).
+### It owns what the demo writes: nginx's pid/log/temp files, the demo key and
+### cert (server.key is 0600), and /opt/pq/ssl, from which noconf.sh briefly
+### moves openssl.cnf away. Root stays available: docker exec -u root ... +++
+RUN adduser -D -u 1000 -h /home/demo -s /bin/bash demo && \
+    chown -R demo:demo ${NGINX_PREFIX} ${INSTALLDIR}/ssl ${INSTALLDIR}/demo
+### +++ ADDED: interactive shells print demo-help once; login shells keep
+### the demo's PATH (/etc/profile resets it) +++
+COPY integrations/curl-nginx-3alg/shell-welcome.sh   /etc/bash/hyp-welcome.sh
+COPY integrations/curl-nginx-3alg/profile-path.sh    /etc/profile.d/hyp-path.sh
+USER demo
+WORKDIR /home/demo
+
+EXPOSE 4433 4434
+# server (default): nginx in the foreground (+ the oqsprovider interop server
+# on 4434); selftest: one-shot CI run; interop: one-shot interop.sh run;
 # any other command (noconf.sh, bash, ...) is run as given.
 ENTRYPOINT ["entrypoint.sh"]
 CMD ["server"]
